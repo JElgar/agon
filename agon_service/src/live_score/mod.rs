@@ -19,7 +19,7 @@
 
 use poem_openapi::{Object, Union};
 
-/// Builds `LiveEventInput` from the sport registry (`agon_core::for_each_sport!`).
+/// Builds `LiveEventInput` from the sport registry (`agon_services_core::for_each_sport!`).
 macro_rules! define_live_event_input {
     (
         modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
@@ -31,11 +31,11 @@ macro_rules! define_live_event_input {
         #[derive(Union)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum LiveEventInput {
-            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
+            $( $variant(<agon_services_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
         }
     };
 }
-agon_core::for_each_sport!(define_live_event_input);
+agon_services_core::for_each_sport!(define_live_event_input);
 
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]

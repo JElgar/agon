@@ -5,8 +5,8 @@
 
 mod common;
 
-use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
-use agon_core::sports::cricket::{
+use agon_services_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_services_core::sports::cricket::{
     CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryRecord,
     CricketDismissalKindRecord, CricketDismissalRecord, CricketExtrasRecord,
     CricketFallOfWicketRecord, CricketScoreInningsRecord, CricketScoreRecord,
@@ -190,9 +190,9 @@ async fn stored_cricket_score_json_still_deserializes() {
         "last_seq": 7
     });
 
-    use agon_core::dao::item::to_item;
-    use agon_core::dao::keys::{Pk, Sk};
-    use agon_core::dao::match_ops::TYPE_MATCH_SCORE;
+    use agon_services_core::dao::item::to_item;
+    use agon_services_core::dao::keys::{Pk, Sk};
+    use agon_services_core::dao::match_ops::TYPE_MATCH_SCORE;
 
     let item = to_item(
         &Pk::Match(match_id.clone()),

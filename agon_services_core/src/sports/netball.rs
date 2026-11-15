@@ -8,7 +8,7 @@ use super::SportRecord;
 use crate::dao::records::GenericSportStatsRecord;
 
 /// Netball's stored score: the `ScoreRecord::Netball` variant. Its stored shape is
-/// guarded by `agon_core/tests/netball_score_record_roundtrip.rs`.
+/// guarded by `agon_services_core/tests/netball_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetballScoreRecord {
     /// Goal tally, keyed by side id.
@@ -138,7 +138,7 @@ pub enum NetballPeriodRecord {
 /// Wire-compatible with the `GenericSportStatsRecord` shape `stats.netball`
 /// used before this type existed — the common counters are flattened in at
 /// the same keys and `goals` defaults to `0` when absent — guarded by
-/// `agon_core/tests/netball_stats_record_roundtrip.rs`.
+/// `agon_services_core/tests/netball_stats_record_roundtrip.rs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NetballStatsRecord {
     #[serde(flatten)]

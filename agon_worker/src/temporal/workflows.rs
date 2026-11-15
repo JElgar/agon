@@ -68,7 +68,7 @@ pub struct FanOutMatchInput {
     pub match_id: String,
     /// The match's `starts_at` before this write, when this run was triggered
     /// by a change that moved it (a reschedule). `starts_at` is part of the
-    /// feed row's sort key (see `agon_core::dao::feed`), so a re-fan-out after
+    /// feed row's sort key (see `agon_services_core::dao::feed`), so a re-fan-out after
     /// a reschedule writes a *new* row rather than updating the old one in
     /// place — `None` for every other trigger (creation, an invitation
     /// acceptance, any other meta edit) skips the cleanup step below.
@@ -293,7 +293,7 @@ fn to_std_duration(d: chrono::Duration) -> Duration {
 /// What one `MaterializeSeries` execution does once it decides it's neither
 /// gone, `"ended"`, nor `"paused"` — i.e. once it's actually generating.
 /// Pure (no Temporal context), so the window/termination logic is directly
-/// unit-tested (see `tests` below) the same way `agon_core::series` keeps
+/// unit-tested (see `tests` below) the same way `agon_services_core::series` keeps
 /// its date math pure and separate from the activity calls that use it.
 #[derive(Debug, Clone, PartialEq)]
 struct MaterializeCycle {
@@ -346,7 +346,7 @@ fn plan_materialize_cycle(
     let not_yet_started = (0..occurrences_generated)
         .rev()
         .take_while(|&index| {
-            agon_core::series::occurrence_starts_at(
+            agon_services_core::series::occurrence_starts_at(
                 first_starts_at,
                 timezone,
                 frequency,
@@ -363,7 +363,7 @@ fn plan_materialize_cycle(
     let mut next_index = occurrences_generated;
     let mut window = not_yet_started;
     while window < MATERIALIZE_WINDOW && total.is_none_or(|total| next_index < total) {
-        if agon_core::series::occurrence_starts_at(
+        if agon_services_core::series::occurrence_starts_at(
             first_starts_at,
             timezone,
             frequency,
@@ -387,7 +387,7 @@ fn plan_materialize_cycle(
         MaterializeOutcome::Finish
     } else {
         let oldest_pending_index = occurrences_generated - not_yet_started;
-        match agon_core::series::occurrence_starts_at(
+        match agon_services_core::series::occurrence_starts_at(
             first_starts_at,
             timezone,
             frequency,
@@ -484,7 +484,7 @@ impl MaterializeSeries {
 
         // 3. Anchor + bounded total (`None` for `Never`) — the same
         //    computation `agon_service`'s create handler validated at
-        //    creation time, via the same `agon_core::series` functions, so
+        //    creation time, via the same `agon_services_core::series` functions, so
         //    the two can never disagree on what "the next occurrence"
         //    means.
         let Ok(first_starts_at) = series
@@ -493,17 +493,17 @@ impl MaterializeSeries {
         else {
             return Ok(());
         };
-        let Some(weekday) = agon_core::series::weekday_from_sunday_index(series.weekday) else {
+        let Some(weekday) = agon_services_core::series::weekday_from_sunday_index(series.weekday) else {
             return Ok(());
         };
         let Ok(timezone) = series.timezone.parse::<chrono_tz::Tz>() else {
             return Ok(());
         };
         let total = match &series.ends {
-            agon_core::dao::records::SeriesEndRecord::AfterN { count } => Some(*count),
-            agon_core::dao::records::SeriesEndRecord::OnDate { date } => {
+            agon_services_core::dao::records::SeriesEndRecord::AfterN { count } => Some(*count),
+            agon_services_core::dao::records::SeriesEndRecord::OnDate { date } => {
                 match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
-                    Ok(end_date) => Some(agon_core::series::count_occurrences_through(
+                    Ok(end_date) => Some(agon_services_core::series::count_occurrences_through(
                         first_starts_at.with_timezone(&timezone).date_naive(),
                         &series.frequency,
                         weekday,
@@ -512,7 +512,7 @@ impl MaterializeSeries {
                     Err(_) => return Ok(()),
                 }
             }
-            agon_core::dao::records::SeriesEndRecord::Never => None,
+            agon_services_core::dao::records::SeriesEndRecord::Never => None,
         };
 
         // 4. Decide this cycle's work.
@@ -531,7 +531,7 @@ impl MaterializeSeries {
         //    before; nothing about *how* one occurrence is generated
         //    changes here, only how many are generated per cycle.
         for index in cycle.generate {
-            let Some(starts_at) = agon_core::series::occurrence_starts_at(
+            let Some(starts_at) = agon_services_core::series::occurrence_starts_at(
                 first_starts_at,
                 timezone,
                 &series.frequency,

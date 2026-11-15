@@ -29,9 +29,9 @@ use poem_openapi::{
 };
 use tracing::{error, info};
 
-// Data access layer for DynamoDB — now the shared `agon_core` crate. Aliased as
+// Data access layer for DynamoDB — now the shared `agon_services_core` crate. Aliased as
 // `dao` so existing `dao::…` paths in handlers keep working.
-use agon_core::dao;
+use agon_services_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod admin;
 mod auth;
@@ -154,7 +154,7 @@ pub struct GenericPlayerStats {
 /// happened in — e.g. "5 wickets" and the match id of that bowling
 /// performance. `None` on the containing stats until the counter's ever
 /// been above zero in a single match. Only ever increases — see
-/// `agon_core::dao::stats::Dao::update_best_figures` for why a downward
+/// `agon_services_core::dao::stats::Dao::update_best_figures` for why a downward
 /// re-score or a cancelled match doesn't retroactively revise it.
 #[derive(Object)]
 pub struct BestFigure {
@@ -525,7 +525,7 @@ struct MatchPlayer {
 }
 
 /// Builds `Score`, `MatchType` and `UserStats` from the sport registry
-/// (`agon_core::for_each_sport!`). Each modeled sport's types are documented
+/// (`agon_services_core::for_each_sport!`). Each modeled sport's types are documented
 /// in its own `crate::sports::<sport>` module.
 macro_rules! define_score_and_match_type {
     (
@@ -534,7 +534,7 @@ macro_rules! define_score_and_match_type {
     ) => {
         /// Match score. Tagged union so each sport's scoring shape is modelled
         /// explicitly; clients switch on `type` to pick a renderer. New sports
-        /// are added to the sport registry (see `agon_core::sports`) without
+        /// are added to the sport registry (see `agon_services_core::sports`) without
         /// breaking existing clients.
         ///
         /// One type serves three roles for football/cricket: the confirmable result
@@ -553,7 +553,7 @@ macro_rules! define_score_and_match_type {
             Simple(SimpleScore),
             /// Set-based: tennis, volleyball, badminton.
             Sets(SetsScore),
-            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::Score), )+
+            $( $variant(<agon_services_core::sports::$key::$variant as crate::sports::Sport>::Score), )+
         }
 
         /// The sport a match was played in. Determines the expected `Score` shape
@@ -573,13 +573,13 @@ macro_rules! define_score_and_match_type {
         /// carries its own typed detail; generic sports use the common shape.
         #[derive(Object)]
         pub struct UserStats {
-            $( pub(crate) $key: Option<<agon_core::sports::$key::$variant as crate::sports::Sport>::PlayerStats>, )+
+            $( pub(crate) $key: Option<<agon_services_core::sports::$key::$variant as crate::sports::Sport>::PlayerStats>, )+
             $( pub $gkey: Option<GenericPlayerStats>, )*
             pub other: Option<GenericPlayerStats>,
         }
     };
 }
-agon_core::for_each_sport!(define_score_and_match_type);
+agon_services_core::for_each_sport!(define_score_and_match_type);
 
 #[derive(Object)]
 struct SimpleScore {
@@ -1702,7 +1702,7 @@ struct FeedMatch {
     known_participants: Vec<UserProfile>,
     /// How many of the match's participants the viewer follows, in total.
     /// `known_participants` itself is capped (see
-    /// `agon_core::dao::audience::MAX_KNOWN_PLAYERS`), so this is what a
+    /// `agon_services_core::dao::audience::MAX_KNOWN_PLAYERS`), so this is what a
     /// client uses to render "+N more" beyond the hydrated list.
     known_participants_count: u32,
     /// The side *the caller themselves* plays on, if they're a participant in
@@ -1761,7 +1761,7 @@ struct FeedPage {
 }
 
 /// A queried `participant`'s result in a match — resolved from the search
-/// index's outcome buckets (see `agon_core::search::SearchClient::search_matches`),
+/// index's outcome buckets (see `agon_services_core::search::SearchClient::search_matches`),
 /// no extra lookup.
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
@@ -2462,7 +2462,7 @@ enum UnregisterDeviceResponse {
 /// `POST /devices/pairing-codes/:code/confirm`) — *not* from whenever the
 /// device first generated/displayed the code, since nothing about it
 /// exists server-side until confirmation happens (see
-/// `agon_core::dao::device_pairing`'s doc comment). This bounds the gap
+/// `agon_services_core::dao::device_pairing`'s doc comment). This bounds the gap
 /// between "confirmed" and "the device actually comes back to claim it"
 /// (e.g. it was switched off right after being scanned) — it isn't what
 /// limits how long the device's own QR/code stays displayable, which the
@@ -3505,7 +3505,7 @@ impl Api {
         self.require_uid(dao, &jwt_data).await?;
         info!("Getting {user_id} rating history on {ladder}");
 
-        if agon_core::rating::ladder_for_tag(&ladder).is_none() {
+        if agon_services_core::rating::ladder_for_tag(&ladder).is_none() {
             return Ok(GetRatingHistoryResponse::ValidationError(PlainText(
                 format!("`{ladder}` is not a rating ladder"),
             )));
@@ -3518,7 +3518,7 @@ impl Api {
             .get_rating(&user_id, &ladder)
             .await
             .map_err(dao_internal)?
-            .is_some_and(|rating| agon_core::rating::published(rating.matches_rated));
+            .is_some_and(|rating| agon_services_core::rating::published(rating.matches_rated));
 
         // Withheld and absent answer identically — see the response enum.
         if !published {
@@ -3616,7 +3616,7 @@ impl Api {
     async fn search_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(search): Data<&agon_services_core::search::SearchClient>,
         AuthSchema(jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
     ) -> Result<SearchUsersResponse> {
@@ -3626,13 +3626,13 @@ impl Api {
         // Search the users index for matching ids, then hydrate full profiles
         // from DynamoDB (the index stores only id/name). This response is a plain
         // list (no cursor), so we return one page at the default limit.
-        let q = agon_core::search::SearchQuery {
+        let q = agon_services_core::search::SearchQuery {
             q: query,
             limit: page_limit(None),
             ..Default::default()
         };
         let hits = search
-            .search(agon_core::search::Index::Users, &q)
+            .search(agon_services_core::search::Index::Users, &q)
             .await
             .map_err(search_internal)?;
 
@@ -3842,7 +3842,7 @@ impl Api {
     async fn list_matches(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(search): Data<&agon_services_core::search::SearchClient>,
         Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         /// Free-text query over match name / participants.
@@ -3879,7 +3879,7 @@ impl Api {
         /// ringers" filter.
         Query(open): Query<Option<bool>>,
         /// Only matches that are `open` and currently have room for another
-        /// individual arrival — see `agon_core::dao::open_join::
+        /// individual arrival — see `agon_services_core::dao::open_join::
         /// open_has_space`'s doc comment on what this approximates. Ignored
         /// (not applied) unless `open` is also `true`.
         Query(open_has_space): Query<Option<bool>>,
@@ -3987,7 +3987,7 @@ impl Api {
             Some(SortOrder::Asc) => "asc",
             Some(SortOrder::Desc) | None => "desc",
         };
-        let q = agon_core::search::SearchQuery {
+        let q = agon_services_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
             sort: vec![format!("starts_at_ts:{sort_dir}")],
@@ -5741,7 +5741,7 @@ impl Api {
                         "ends.date must be YYYY-MM-DD".to_string(),
                     )));
                 };
-                let occurrence_count = agon_core::series::count_occurrences_through(
+                let occurrence_count = agon_services_core::series::count_occurrences_through(
                     first_date,
                     &input.frequency,
                     weekday,
@@ -5801,7 +5801,7 @@ impl Api {
         // Claim the first occurrence's generation slot before creating its
         // match — same `Dao::claim_series_occurrence` mechanism
         // `materialize_series` uses for every later occurrence (see
-        // `agon_core::dao::series_ops`'s doc comment), so `GET
+        // `agon_services_core::dao::series_ops`'s doc comment), so `GET
         // /match-series/:id/occurrences` has one consistent item collection
         // to list across the whole series, not just the generated tail.
         let occurrence = dao::records::SeriesOccurrenceRecord {
@@ -5934,7 +5934,7 @@ impl Api {
     /// paginated. Occurrences are claimed via their own item collection
     /// (`Dao::claim_series_occurrence`/`list_series_occurrences`) rather
     /// than only being derivable by formula — see
-    /// `agon_core::dao::series_ops`'s doc comment. Paginated because that
+    /// `agon_services_core::dao::series_ops`'s doc comment. Paginated because that
     /// collection has no ceiling: an indefinite (`Never`) series keeps
     /// generating claims for as long as it runs, and a bounded series' claims
     /// are never pruned either, so a long-lived series' occurrence count can
@@ -6540,7 +6540,7 @@ impl Api {
     }
 
     /// Generate every match upfront from the accepted entry list (knockout
-    /// bracket or league fixture list — see `agon_core::tournament`) and
+    /// bracket or league fixture list — see `agon_services_core::tournament`) and
     /// flip the tournament to `"in_progress"`. Synchronous: real tournament
     /// sizes are small (tens of matches at most), so this doesn't need the
     /// rolling-window async machinery `agon_worker`'s `materialize_series`
@@ -6616,7 +6616,7 @@ impl Api {
                     sorted.into_iter().map(|e| e.entrant_id).collect()
                 } else {
                     let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
-                    agon_core::tournament::random_seed_order(&ids)
+                    agon_services_core::tournament::random_seed_order(&ids)
                 }
             }
             // A teamless tournament's squads are fixed once, manually (see
@@ -6673,7 +6673,7 @@ impl Api {
                 }
                 // `seeding` is forced to `"random"` for a teamless
                 // tournament at creation — a squad has no single seed.
-                agon_core::tournament::random_seed_order(&synthetic_ids)
+                agon_services_core::tournament::random_seed_order(&synthetic_ids)
             }
         };
 
@@ -6821,23 +6821,24 @@ impl Api {
                 }
             };
 
-        let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
-            agon_core::tournament::KnockoutSide::Entrant(entrant_id) => {
+        let knockout_side_record = |side: &agon_services_core::tournament::KnockoutSide| match side
+        {
+            agon_services_core::tournament::KnockoutSide::Entrant(entrant_id) => {
                 make_entrant_side(entrant_id)
             }
-            agon_core::tournament::KnockoutSide::Tbd(_) => (tbd_side(), Vec::new()),
+            agon_services_core::tournament::KnockoutSide::Tbd(_) => (tbd_side(), Vec::new()),
         };
 
         match tournament.format {
             dao::records::TournamentFormatRecord::Knockout => {
-                let plan = agon_core::tournament::plan_knockout_bracket(&ordered);
+                let plan = agon_services_core::tournament::plan_knockout_bracket(&ordered);
                 let minted: HashMap<String, String> = plan
                     .matches
                     .iter()
                     .map(|m| (m.id.clone(), new_id()))
                     .collect();
                 let resolved =
-                    agon_core::tournament::knockout_placeholder_to_real_id(&plan, &minted);
+                    agon_services_core::tournament::knockout_placeholder_to_real_id(&plan, &minted);
 
                 let mut side_ids_by_match: HashMap<String, (String, String)> = HashMap::new();
                 for m in &resolved.matches {
@@ -6894,7 +6895,7 @@ impl Api {
                     dao::records::TournamentGenerationRecord::Manual => 0,
                     dao::records::TournamentGenerationRecord::RoundRobin { times } => times,
                 };
-                let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
+                let fixtures = agon_services_core::tournament::round_robin_fixtures(ordered.len());
                 for rep in 0..times {
                     for (round_offset, matchday) in fixtures.iter().enumerate() {
                         let round = rep * fixtures.len() as u32 + round_offset as u32;
@@ -8315,7 +8316,7 @@ impl Api {
     async fn search_teams(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(search): Data<&agon_services_core::search::SearchClient>,
         AuthSchema(_jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
         /// Opaque cursor from the previous page's `next_cursor`.
@@ -8334,14 +8335,14 @@ impl Api {
                 })));
             }
         };
-        let q = agon_core::search::SearchQuery {
+        let q = agon_services_core::search::SearchQuery {
             q: query,
             offset,
             limit: page_limit(limit),
             ..Default::default()
         };
         let hits = search
-            .search(agon_core::search::Index::Teams, &q)
+            .search(agon_services_core::search::Index::Teams, &q)
             .await
             .map_err(search_internal)?;
 
@@ -11505,7 +11506,8 @@ impl Api {
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
             // computed live, since the full roster is already in memory.
-            side.roster_preview = (on_side.len() <= agon_core::dao::match_ops::ROSTER_PREVIEW_CAP
+            side.roster_preview = (on_side.len()
+                <= agon_services_core::dao::match_ops::ROSTER_PREVIEW_CAP
                 && !on_side.is_empty())
             .then(|| {
                 on_side
@@ -11900,7 +11902,7 @@ async fn viewer_rating_delta(
         .get_rating(uid, &contribution.ladder)
         .await
         .map_err(dao_internal)?
-        .is_some_and(|rating| agon_core::rating::published(rating.matches_rated));
+        .is_some_and(|rating| agon_services_core::rating::published(rating.matches_rated));
     Ok(published.then_some(contribution.movement.display_delta))
 }
 
@@ -12185,8 +12187,8 @@ async fn caller_meets_eligibility_rules(
                     .get_rating(uid, &ladder)
                     .await
                     .map_err(dao_internal)?
-                    .map(|r| agon_core::rating::display_rating(r.mu).round() as i64)
-                    .unwrap_or(agon_core::rating::RATING_ORIGIN as i64);
+                    .map(|r| agon_services_core::rating::display_rating(r.mu).round() as i64)
+                    .unwrap_or(agon_services_core::rating::RATING_ORIGIN as i64);
                 if rating < *min as i64 {
                     return Ok(Some(format!(
                         "this match needs a rating of at least {min} to join directly"
@@ -12913,17 +12915,17 @@ mod scope_tests {
     }
 }
 
-/// Generate a new opaque id. Thin wrapper over `agon_core::id::new_id` —
+/// Generate a new opaque id. Thin wrapper over `agon_services_core::id::new_id` —
 /// shared with `agon_worker`'s series-occurrence generation, which needed the
 /// same random-id generation once it stopped deriving occurrence match ids
-/// from a hash (see `agon_core::dao::series_ops`'s doc comment).
+/// from a hash (see `agon_services_core::dao::series_ops`'s doc comment).
 fn new_id() -> String {
-    agon_core::id::new_id()
+    agon_services_core::id::new_id()
 }
 
 // Recurring-series occurrence-date arithmetic (`occurrence_date`,
 // `occurrence_starts_at`, `count_occurrences_through`) lives in
-// `agon_core::series` — shared with `agon_worker`'s `materialize_series`
+// `agon_services_core::series` — shared with `agon_worker`'s `materialize_series`
 // workflow so the two can never compute "the next occurrence" differently.
 
 // Device-pairing codes are generated by the device itself now (Monkey C,
@@ -13262,7 +13264,7 @@ const DEFAULT_PAGE_LIMIT: u32 = 20;
 /// Hard cap so a client cannot request an unbounded page.
 const MAX_PAGE_LIMIT: u32 = 50;
 /// Hard cap on a feed page, tighter than `MAX_PAGE_LIMIT`: at
-/// `agon_core::dao::audience::MAX_KNOWN_PLAYERS` (5) known participants per
+/// `agon_services_core::dao::audience::MAX_KNOWN_PLAYERS` (5) known participants per
 /// match, 20 matches is exactly `BATCH_GET_MAX` (100) — the largest page that
 /// still hydrates `known_participants` in a single `BatchGetItem`, regardless
 /// of how full every match's list happens to be.
@@ -13319,9 +13321,9 @@ fn search_cursor(next_offset: Option<u32>) -> Option<String> {
     next_offset.map(|o| o.to_string())
 }
 
-/// Map an `agon_core` search error to a 500 (an index outage is our problem, not
+/// Map an `agon_services_core` search error to a 500 (an index outage is our problem, not
 /// the client's).
-fn search_internal(err: agon_core::error::SearchError) -> poem::Error {
+fn search_internal(err: agon_services_core::error::SearchError) -> poem::Error {
     error!("search error: {err}");
     poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -13389,7 +13391,7 @@ fn log_request(
 }
 
 /// Request metrics recorded on the global OTel meter (exported via OTLP; see
-/// agon_core::telemetry). Built once and reused so the instruments are stable.
+/// agon_services_core::telemetry). Built once and reused so the instruments are stable.
 ///
 /// Metric attributes are deliberately restricted to `http.request.method` and
 /// `http.response.status_code` — low, bounded cardinality. The concrete request
@@ -13537,8 +13539,8 @@ async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Respon
 #[tokio::main]
 async fn main() {
     // Held for the process lifetime; dropping it flushes the OTLP batch
-    // exporters on shutdown. See agon_core::telemetry.
-    let _telemetry = agon_core::telemetry::init("agon-service");
+    // exporters on shutdown. See agon_services_core::telemetry.
+    let _telemetry = agon_services_core::telemetry::init("agon-service");
 
     let args = Cli::parse();
 
@@ -13591,7 +13593,7 @@ async fn main() {
             let meili_url =
                 std::env::var("MEILI_URL").unwrap_or_else(|_| "http://localhost:7700".to_string());
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
-            let search = agon_core::search::SearchClient::new(meili_url, meili_key);
+            let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
 
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
@@ -13639,7 +13641,7 @@ async fn main() {
                 .around(log_middleware)
                 // Outermost: opens a tracing span per request, so it covers
                 // log_middleware's logging/metrics and everything downstream.
-                // Without it, `agon_core::telemetry`'s OTLP tracer never has a
+                // Without it, `agon_services_core::telemetry`'s OTLP tracer never has a
                 // span to export — requests were logged and measured but no
                 // trace ever left the process.
                 .with(Tracing);

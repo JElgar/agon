@@ -3,7 +3,7 @@
 //! prove and why). Not a test binary itself — `mod common;` from each sport's
 //! test file.
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
 
 /// A `Dao` plus the raw `Client`/table name it was built from — the raw
 /// client is only for a test file's own low-level `PutItem` calls (e.g.

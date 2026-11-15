@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 
 use poem_openapi::{Enum, Object, Union};
 
-use agon_core::sports::football::Football;
-use agon_core::sports::football::{
+use agon_services_core::sports::football::Football;
+use agon_services_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
     FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
     FootballPeriodEventRecord, FootballPeriodRecord, FootballScoreRecord, FootballStatsRecord,
@@ -38,7 +38,7 @@ impl Sport for Football {
         }
     }
 
-    /// Delegates to `agon_scoring::football::apply_event` — the fold shared
+    /// Delegates to `agon_core::football::apply_event` — the fold shared
     /// with every other target that scores a football match — via
     /// `score_to_scoring`/`score_from_scoring` to cross the API-type
     /// boundary.
@@ -49,7 +49,7 @@ impl Sport for Football {
         format: Option<&FootballFormat>,
     ) {
         let mut s = score_to_scoring(score);
-        agon_scoring::football::apply_event(
+        agon_core::football::apply_event(
             &mut s,
             occurred_at,
             &live_event_to_scoring(event),
@@ -58,9 +58,9 @@ impl Sport for Football {
         score_from_scoring_into(score, s);
     }
 
-    /// Delegates to `agon_scoring::football::winner`.
+    /// Delegates to `agon_core::football::winner`.
     fn winner(score: &FootballScore, side_ids: &[String]) -> Option<String> {
-        agon_scoring::football::winner(&score_to_scoring(score), side_ids)
+        agon_core::football::winner(&score_to_scoring(score), side_ids)
     }
 
     fn side_ids(score: &FootballScore) -> Vec<&str> {
@@ -567,17 +567,17 @@ pub struct FootballPlayerStats {
     pub best_goal_contributions: Option<BestFigure>,
 }
 
-// ---- agon_scoring mapping ------------------------------------------------
+// ---- agon_core mapping ------------------------------------------------
 //
-// `agon_scoring::football` folds live events into a score — logic shared
+// `agon_core::football` folds live events into a score — logic shared
 // with every other target that scores a football match — using its own
 // plain types, free of the `poem-openapi` derives the API types below need
 // to sit in the generated schema. These map between the two; `players` has
-// no `agon_scoring` counterpart (it's resolved display data, not something
+// no `agon_core` counterpart (it's resolved display data, not something
 // the fold touches), so it's left untouched by the round trip.
 
-fn score_to_scoring(s: &FootballScore) -> agon_scoring::football::Score {
-    agon_scoring::football::Score {
+fn score_to_scoring(s: &FootballScore) -> agon_core::football::Score {
+    agon_core::football::Score {
         score: s.score.clone(),
         goals: s
             .goals
@@ -599,7 +599,7 @@ fn score_to_scoring(s: &FootballScore) -> agon_scoring::football::Score {
         }),
         penalty_shootout: s.penalty_shootout.as_ref().map(|ks| {
             ks.iter()
-                .map(|k| agon_scoring::football::PenaltyShootoutKick {
+                .map(|k| agon_core::football::PenaltyShootoutKick {
                     side_id: k.side_id.clone(),
                     scored: k.scored,
                 })
@@ -609,9 +609,9 @@ fn score_to_scoring(s: &FootballScore) -> agon_scoring::football::Score {
     }
 }
 
-/// Writes every `agon_scoring::football::Score` field back into `score`,
+/// Writes every `agon_core::football::Score` field back into `score`,
 /// leaving `score.players` as it was.
-fn score_from_scoring_into(score: &mut FootballScore, s: agon_scoring::football::Score) {
+fn score_from_scoring_into(score: &mut FootballScore, s: agon_core::football::Score) {
     score.score = s.score;
     score.goals = s
         .goals
@@ -641,8 +641,8 @@ fn score_from_scoring_into(score: &mut FootballScore, s: agon_scoring::football:
     score.penalty_shootout_score = s.penalty_shootout_score;
 }
 
-fn goal_event_to_scoring(g: &FootballGoalEvent) -> agon_scoring::football::GoalEvent {
-    agon_scoring::football::GoalEvent {
+fn goal_event_to_scoring(g: &FootballGoalEvent) -> agon_core::football::GoalEvent {
+    agon_core::football::GoalEvent {
         side_id: g.side_id.clone(),
         scorer_player_id: g.scorer_player_id.clone(),
         assist_player_id: g.assist_player_id.clone(),
@@ -653,7 +653,7 @@ fn goal_event_to_scoring(g: &FootballGoalEvent) -> agon_scoring::football::GoalE
     }
 }
 
-fn goal_event_from_scoring(g: agon_scoring::football::GoalEvent) -> FootballGoalEvent {
+fn goal_event_from_scoring(g: agon_core::football::GoalEvent) -> FootballGoalEvent {
     FootballGoalEvent {
         side_id: g.side_id,
         scorer_player_id: g.scorer_player_id,
@@ -665,26 +665,26 @@ fn goal_event_from_scoring(g: agon_scoring::football::GoalEvent) -> FootballGoal
     }
 }
 
-fn card_event_to_scoring(c: &FootballCardEvent) -> agon_scoring::football::CardEvent {
-    agon_scoring::football::CardEvent {
+fn card_event_to_scoring(c: &FootballCardEvent) -> agon_core::football::CardEvent {
+    agon_core::football::CardEvent {
         side_id: c.side_id.clone(),
         player_id: c.player_id.clone(),
         color: match c.color {
-            FootballCardColor::Yellow => agon_scoring::football::CardColor::Yellow,
-            FootballCardColor::Red => agon_scoring::football::CardColor::Red,
+            FootballCardColor::Yellow => agon_core::football::CardColor::Yellow,
+            FootballCardColor::Red => agon_core::football::CardColor::Red,
         },
         minute: c.minute,
         occurred_at: c.occurred_at,
     }
 }
 
-fn card_event_from_scoring(c: agon_scoring::football::CardEvent) -> FootballCardEvent {
+fn card_event_from_scoring(c: agon_core::football::CardEvent) -> FootballCardEvent {
     FootballCardEvent {
         side_id: c.side_id,
         player_id: c.player_id,
         color: match c.color {
-            agon_scoring::football::CardColor::Yellow => FootballCardColor::Yellow,
-            agon_scoring::football::CardColor::Red => FootballCardColor::Red,
+            agon_core::football::CardColor::Yellow => FootballCardColor::Yellow,
+            agon_core::football::CardColor::Red => FootballCardColor::Red,
         },
         minute: c.minute,
         occurred_at: c.occurred_at,
@@ -693,8 +693,8 @@ fn card_event_from_scoring(c: agon_scoring::football::CardEvent) -> FootballCard
 
 fn substitution_event_to_scoring(
     s: &FootballSubstitutionEvent,
-) -> agon_scoring::football::SubstitutionEvent {
-    agon_scoring::football::SubstitutionEvent {
+) -> agon_core::football::SubstitutionEvent {
+    agon_core::football::SubstitutionEvent {
         side_id: s.side_id.clone(),
         player_in_id: s.player_in_id.clone(),
         player_out_id: s.player_out_id.clone(),
@@ -704,7 +704,7 @@ fn substitution_event_to_scoring(
 }
 
 fn substitution_event_from_scoring(
-    s: agon_scoring::football::SubstitutionEvent,
+    s: agon_core::football::SubstitutionEvent,
 ) -> FootballSubstitutionEvent {
     FootballSubstitutionEvent {
         side_id: s.side_id,
@@ -715,57 +715,57 @@ fn substitution_event_from_scoring(
     }
 }
 
-fn period_to_scoring(period: FootballPeriod) -> agon_scoring::football::Period {
+fn period_to_scoring(period: FootballPeriod) -> agon_core::football::Period {
     match period {
-        FootballPeriod::KickOff => agon_scoring::football::Period::KickOff,
-        FootballPeriod::HalfTime => agon_scoring::football::Period::HalfTime,
-        FootballPeriod::SecondHalfKickOff => agon_scoring::football::Period::SecondHalfKickOff,
-        FootballPeriod::FullTime => agon_scoring::football::Period::FullTime,
-        FootballPeriod::ExtraTimeKickOff => agon_scoring::football::Period::ExtraTimeKickOff,
-        FootballPeriod::ExtraTimeHalfTime => agon_scoring::football::Period::ExtraTimeHalfTime,
+        FootballPeriod::KickOff => agon_core::football::Period::KickOff,
+        FootballPeriod::HalfTime => agon_core::football::Period::HalfTime,
+        FootballPeriod::SecondHalfKickOff => agon_core::football::Period::SecondHalfKickOff,
+        FootballPeriod::FullTime => agon_core::football::Period::FullTime,
+        FootballPeriod::ExtraTimeKickOff => agon_core::football::Period::ExtraTimeKickOff,
+        FootballPeriod::ExtraTimeHalfTime => agon_core::football::Period::ExtraTimeHalfTime,
         FootballPeriod::ExtraTimeSecondHalfKickOff => {
-            agon_scoring::football::Period::ExtraTimeSecondHalfKickOff
+            agon_core::football::Period::ExtraTimeSecondHalfKickOff
         }
-        FootballPeriod::ExtraTimeFullTime => agon_scoring::football::Period::ExtraTimeFullTime,
-        FootballPeriod::PenaltiesComplete => agon_scoring::football::Period::PenaltiesComplete,
+        FootballPeriod::ExtraTimeFullTime => agon_core::football::Period::ExtraTimeFullTime,
+        FootballPeriod::PenaltiesComplete => agon_core::football::Period::PenaltiesComplete,
     }
 }
 
-fn period_from_scoring(period: agon_scoring::football::Period) -> FootballPeriod {
+fn period_from_scoring(period: agon_core::football::Period) -> FootballPeriod {
     match period {
-        agon_scoring::football::Period::KickOff => FootballPeriod::KickOff,
-        agon_scoring::football::Period::HalfTime => FootballPeriod::HalfTime,
-        agon_scoring::football::Period::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
-        agon_scoring::football::Period::FullTime => FootballPeriod::FullTime,
-        agon_scoring::football::Period::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
-        agon_scoring::football::Period::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
-        agon_scoring::football::Period::ExtraTimeSecondHalfKickOff => {
+        agon_core::football::Period::KickOff => FootballPeriod::KickOff,
+        agon_core::football::Period::HalfTime => FootballPeriod::HalfTime,
+        agon_core::football::Period::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
+        agon_core::football::Period::FullTime => FootballPeriod::FullTime,
+        agon_core::football::Period::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
+        agon_core::football::Period::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
+        agon_core::football::Period::ExtraTimeSecondHalfKickOff => {
             FootballPeriod::ExtraTimeSecondHalfKickOff
         }
-        agon_scoring::football::Period::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
-        agon_scoring::football::Period::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
+        agon_core::football::Period::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
+        agon_core::football::Period::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
     }
 }
 
-fn live_event_to_scoring(event: &FootballLiveEvent) -> agon_scoring::football::LiveEvent {
+fn live_event_to_scoring(event: &FootballLiveEvent) -> agon_core::football::LiveEvent {
     match event {
         FootballLiveEvent::Goal(g) => {
-            agon_scoring::football::LiveEvent::Goal(goal_event_to_scoring(g))
+            agon_core::football::LiveEvent::Goal(goal_event_to_scoring(g))
         }
         FootballLiveEvent::Card(c) => {
-            agon_scoring::football::LiveEvent::Card(card_event_to_scoring(c))
+            agon_core::football::LiveEvent::Card(card_event_to_scoring(c))
         }
         FootballLiveEvent::Substitution(s) => {
-            agon_scoring::football::LiveEvent::Substitution(substitution_event_to_scoring(s))
+            agon_core::football::LiveEvent::Substitution(substitution_event_to_scoring(s))
         }
         FootballLiveEvent::Period(p) => {
-            agon_scoring::football::LiveEvent::Period(agon_scoring::football::PeriodEvent {
+            agon_core::football::LiveEvent::Period(agon_core::football::PeriodEvent {
                 period: period_to_scoring(p.period),
             })
         }
         FootballLiveEvent::PenaltyShootoutKick(k) => {
-            agon_scoring::football::LiveEvent::PenaltyShootoutKick(
-                agon_scoring::football::PenaltyShootoutKick {
+            agon_core::football::LiveEvent::PenaltyShootoutKick(
+                agon_core::football::PenaltyShootoutKick {
                     side_id: k.side_id.clone(),
                     scored: k.scored,
                 },
@@ -774,8 +774,8 @@ fn live_event_to_scoring(event: &FootballLiveEvent) -> agon_scoring::football::L
     }
 }
 
-fn format_to_scoring(f: &FootballFormat) -> agon_scoring::football::Format {
-    agon_scoring::football::Format {
+fn format_to_scoring(f: &FootballFormat) -> agon_core::football::Format {
+    agon_core::football::Format {
         half_length_minutes: f.half_length_minutes,
         num_halves: f.num_halves,
         extra_time: f.extra_time,

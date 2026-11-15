@@ -12,6 +12,44 @@ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 name = "agon_core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "agon_service"
+version = "0.1.0"
+dependencies = [
+ "agon_core",
+ "agon_services_core",
+ "aws-config",
+ "aws-sdk-s3",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "cron",
+ "image",
+ "jsonwebtoken 9.3.1",
+ "openssl",
+ "opentelemetry",
+ "poem",
+ "poem-openapi",
+ "qrcode",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "agon_services_core"
+version = "0.1.0"
+dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
  "base64 0.22.1",
@@ -38,48 +76,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "agon_scoring"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "agon_service"
-version = "0.1.0"
-dependencies = [
- "agon_core",
- "agon_scoring",
- "aws-config",
- "aws-sdk-s3",
- "base64 0.22.1",
- "chrono",
- "chrono-tz",
- "clap",
- "cron",
- "image",
- "jsonwebtoken 9.3.1",
- "openssl",
- "opentelemetry",
- "poem",
- "poem-openapi",
- "qrcode",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "agon_worker"
 version = "0.1.0"
 dependencies = [
- "agon_core",
+ "agon_services_core",
  "aws-config",
  "aws-sdk-sqs",
  "chrono",

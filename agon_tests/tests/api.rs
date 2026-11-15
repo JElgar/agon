@@ -2413,7 +2413,7 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
 // Feed fan-out scenarios (multi-user end-to-end)
 //
 // The fan-out audience for a match is the deduplicated union of (see
-// docs/async-design.md / agon_core `resolve_fanout_audience`):
+// docs/async-design.md / agon_services_core `resolve_fanout_audience`):
 //   - the participants themselves (players with a linked user id),
 //   - every follower of each participating user,
 //   - every follower of each involved team (a side with a team id),

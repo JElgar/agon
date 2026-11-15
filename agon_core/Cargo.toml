@@ -12,6 +12,12 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+# Seeded shuffles for the team builder (re-roll = new seed). No OS randomness
+# (`os_rng`/`thread_rng`) — the caller supplies the seed — so nothing here
+# needs `getrandom`, which is what keeps this buildable for wasm32. ChaCha8
+# rather than `StdRng`, which makes no stability promise across releases.
+rand = { version = "0.9", default-features = false, features = ["alloc"] }
+rand_chacha = { version = "0.9", default-features = false }
 # Optional: lets a backend consumer (agon_service) use these types directly
 # as its OpenAPI wire types instead of mirroring them, via the `openapi`
 # feature below. Never enabled for a wasm32 or UniFFI build, which is the
@@ -19,8 +25,17 @@ chrono = { version = "0.4", features = ["serde"] }
 # async web framework, which has no business in a client-side build.
 poem-openapi = { version = "5", features = ["chrono"], optional = true }
 
+# Optional: the `wasm` feature (enabled only by agon_core_wasm) derives a
+# TypeScript type for every team-builder type that crosses into the browser,
+# and passes them as real JS objects (via serde-wasm-bindgen) rather than
+# JSON strings, so agon_ui's types are generated from these structs instead
+# of hand-copied. Same pattern as `openapi`: off for every other build.
+tsify-next = { version = "0.5", default-features = false, features = ["js"], optional = true }
+wasm-bindgen = { version = "=0.2.100", optional = true }
+
 [features]
 openapi = ["poem-openapi"]
+wasm = ["dep:tsify-next", "dep:wasm-bindgen"]
 
 [dev-dependencies]
 serde_json = "1"

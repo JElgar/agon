@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:wasm": "cargo build -p agon_core_wasm --target wasm32-unknown-unknown --release && wasm-bindgen ../target/wasm32-unknown-unknown/release/agon_core_wasm.wasm --target web --out-dir src/wasm/agon_core",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "format": "eslint . --fix",

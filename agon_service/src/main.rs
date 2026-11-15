@@ -13696,3 +13696,26 @@ async fn main() {
         }
     }
 }
+
+/// `agon_core::team_builder::scale` mirrors the rating engine's constants
+/// because the engine itself can't be built for wasm. This is the one place
+/// that can see both crates, so it's where drift between them is caught.
+#[cfg(test)]
+mod team_builder_scale_tests {
+    use agon_core::team_builder::scale as tb;
+    use agon_services_core::rating as engine;
+
+    #[test]
+    fn team_builder_scale_matches_the_rating_engine() {
+        assert_eq!(tb::INITIAL_MU, engine::INITIAL_MU);
+        assert_eq!(tb::INITIAL_SIGMA, engine::INITIAL_SIGMA);
+        assert_eq!(tb::BETA, engine::BETA);
+        assert_eq!(tb::PLACEMENT_MATCHES, engine::PLACEMENT_MATCHES);
+        assert_eq!(tb::RATING_ORIGIN, engine::RATING_ORIGIN);
+        assert_eq!(tb::SCALE, engine::SCALE);
+        assert_eq!(tb::CONFIDENCE_SIGMAS, engine::CONFIDENCE_SIGMAS);
+        for mu in [12.0, 25.0, 31.4] {
+            assert_eq!(tb::display_rating(mu), engine::display_rating(mu));
+        }
+    }
+}

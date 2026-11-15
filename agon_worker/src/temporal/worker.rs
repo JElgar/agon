@@ -2,10 +2,10 @@
 //! activities, and run the worker poll loop.
 //!
 //! This runs alongside the SQS consumer in the same binary (spawned as a
-//! separate task in `main`), sharing the same `agon_core` clients.
+//! separate task in `main`), sharing the same `agon_services_core` clients.
 
-use agon_core::dao::Dao;
-use agon_core::search::SearchClient;
+use agon_services_core::dao::Dao;
+use agon_services_core::search::SearchClient;
 use temporalio_client::{
     Client, ClientOptions, Connection, envconfig::LoadClientConfigProfileOptions,
 };

@@ -1,5 +1,5 @@
 //! Netball: its API types and `Sport` impl. The smallest complete example of
-//! a modeled sport (see `agon_core::sports` for the steps to add one).
+//! a modeled sport (see `agon_services_core::sports` for the steps to add one).
 
 use std::collections::HashMap;
 
@@ -7,8 +7,8 @@ use chrono::{DateTime, Utc};
 
 use poem_openapi::{Enum, Object, Union};
 
-use agon_core::sports::netball::Netball;
-use agon_core::sports::netball::{
+use agon_services_core::sports::netball::Netball;
+use agon_services_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
     NetballScoreRecord, NetballStatsRecord,
@@ -1024,7 +1024,7 @@ mod tests {
     /// reading only `matches_played`/`wins`/... keeps working unchanged.
     #[test]
     fn netball_stats_serialize_flat_with_goals() {
-        use agon_core::dao::records::{GenericSportStatsRecord, UserStatsRecord};
+        use agon_services_core::dao::records::{GenericSportStatsRecord, UserStatsRecord};
 
         let stats = crate::mapping::user_stats_from_record(&UserStatsRecord {
             netball: Some(NetballStatsRecord {

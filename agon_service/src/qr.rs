@@ -1,5 +1,5 @@
 //! Renders the device-pairing QR code the Garmin watch app displays (see
-//! `docs/garmin-live-scoring.md` and `agon_core::dao::device_pairing`) —
+//! `docs/garmin-live-scoring.md` and `agon_services_core::dao::device_pairing`) —
 //! purely a rendering function, no database access at all: it doesn't even
 //! know or care whether `code` is a real pairing code, only that the caller
 //! wants a QR of some URL built from it. The pairing record only ever gets

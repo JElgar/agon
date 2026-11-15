@@ -592,7 +592,7 @@ pub struct SeriesRecord {
     /// `MatchSeries` read model (nothing there needs it — the first
     /// occurrence is itself an ordinary, independently-fetchable match) —
     /// this exists purely as the anchor `materialize_series` advances from
-    /// (via `agon_core::series::occurrence_date`) to compute every later
+    /// (via `agon_services_core::series::occurrence_date`) to compute every later
     /// occurrence's date, and so it never has to look the first occurrence
     /// up by some other means to find it.
     pub first_occurrence_starts_at: String,
@@ -600,7 +600,7 @@ pub struct SeriesRecord {
     /// was picked in — `materialize_series` advances occurrences in this
     /// zone's local wall-clock time, not in UTC, so a series' time-of-day
     /// stays fixed across DST transitions instead of drifting by whatever
-    /// the zone's offset changes by (see `agon_core::series::occurrence_starts_at`).
+    /// the zone's offset changes by (see `agon_services_core::series::occurrence_starts_at`).
     /// Defaults to `"UTC"` when absent so a series created before this field
     /// existed still deserializes — such a series keeps its pre-existing
     /// (DST-unaware) behaviour rather than silently changing its occurrence
@@ -720,7 +720,7 @@ pub enum TournamentFormatRecord {
 
 /// How entrants are ordered into the bracket/fixture list at `start`
 /// (`TournamentRecord::seeding`). `Manual` reads each entry's `seed`;
-/// `Random` shuffles via `agon_core::tournament::random_seed_order`.
+/// `Random` shuffles via `agon_services_core::tournament::random_seed_order`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TournamentSeedingRecord {
@@ -737,7 +737,7 @@ pub enum TournamentSeedingRecord {
 /// `Manual` generates nothing at `start` and nothing later either — every
 /// match is added one at a time via `Dao::create_match` with
 /// `MatchRecord::tournament_id` set (`POST /matches` with `tournament_id`).
-/// `RoundRobin` generates `agon_core::tournament::round_robin_fixtures`,
+/// `RoundRobin` generates `agon_services_core::tournament::round_robin_fixtures`,
 /// repeated `times` times (a single pass, `times: 1`, is the whole of what a
 /// league tournament supported before this field existed, hence the default
 /// below).
@@ -827,7 +827,7 @@ pub struct TournamentRecord {
     /// The recurrence day: 0 = Sunday .. 6 = Saturday.
     pub weekday: u8,
     /// Round/matchday 0's `starts_at` (RFC-3339) — the anchor
-    /// `agon_core::series::occurrence_starts_at` advances from to compute
+    /// `agon_services_core::series::occurrence_starts_at` advances from to compute
     /// every later round's date, exactly as `SeriesRecord::first_occurrence_starts_at` does.
     pub first_round_starts_at: String,
     #[serde(default = "default_series_timezone")]

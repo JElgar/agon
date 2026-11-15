@@ -9,9 +9,9 @@
 //! a message ourselves, because a mass-misclassification (e.g. a parse bug) would
 //! otherwise silently destroy every event instead of parking them in the DLQ.
 
-use agon_core::dao::error::DaoError;
-use agon_core::dao::keys::KeyError;
-use agon_core::error::{PushError, SearchError};
+use agon_services_core::dao::error::DaoError;
+use agon_services_core::dao::keys::KeyError;
+use agon_services_core::error::{PushError, SearchError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

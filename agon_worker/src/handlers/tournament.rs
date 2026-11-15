@@ -9,8 +9,8 @@
 //! already-propagated match, is a harmless no-op. League tournaments have
 //! no bracket edges at all, so this is a no-op for them too.
 
-use agon_core::dao::Dao;
-use agon_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::keys::{Pk, Sk};
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -68,7 +68,8 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
         return Ok(());
     };
 
-    if tournament.entry_audience == agon_core::dao::records::TournamentEntryAudienceRecord::Players
+    if tournament.entry_audience
+        == agon_services_core::dao::records::TournamentEntryAudienceRecord::Players
     {
         // `winner_team_id` is a synthetic squad id here, not a real team —
         // there's no team membership to self-join from, so the squad's
@@ -102,8 +103,8 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
                 if player.side_id.as_deref() != Some(winner_side_id.as_str()) {
                     continue;
                 }
-                let copied = agon_core::dao::records::MatchPlayerRecord {
-                    player_id: agon_core::id::new_id(),
+                let copied = agon_services_core::dao::records::MatchPlayerRecord {
+                    player_id: agon_services_core::id::new_id(),
                     user_id: player.user_id.clone(),
                     display_name: player.display_name.clone(),
                     side_id: Some(into_side_id.clone()),

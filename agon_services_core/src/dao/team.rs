@@ -58,7 +58,18 @@ impl Dao {
             },
             ..team.clone()
         };
-        let meta_item = to_item(&Pk::Team(team.id.clone()), &Sk::Meta, TYPE_TEAM, &seeded)?;
+        let meta_item = ItemBuilder::new(to_item(
+            &Pk::Team(team.id.clone()),
+            &Sk::Meta,
+            TYPE_TEAM,
+            &seeded,
+        )?)
+        .entity(
+            super::entity_index::EntityKind::Team,
+            &seeded.created_at,
+            &seeded.id,
+        )
+        .build();
         let member_item = self.team_member_item(&team.id, creator)?;
 
         let put_meta = Put::builder()

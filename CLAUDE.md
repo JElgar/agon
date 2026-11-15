@@ -100,3 +100,4 @@ Required environment variables (see `.env.example`):
 - Single-table DynamoDB access via `aws_sdk_dynamodb`; typed `Pk`/`Sk` keys, never hand-written key strings
 - Uniqueness guards enforced with conditional puts (`EMAIL#<email>`, `AUTH#<sub>`); multi-item writes use `TransactWriteItems` (e.g. user + email-guard + auth-guard on signup)
 - Custom ID generation using base64url-encoded random bytes (`new_id`)
+- Entity index (GSI4, keys only): every match, user, team and tournament is listed under `ENTITY#<type>` / `<created_at>#<id>`, set on create only (`ItemBuilder::entity`). Use `Dao::list_entity_ids` to enumerate a type instead of scanning. Any new create path for those types must call `.entity(...)`. Items from before the index existed get their keys from a one-off migration script kept on the `claude/entity-index-migration` branch (run once per environment). See `agon_services_core/src/dao/entity_index.rs`.

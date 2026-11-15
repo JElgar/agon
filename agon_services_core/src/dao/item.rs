@@ -26,6 +26,9 @@ pub const ATTR_GSI2PK: &str = "GSI2PK";
 pub const ATTR_GSI2SK: &str = "GSI2SK";
 pub const ATTR_GSI3PK: &str = "GSI3PK";
 pub const ATTR_GSI3SK: &str = "GSI3SK";
+// The keys-only entity index (see `entity_index`). Set on create only.
+pub const ATTR_GSI4PK: &str = "GSI4PK";
+pub const ATTR_GSI4SK: &str = "GSI4SK";
 
 /// A single DynamoDB item as an attribute map.
 pub type Item = HashMap<String, AttributeValue>;
@@ -102,6 +105,22 @@ impl ItemBuilder {
     pub fn gsi3(mut self, pk: impl Into<String>, sk: impl Into<String>) -> Self {
         self.item.insert(ATTR_GSI3PK.into(), s(pk.into()));
         self.item.insert(ATTR_GSI3SK.into(), s(sk.into()));
+        self
+    }
+
+    /// List this item in the entity index (GSI4) under `kind`. Only the create
+    /// path of each indexed type calls this; see `dao::entity_index`.
+    pub fn entity(
+        mut self,
+        kind: super::entity_index::EntityKind,
+        created_at: &str,
+        id: &str,
+    ) -> Self {
+        self.item.insert(ATTR_GSI4PK.into(), s(kind.index_pk()));
+        self.item.insert(
+            ATTR_GSI4SK.into(),
+            s(super::entity_index::index_sk(created_at, id)),
+        );
         self
     }
 

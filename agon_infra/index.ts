@@ -365,11 +365,20 @@ const dynamoTable = new aws.dynamodb.Table("agon", {
 		{ name: "GSI2SK", type: "S" },
 		{ name: "GSI3PK", type: "S" },
 		{ name: "GSI3SK", type: "S" },
+		{ name: "GSI4PK", type: "S" },
+		{ name: "GSI4SK", type: "S" },
 	],
 	globalSecondaryIndexes: [
 		{ name: "GSI1", hashKey: "GSI1PK", rangeKey: "GSI1SK", projectionType: "ALL" },
 		{ name: "GSI2", hashKey: "GSI2PK", rangeKey: "GSI2SK", projectionType: "ALL" },
 		{ name: "GSI3", hashKey: "GSI3PK", rangeKey: "GSI3SK", projectionType: "ALL" },
+		// Entity index: every match / user / team / tournament, newest first by
+		// type (`ENTITY#<type>` / `<created_at>#<id>`). KEYS_ONLY on purpose:
+		// DynamoDB only writes to it when an item is created, deleted or has
+		// its keys changed, so likes, comments and edits never cost an index
+		// write. Readers get ids and fetch items themselves.
+		// See agon_core/src/dao/entity_index.rs.
+		{ name: "GSI4", hashKey: "GSI4PK", rangeKey: "GSI4SK", projectionType: "KEYS_ONLY" },
 	],
 	// Streams feed the async fan-out / search-indexing pipeline.
 	streamEnabled: true,

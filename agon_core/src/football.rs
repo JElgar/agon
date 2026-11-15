@@ -10,7 +10,12 @@ use serde::{Deserialize, Serialize};
 /// scoring starts — only a bare manual entry leaves them `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
-#[cfg_attr(feature = "openapi", oai(rename = "FootballScore"))]
+// Not "FootballScore": that name belongs to `agon_service`'s wrapper, which
+// flattens this in and adds `players`. poem-openapi's schema registry is
+// keyed by name, so sharing one made the wrapper's published schema lose
+// every field below (only `players` survived), breaking the UI's types.
+// Nor plain "Score", which is the API's sport-tagged union.
+#[cfg_attr(feature = "openapi", oai(rename = "FootballScoreFields"))]
 pub struct Score {
     /// Goal tally, keyed by side id — exactly one entry per side, so a map
     /// rather than the `Vec<{side_id, ...}>` shape used where order or

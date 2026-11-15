@@ -580,8 +580,7 @@ impl MaterializeSeries {
             MaterializeOutcome::Finish => Ok(()),
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 ctx.timer(to_std_duration(sleep)).await;
-                ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())?;
-                Ok(())
+                ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())?
             }
         }
     }

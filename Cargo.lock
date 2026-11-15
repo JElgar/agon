@@ -13,6 +13,7 @@ name = "agon_core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "poem-openapi",
  "serde",
  "serde_json",
 ]

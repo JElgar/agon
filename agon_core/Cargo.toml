@@ -12,6 +12,15 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+# Optional: lets a backend consumer (agon_service) use these types directly
+# as its OpenAPI wire types instead of mirroring them, via the `openapi`
+# feature below. Never enabled for a wasm32 or UniFFI build, which is the
+# whole reason this is optional — `poem-openapi` pulls in `poem`, a full
+# async web framework, which has no business in a client-side build.
+poem-openapi = { version = "5", features = ["chrono"], optional = true }
+
+[features]
+openapi = ["poem-openapi"]
 
 [dev-dependencies]
 serde_json = "1"

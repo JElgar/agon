@@ -1,11 +1,15 @@
-//! Football: its API types and `Sport` impl.
+//! Football: its `Sport` impl. `Score`/`Format`/`LiveEvent` are
+//! `agon_core::football`'s own types, used directly as the API's wire types
+//! (via `agon_core`'s `openapi` feature) rather than mirrored here — see
+//! that crate for the fold logic and its tests.
 
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use poem_openapi::{Enum, Object, Union};
+use poem_openapi::Object;
 
+use agon_core::football as scoring;
 use agon_services_core::sports::football::Football;
 use agon_services_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
@@ -20,65 +24,46 @@ use crate::{BestFigure, GenericPlayerStats};
 
 impl Sport for Football {
     type Score = FootballScore;
-    type Format = FootballFormat;
-    type LiveEvent = FootballLiveEvent;
+    type Format = scoring::Format;
+    type LiveEvent = scoring::LiveEvent;
     type PlayerStats = FootballPlayerStats;
 
     fn new_score() -> FootballScore {
         FootballScore {
-            score: HashMap::new(),
-            goals: Some(Vec::new()),
-            cards: Some(Vec::new()),
-            substitutions: Some(Vec::new()),
-            period: None,
-            period_times: Some(HashMap::new()),
-            penalty_shootout: Some(Vec::new()),
-            penalty_shootout_score: Some(HashMap::new()),
+            inner: scoring::Score::new(),
             players: HashMap::new(),
         }
     }
 
-    /// Delegates to `agon_core::football::apply_event` — the fold shared
-    /// with every other target that scores a football match — via
-    /// `score_to_scoring`/`score_from_scoring` to cross the API-type
-    /// boundary.
     fn apply_event(
         score: &mut FootballScore,
         occurred_at: DateTime<Utc>,
-        event: &FootballLiveEvent,
-        format: Option<&FootballFormat>,
+        event: &scoring::LiveEvent,
+        format: Option<&scoring::Format>,
     ) {
-        let mut s = score_to_scoring(score);
-        agon_core::football::apply_event(
-            &mut s,
-            occurred_at,
-            &live_event_to_scoring(event),
-            format.map(format_to_scoring).as_ref(),
-        );
-        score_from_scoring_into(score, s);
+        scoring::apply_event(&mut score.inner, occurred_at, event, format);
     }
 
-    /// Delegates to `agon_core::football::winner`.
     fn winner(score: &FootballScore, side_ids: &[String]) -> Option<String> {
-        agon_core::football::winner(&score_to_scoring(score), side_ids)
+        scoring::winner(&score.inner, side_ids)
     }
 
     fn side_ids(score: &FootballScore) -> Vec<&str> {
-        score.score.keys().map(|k| k.as_str()).collect()
+        score.inner.score.keys().map(|k| k.as_str()).collect()
     }
 
     /// Each goal's scorer and assist, each card's player, and each
     /// substitution's players in and out.
     fn player_ids(score: &FootballScore) -> Vec<String> {
         let mut ids = Vec::new();
-        for goal in score.goals.iter().flatten() {
+        for goal in score.inner.goals.iter().flatten() {
             ids.extend(goal.scorer_player_id.clone());
             ids.extend(goal.assist_player_id.clone());
         }
-        for card in score.cards.iter().flatten() {
+        for card in score.inner.cards.iter().flatten() {
             ids.push(card.player_id.clone());
         }
-        for sub in score.substitutions.iter().flatten() {
+        for sub in score.inner.substitutions.iter().flatten() {
             ids.push(sub.player_in_id.clone());
             ids.push(sub.player_out_id.clone());
         }
@@ -90,6 +75,7 @@ impl Sport for Football {
         side_ids: &HashMap<String, String>,
         player_ids: &HashMap<String, String>,
     ) -> Option<FootballScore> {
+        let s = &s.inner;
         let map = |client_id: &str| side_ids.get(client_id).cloned();
         let pmap = |client_id: &str| player_ids.get(client_id).cloned();
 
@@ -101,7 +87,7 @@ impl Sport for Football {
             Some(gs) => {
                 let mut out = Vec::with_capacity(gs.len());
                 for g in gs {
-                    out.push(FootballGoalEvent {
+                    out.push(scoring::GoalEvent {
                         side_id: map(&g.side_id)?,
                         scorer_player_id: match &g.scorer_player_id {
                             Some(id) => Some(pmap(id)?),
@@ -125,10 +111,10 @@ impl Sport for Football {
             Some(cs) => {
                 let mut out = Vec::with_capacity(cs.len());
                 for c in cs {
-                    out.push(FootballCardEvent {
+                    out.push(scoring::CardEvent {
                         side_id: map(&c.side_id)?,
                         player_id: pmap(&c.player_id)?,
-                        color: c.color.clone(),
+                        color: c.color,
                         minute: c.minute,
                         occurred_at: c.occurred_at,
                     });
@@ -141,7 +127,7 @@ impl Sport for Football {
             Some(subs) => {
                 let mut out = Vec::with_capacity(subs.len());
                 for sub in subs {
-                    out.push(FootballSubstitutionEvent {
+                    out.push(scoring::SubstitutionEvent {
                         side_id: map(&sub.side_id)?,
                         player_in_id: pmap(&sub.player_in_id)?,
                         player_out_id: pmap(&sub.player_out_id)?,
@@ -157,7 +143,7 @@ impl Sport for Football {
             Some(ks) => {
                 let mut out = Vec::with_capacity(ks.len());
                 for k in ks {
-                    out.push(FootballPenaltyShootoutKick {
+                    out.push(scoring::PenaltyShootoutKick {
                         side_id: map(&k.side_id)?,
                         scored: k.scored,
                     });
@@ -177,14 +163,16 @@ impl Sport for Football {
             None => None,
         };
         Some(FootballScore {
-            score,
-            goals,
-            cards,
-            substitutions,
-            period: s.period,
-            period_times: s.period_times.clone(),
-            penalty_shootout,
-            penalty_shootout_score,
+            inner: scoring::Score {
+                score,
+                goals,
+                cards,
+                substitutions,
+                period: s.period,
+                period_times: s.period_times.clone(),
+                penalty_shootout,
+                penalty_shootout_score,
+            },
             players: HashMap::new(),
         })
     }
@@ -197,6 +185,7 @@ impl Sport for Football {
     }
 
     fn score_to_record(s: &FootballScore) -> FootballScoreRecord {
+        let s = &s.inner;
         FootballScoreRecord {
             score: s.score.clone(),
             goals: s
@@ -236,40 +225,42 @@ impl Sport for Football {
 
     fn score_from_record(rec: &FootballScoreRecord) -> FootballScore {
         FootballScore {
-            score: rec.score.clone(),
-            goals: rec
-                .goals
-                .as_ref()
-                .map(|gs| gs.iter().map(goal_event_from_record).collect()),
-            cards: rec
-                .cards
-                .as_ref()
-                .map(|cs| cs.iter().map(card_event_from_record).collect()),
-            substitutions: rec
-                .substitutions
-                .as_ref()
-                .map(|subs| subs.iter().map(substitution_event_from_record).collect()),
-            period: rec.period.as_ref().map(period_from_record),
-            period_times: rec.period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| (period_from_record(p), parse_ts(t)))
-                    .collect()
-            }),
-            penalty_shootout: rec.penalty_shootout.as_ref().map(|ks| {
-                ks.iter()
-                    .map(|k| FootballPenaltyShootoutKick {
-                        side_id: k.side_id.clone(),
-                        scored: k.scored,
-                    })
-                    .collect()
-            }),
-            penalty_shootout_score: rec.penalty_shootout_score.clone(),
+            inner: scoring::Score {
+                score: rec.score.clone(),
+                goals: rec
+                    .goals
+                    .as_ref()
+                    .map(|gs| gs.iter().map(goal_event_from_record).collect()),
+                cards: rec
+                    .cards
+                    .as_ref()
+                    .map(|cs| cs.iter().map(card_event_from_record).collect()),
+                substitutions: rec
+                    .substitutions
+                    .as_ref()
+                    .map(|subs| subs.iter().map(substitution_event_from_record).collect()),
+                period: rec.period.as_ref().map(period_from_record),
+                period_times: rec.period_times.as_ref().map(|pts| {
+                    pts.iter()
+                        .map(|(p, t)| (period_from_record(p), parse_ts(t)))
+                        .collect()
+                }),
+                penalty_shootout: rec.penalty_shootout.as_ref().map(|ks| {
+                    ks.iter()
+                        .map(|k| scoring::PenaltyShootoutKick {
+                            side_id: k.side_id.clone(),
+                            scored: k.scored,
+                        })
+                        .collect()
+                }),
+                penalty_shootout_score: rec.penalty_shootout_score.clone(),
+            },
             // Not stored — `Api::hydrate_score_players` fills this afterward.
             players: HashMap::new(),
         }
     }
 
-    fn format_to_record(f: &FootballFormat) -> FootballFormatRecord {
+    fn format_to_record(f: &scoring::Format) -> FootballFormatRecord {
         FootballFormatRecord {
             half_length_minutes: f.half_length_minutes,
             num_halves: f.num_halves,
@@ -279,8 +270,8 @@ impl Sport for Football {
         }
     }
 
-    fn format_from_record(f: &FootballFormatRecord) -> FootballFormat {
-        FootballFormat {
+    fn format_from_record(f: &FootballFormatRecord) -> scoring::Format {
+        scoring::Format {
             half_length_minutes: f.half_length_minutes,
             num_halves: f.num_halves,
             extra_time: f.extra_time,
@@ -289,19 +280,19 @@ impl Sport for Football {
         }
     }
 
-    fn live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
+    fn live_event_to_record(event: &scoring::LiveEvent) -> FootballLiveEventRecord {
         match event {
-            FootballLiveEvent::Goal(g) => FootballLiveEventRecord::Goal(goal_event_to_record(g)),
-            FootballLiveEvent::Card(c) => FootballLiveEventRecord::Card(card_event_to_record(c)),
-            FootballLiveEvent::Substitution(s) => {
+            scoring::LiveEvent::Goal(g) => FootballLiveEventRecord::Goal(goal_event_to_record(g)),
+            scoring::LiveEvent::Card(c) => FootballLiveEventRecord::Card(card_event_to_record(c)),
+            scoring::LiveEvent::Substitution(s) => {
                 FootballLiveEventRecord::Substitution(substitution_event_to_record(s))
             }
-            FootballLiveEvent::Period(p) => {
+            scoring::LiveEvent::Period(p) => {
                 FootballLiveEventRecord::Period(FootballPeriodEventRecord {
                     period: period_to_record(&p.period),
                 })
             }
-            FootballLiveEvent::PenaltyShootoutKick(k) => {
+            scoring::LiveEvent::PenaltyShootoutKick(k) => {
                 FootballLiveEventRecord::PenaltyShootoutKick(FootballPenaltyShootoutKickRecord {
                     side_id: k.side_id.clone(),
                     scored: k.scored,
@@ -310,18 +301,20 @@ impl Sport for Football {
         }
     }
 
-    fn live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiveEvent {
+    fn live_event_from_record(rec: &FootballLiveEventRecord) -> scoring::LiveEvent {
         match rec {
-            FootballLiveEventRecord::Goal(g) => FootballLiveEvent::Goal(goal_event_from_record(g)),
-            FootballLiveEventRecord::Card(c) => FootballLiveEvent::Card(card_event_from_record(c)),
+            FootballLiveEventRecord::Goal(g) => scoring::LiveEvent::Goal(goal_event_from_record(g)),
+            FootballLiveEventRecord::Card(c) => scoring::LiveEvent::Card(card_event_from_record(c)),
             FootballLiveEventRecord::Substitution(s) => {
-                FootballLiveEvent::Substitution(substitution_event_from_record(s))
+                scoring::LiveEvent::Substitution(substitution_event_from_record(s))
             }
-            FootballLiveEventRecord::Period(p) => FootballLiveEvent::Period(FootballPeriodEvent {
-                period: period_from_record(&p.period),
-            }),
+            FootballLiveEventRecord::Period(p) => {
+                scoring::LiveEvent::Period(scoring::PeriodEvent {
+                    period: period_from_record(&p.period),
+                })
+            }
             FootballLiveEventRecord::PenaltyShootoutKick(k) => {
-                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                scoring::LiveEvent::PenaltyShootoutKick(scoring::PenaltyShootoutKick {
                     side_id: k.side_id.clone(),
                     scored: k.scored,
                 })
@@ -345,211 +338,18 @@ impl Sport for Football {
 
 // ---- API types ----------------------------------------------------------
 
-#[derive(Object, Clone)]
-pub struct FootballFormat {
-    /// Minutes per half, e.g. 45.
-    pub half_length_minutes: u32,
-    /// Number of halves — normally 2.
-    pub num_halves: u32,
-    /// Whether extra time is played if the match is level after normal time.
-    pub extra_time: bool,
-    /// Minutes per extra-time half, if `extra_time` is set.
-    pub extra_time_half_length_minutes: Option<u32>,
-    /// Whether a penalty shootout follows if still level.
-    pub penalties: bool,
-}
-
-#[derive(Object, Clone)]
-pub struct FootballGoalEvent {
-    /// The side this goal counts for.
-    pub side_id: String,
-    /// None for an own goal with no recorded scorer.
-    pub scorer_player_id: Option<String>,
-    pub assist_player_id: Option<String>,
-    pub own_goal: bool,
-    pub penalty: bool,
-    /// Free-text minutes-into-the-match, only ever set by a manually logged
-    /// historical result (no live clock to timestamp against — see
-    /// `agon_ui`'s `FootballScoreFields`). A live-scored goal leaves this
-    /// unset; `occurred_at` is its source of truth instead (see that field's
-    /// doc comment).
-    pub minute: Option<u32>,
-    /// When this actually happened, wall-clock — always overwritten by the
-    /// server from the live event envelope's own `occurred_at` for anything
-    /// recorded through `/live/events` (see `Football::apply_event`),
-    /// ignoring whatever a client sends here. `None` for a manually logged
-    /// historical result, same as `minute` above.
-    ///
-    /// This — not the free-text `minute` — is what a live-scored event's
-    /// displayed minute is derived from, bracketed against
-    /// `FootballScore.period_times` the same way the live clock itself is
-    /// (see `agon_ui`'s `lib/liveScore.ts`): added time carries over between
-    /// halves and extra time layers on top, all computed from period
-    /// boundaries rather than trusted from what was typed in. Second
-    /// precision also means two events recorded a few seconds apart no
-    /// longer collide on the same displayed minute.
-    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Enum, Clone)]
-#[oai(rename_all = "snake_case")]
-pub enum FootballCardColor {
-    Yellow,
-    Red,
-}
-
-#[derive(Object, Clone)]
-pub struct FootballCardEvent {
-    pub side_id: String,
-    pub player_id: String,
-    pub color: FootballCardColor,
-    /// Same convention as `FootballGoalEvent::minute` — manual entry only.
-    pub minute: Option<u32>,
-    /// Same convention as `FootballGoalEvent::occurred_at`.
-    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-#[derive(Object, Clone)]
-pub struct FootballSubstitutionEvent {
-    pub side_id: String,
-    pub player_in_id: String,
-    pub player_out_id: String,
-    /// Same convention as `FootballGoalEvent::minute` — manual entry only.
-    pub minute: Option<u32>,
-    /// Same convention as `FootballGoalEvent::occurred_at`.
-    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
-}
-
-/// One kick in a penalty shootout.
-#[derive(Object, Clone)]
-pub struct FootballPenaltyShootoutKick {
-    /// The side taking this kick.
-    pub side_id: String,
-    pub scored: bool,
-}
-
-#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[oai(rename_all = "snake_case")]
-pub enum FootballPeriod {
-    /// Kickoff — the moment the match clock actually starts. Recorded once,
-    /// when the scorer starts live scoring; distinct from `Match.starts_at`
-    /// (the *scheduled* time), which may not match when the whistle actually
-    /// blew.
-    KickOff,
-    HalfTime,
-    /// Kickoff of the second half — no clock gap is assumed between this and
-    /// `HalfTime`, so added time in the first half is preserved automatically
-    /// (the second half's clock continues from wherever the first half's
-    /// left off, not from a fixed 45').
-    SecondHalfKickOff,
-    FullTime,
-    /// Kickoff of extra time's first half — same role as `KickOff`, one level
-    /// up. Only recorded if the match is level at `FullTime` and the format
-    /// plays extra time.
-    ExtraTimeKickOff,
-    ExtraTimeHalfTime,
-    /// Kickoff of extra time's second half — same role as
-    /// `SecondHalfKickOff`.
-    ExtraTimeSecondHalfKickOff,
-    ExtraTimeFullTime,
-    PenaltiesComplete,
-}
-
-/// `ToString`/`FromStr` (via `Display`) mirroring the `#[oai(rename_all =
-/// "snake_case")]` wire form above — needed so `FootballPeriod` can be used
-/// as a `HashMap` key (`period_times`), which poem-openapi represents as a
-/// plain JSON object keyed by this string form.
-impl std::fmt::Display for FootballPeriod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            FootballPeriod::KickOff => "kick_off",
-            FootballPeriod::HalfTime => "half_time",
-            FootballPeriod::SecondHalfKickOff => "second_half_kick_off",
-            FootballPeriod::FullTime => "full_time",
-            FootballPeriod::ExtraTimeKickOff => "extra_time_kick_off",
-            FootballPeriod::ExtraTimeHalfTime => "extra_time_half_time",
-            FootballPeriod::ExtraTimeSecondHalfKickOff => "extra_time_second_half_kick_off",
-            FootballPeriod::ExtraTimeFullTime => "extra_time_full_time",
-            FootballPeriod::PenaltiesComplete => "penalties_complete",
-        })
-    }
-}
-
-impl std::str::FromStr for FootballPeriod {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "kick_off" => Ok(FootballPeriod::KickOff),
-            "half_time" => Ok(FootballPeriod::HalfTime),
-            "second_half_kick_off" => Ok(FootballPeriod::SecondHalfKickOff),
-            "full_time" => Ok(FootballPeriod::FullTime),
-            "extra_time_kick_off" => Ok(FootballPeriod::ExtraTimeKickOff),
-            "extra_time_half_time" => Ok(FootballPeriod::ExtraTimeHalfTime),
-            "extra_time_second_half_kick_off" => Ok(FootballPeriod::ExtraTimeSecondHalfKickOff),
-            "extra_time_full_time" => Ok(FootballPeriod::ExtraTimeFullTime),
-            "penalties_complete" => Ok(FootballPeriod::PenaltiesComplete),
-            other => Err(format!("unknown football period: {other}")),
-        }
-    }
-}
-
-/// A football match's result: the goal tally, plus optional richer detail.
+/// A football match's result: `agon_core`'s score, plus resolved player
+/// display data — the one field the shared fold has no use for, so it's
+/// flattened on here rather than carried in `agon_core` itself.
 #[derive(Object)]
 pub(crate) struct FootballScore {
-    /// Goal tally, keyed by side id — exactly one entry per side, so a map
-    /// rather than the `Vec<{side_id, ...}>` shape used where order or
-    /// repeats matter (e.g. `goals`).
-    score: HashMap<String, u32>,
-    /// Every goal scored (normal + extra time; penalty-shootout kicks are
-    /// tracked separately and never appear here), if there's a goal-by-goal
-    /// breakdown to hand over.
-    goals: Option<Vec<FootballGoalEvent>>,
-    cards: Option<Vec<FootballCardEvent>>,
-    substitutions: Option<Vec<FootballSubstitutionEvent>>,
-    /// The most recent period marker seen, if any. `None` for a result with
-    /// no live detail behind it.
-    period: Option<FootballPeriod>,
-    /// When each period marker was recorded, keyed by kind — one entry per
-    /// `FootballPeriod` variant seen so far (a marker recorded twice
-    /// overwrites, it doesn't append). Historical facts, not "current
-    /// state" — nothing here goes blank once the match is over.
-    period_times: Option<HashMap<FootballPeriod, chrono::DateTime<chrono::Utc>>>,
-    /// Every penalty-shootout kick recorded, in order taken. Separate from
-    /// `goals`/`score` — a shootout kick never counts as a match goal, only
-    /// towards `penalty_shootout_score` — since the scoreline it decides
-    /// (e.g. "1-1, Riverside win 4-3 on penalties") keeps the 90/120-minute
-    /// score and the shootout tally visually distinct, same as it's reported
-    /// in the real world.
-    penalty_shootout: Option<Vec<FootballPenaltyShootoutKick>>,
-    /// Running shootout tally (kicks scored, not kicks taken) per side,
-    /// derived from `penalty_shootout` the same way `score` is derived from
-    /// `goals`. Keyed by side id, same reasoning as `score`.
-    penalty_shootout_score: Option<HashMap<String, u32>>,
-    /// Live name/avatar for every player id referenced anywhere else in this
-    /// score — `goals`' scorer/assist, `cards`' player, `substitutions`' in/
-    /// out — keyed by that same (match-scoped) player id. Same mechanism and
+    #[oai(flatten)]
+    inner: scoring::Score,
+    /// Live name/avatar for every player id referenced anywhere in `inner`
+    /// — `goals`' scorer/assist, `cards`' player, `substitutions`' in/out —
+    /// keyed by that same (match-scoped) player id. Same mechanism and
     /// rationale as `CricketScore.players`.
     players: HashMap<String, crate::RosterPreviewPlayer>,
-}
-
-/// Football live-scoring events, nested under the outer sport union
-/// (`LiveEventInput::Football`), discriminated by `kind`. Corrections are
-/// handled by directly deleting or amending the stored event (see
-/// `DELETE`/`PATCH /matches/:id/live/events/:seq`), not a variant here.
-#[derive(Union, Clone)]
-#[oai(one_of, discriminator_name = "kind")]
-pub enum FootballLiveEvent {
-    Goal(FootballGoalEvent),
-    Card(FootballCardEvent),
-    Substitution(FootballSubstitutionEvent),
-    Period(FootballPeriodEvent),
-    PenaltyShootoutKick(FootballPenaltyShootoutKick),
-}
-
-#[derive(Object, Clone)]
-pub struct FootballPeriodEvent {
-    pub period: FootballPeriod,
 }
 
 /// Lifetime football stats: the common counters plus goals/assists derived
@@ -567,229 +367,12 @@ pub struct FootballPlayerStats {
     pub best_goal_contributions: Option<BestFigure>,
 }
 
-// ---- agon_core mapping ------------------------------------------------
-//
-// `agon_core::football` folds live events into a score — logic shared
-// with every other target that scores a football match — using its own
-// plain types, free of the `poem-openapi` derives the API types below need
-// to sit in the generated schema. These map between the two; `players` has
-// no `agon_core` counterpart (it's resolved display data, not something
-// the fold touches), so it's left untouched by the round trip.
-
-fn score_to_scoring(s: &FootballScore) -> agon_core::football::Score {
-    agon_core::football::Score {
-        score: s.score.clone(),
-        goals: s
-            .goals
-            .as_ref()
-            .map(|gs| gs.iter().map(goal_event_to_scoring).collect()),
-        cards: s
-            .cards
-            .as_ref()
-            .map(|cs| cs.iter().map(card_event_to_scoring).collect()),
-        substitutions: s
-            .substitutions
-            .as_ref()
-            .map(|subs| subs.iter().map(substitution_event_to_scoring).collect()),
-        period: s.period.map(period_to_scoring),
-        period_times: s.period_times.as_ref().map(|pts| {
-            pts.iter()
-                .map(|(p, t)| (period_to_scoring(*p), *t))
-                .collect()
-        }),
-        penalty_shootout: s.penalty_shootout.as_ref().map(|ks| {
-            ks.iter()
-                .map(|k| agon_core::football::PenaltyShootoutKick {
-                    side_id: k.side_id.clone(),
-                    scored: k.scored,
-                })
-                .collect()
-        }),
-        penalty_shootout_score: s.penalty_shootout_score.clone(),
-    }
-}
-
-/// Writes every `agon_core::football::Score` field back into `score`,
-/// leaving `score.players` as it was.
-fn score_from_scoring_into(score: &mut FootballScore, s: agon_core::football::Score) {
-    score.score = s.score;
-    score.goals = s
-        .goals
-        .map(|gs| gs.into_iter().map(goal_event_from_scoring).collect());
-    score.cards = s
-        .cards
-        .map(|cs| cs.into_iter().map(card_event_from_scoring).collect());
-    score.substitutions = s.substitutions.map(|subs| {
-        subs.into_iter()
-            .map(substitution_event_from_scoring)
-            .collect()
-    });
-    score.period = s.period.map(period_from_scoring);
-    score.period_times = s.period_times.map(|pts| {
-        pts.into_iter()
-            .map(|(p, t)| (period_from_scoring(p), t))
-            .collect()
-    });
-    score.penalty_shootout = s.penalty_shootout.map(|ks| {
-        ks.into_iter()
-            .map(|k| FootballPenaltyShootoutKick {
-                side_id: k.side_id,
-                scored: k.scored,
-            })
-            .collect()
-    });
-    score.penalty_shootout_score = s.penalty_shootout_score;
-}
-
-fn goal_event_to_scoring(g: &FootballGoalEvent) -> agon_core::football::GoalEvent {
-    agon_core::football::GoalEvent {
-        side_id: g.side_id.clone(),
-        scorer_player_id: g.scorer_player_id.clone(),
-        assist_player_id: g.assist_player_id.clone(),
-        own_goal: g.own_goal,
-        penalty: g.penalty,
-        minute: g.minute,
-        occurred_at: g.occurred_at,
-    }
-}
-
-fn goal_event_from_scoring(g: agon_core::football::GoalEvent) -> FootballGoalEvent {
-    FootballGoalEvent {
-        side_id: g.side_id,
-        scorer_player_id: g.scorer_player_id,
-        assist_player_id: g.assist_player_id,
-        own_goal: g.own_goal,
-        penalty: g.penalty,
-        minute: g.minute,
-        occurred_at: g.occurred_at,
-    }
-}
-
-fn card_event_to_scoring(c: &FootballCardEvent) -> agon_core::football::CardEvent {
-    agon_core::football::CardEvent {
-        side_id: c.side_id.clone(),
-        player_id: c.player_id.clone(),
-        color: match c.color {
-            FootballCardColor::Yellow => agon_core::football::CardColor::Yellow,
-            FootballCardColor::Red => agon_core::football::CardColor::Red,
-        },
-        minute: c.minute,
-        occurred_at: c.occurred_at,
-    }
-}
-
-fn card_event_from_scoring(c: agon_core::football::CardEvent) -> FootballCardEvent {
-    FootballCardEvent {
-        side_id: c.side_id,
-        player_id: c.player_id,
-        color: match c.color {
-            agon_core::football::CardColor::Yellow => FootballCardColor::Yellow,
-            agon_core::football::CardColor::Red => FootballCardColor::Red,
-        },
-        minute: c.minute,
-        occurred_at: c.occurred_at,
-    }
-}
-
-fn substitution_event_to_scoring(
-    s: &FootballSubstitutionEvent,
-) -> agon_core::football::SubstitutionEvent {
-    agon_core::football::SubstitutionEvent {
-        side_id: s.side_id.clone(),
-        player_in_id: s.player_in_id.clone(),
-        player_out_id: s.player_out_id.clone(),
-        minute: s.minute,
-        occurred_at: s.occurred_at,
-    }
-}
-
-fn substitution_event_from_scoring(
-    s: agon_core::football::SubstitutionEvent,
-) -> FootballSubstitutionEvent {
-    FootballSubstitutionEvent {
-        side_id: s.side_id,
-        player_in_id: s.player_in_id,
-        player_out_id: s.player_out_id,
-        minute: s.minute,
-        occurred_at: s.occurred_at,
-    }
-}
-
-fn period_to_scoring(period: FootballPeriod) -> agon_core::football::Period {
-    match period {
-        FootballPeriod::KickOff => agon_core::football::Period::KickOff,
-        FootballPeriod::HalfTime => agon_core::football::Period::HalfTime,
-        FootballPeriod::SecondHalfKickOff => agon_core::football::Period::SecondHalfKickOff,
-        FootballPeriod::FullTime => agon_core::football::Period::FullTime,
-        FootballPeriod::ExtraTimeKickOff => agon_core::football::Period::ExtraTimeKickOff,
-        FootballPeriod::ExtraTimeHalfTime => agon_core::football::Period::ExtraTimeHalfTime,
-        FootballPeriod::ExtraTimeSecondHalfKickOff => {
-            agon_core::football::Period::ExtraTimeSecondHalfKickOff
-        }
-        FootballPeriod::ExtraTimeFullTime => agon_core::football::Period::ExtraTimeFullTime,
-        FootballPeriod::PenaltiesComplete => agon_core::football::Period::PenaltiesComplete,
-    }
-}
-
-fn period_from_scoring(period: agon_core::football::Period) -> FootballPeriod {
-    match period {
-        agon_core::football::Period::KickOff => FootballPeriod::KickOff,
-        agon_core::football::Period::HalfTime => FootballPeriod::HalfTime,
-        agon_core::football::Period::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
-        agon_core::football::Period::FullTime => FootballPeriod::FullTime,
-        agon_core::football::Period::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
-        agon_core::football::Period::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
-        agon_core::football::Period::ExtraTimeSecondHalfKickOff => {
-            FootballPeriod::ExtraTimeSecondHalfKickOff
-        }
-        agon_core::football::Period::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
-        agon_core::football::Period::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
-    }
-}
-
-fn live_event_to_scoring(event: &FootballLiveEvent) -> agon_core::football::LiveEvent {
-    match event {
-        FootballLiveEvent::Goal(g) => {
-            agon_core::football::LiveEvent::Goal(goal_event_to_scoring(g))
-        }
-        FootballLiveEvent::Card(c) => {
-            agon_core::football::LiveEvent::Card(card_event_to_scoring(c))
-        }
-        FootballLiveEvent::Substitution(s) => {
-            agon_core::football::LiveEvent::Substitution(substitution_event_to_scoring(s))
-        }
-        FootballLiveEvent::Period(p) => {
-            agon_core::football::LiveEvent::Period(agon_core::football::PeriodEvent {
-                period: period_to_scoring(p.period),
-            })
-        }
-        FootballLiveEvent::PenaltyShootoutKick(k) => {
-            agon_core::football::LiveEvent::PenaltyShootoutKick(
-                agon_core::football::PenaltyShootoutKick {
-                    side_id: k.side_id.clone(),
-                    scored: k.scored,
-                },
-            )
-        }
-    }
-}
-
-fn format_to_scoring(f: &FootballFormat) -> agon_core::football::Format {
-    agon_core::football::Format {
-        half_length_minutes: f.half_length_minutes,
-        num_halves: f.num_halves,
-        extra_time: f.extra_time,
-        extra_time_half_length_minutes: f.extra_time_half_length_minutes,
-        penalties: f.penalties,
-    }
-}
-
 // ---- Record mapping helpers ---------------------------------------------
 
 /// Shared by the live-event mapping below and `score_to_record`/
-/// `score_from_record` above — both carry the same `FootballGoalEvent`/
+/// `score_from_record` above — both carry the same `GoalEvent`/
 /// `FootballGoalEventRecord` shape.
-fn goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventRecord {
+fn goal_event_to_record(g: &scoring::GoalEvent) -> FootballGoalEventRecord {
     FootballGoalEventRecord {
         side_id: g.side_id.clone(),
         scorer_player_id: g.scorer_player_id.clone(),
@@ -803,8 +386,8 @@ fn goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventRecord {
     }
 }
 
-fn goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoalEvent {
-    FootballGoalEvent {
+fn goal_event_from_record(rec: &FootballGoalEventRecord) -> scoring::GoalEvent {
+    scoring::GoalEvent {
         side_id: rec.side_id.clone(),
         scorer_player_id: rec.scorer_player_id.clone(),
         assist_player_id: rec.assist_player_id.clone(),
@@ -817,13 +400,13 @@ fn goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoalEvent {
 
 /// Shared by the live-event mapping below and `score_to_record`/
 /// `score_from_record` above, same reasoning as `goal_event_to_record`.
-fn card_event_to_record(c: &FootballCardEvent) -> FootballCardEventRecord {
+fn card_event_to_record(c: &scoring::CardEvent) -> FootballCardEventRecord {
     FootballCardEventRecord {
         side_id: c.side_id.clone(),
         player_id: c.player_id.clone(),
         color: match c.color {
-            FootballCardColor::Yellow => FootballCardColorRecord::Yellow,
-            FootballCardColor::Red => FootballCardColorRecord::Red,
+            scoring::CardColor::Yellow => FootballCardColorRecord::Yellow,
+            scoring::CardColor::Red => FootballCardColorRecord::Red,
         },
         minute: c.minute,
         occurred_at: c
@@ -832,20 +415,20 @@ fn card_event_to_record(c: &FootballCardEvent) -> FootballCardEventRecord {
     }
 }
 
-fn card_event_from_record(rec: &FootballCardEventRecord) -> FootballCardEvent {
-    FootballCardEvent {
+fn card_event_from_record(rec: &FootballCardEventRecord) -> scoring::CardEvent {
+    scoring::CardEvent {
         side_id: rec.side_id.clone(),
         player_id: rec.player_id.clone(),
         color: match rec.color {
-            FootballCardColorRecord::Yellow => FootballCardColor::Yellow,
-            FootballCardColorRecord::Red => FootballCardColor::Red,
+            FootballCardColorRecord::Yellow => scoring::CardColor::Yellow,
+            FootballCardColorRecord::Red => scoring::CardColor::Red,
         },
         minute: rec.minute,
         occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
-fn substitution_event_to_record(s: &FootballSubstitutionEvent) -> FootballSubstitutionEventRecord {
+fn substitution_event_to_record(s: &scoring::SubstitutionEvent) -> FootballSubstitutionEventRecord {
     FootballSubstitutionEventRecord {
         side_id: s.side_id.clone(),
         player_in_id: s.player_in_id.clone(),
@@ -859,8 +442,8 @@ fn substitution_event_to_record(s: &FootballSubstitutionEvent) -> FootballSubsti
 
 fn substitution_event_from_record(
     rec: &FootballSubstitutionEventRecord,
-) -> FootballSubstitutionEvent {
-    FootballSubstitutionEvent {
+) -> scoring::SubstitutionEvent {
+    scoring::SubstitutionEvent {
         side_id: rec.side_id.clone(),
         player_in_id: rec.player_in_id.clone(),
         player_out_id: rec.player_out_id.clone(),
@@ -871,42 +454,42 @@ fn substitution_event_from_record(
 
 /// Shared by the live-event mapping below and `score_to_record`/
 /// `score_from_record` above (`period`/`period_times`' map keys) — both need
-/// the same `FootballPeriod`/`FootballPeriodRecord` correspondence.
-fn period_to_record(period: &FootballPeriod) -> FootballPeriodRecord {
+/// the same `Period`/`FootballPeriodRecord` correspondence.
+fn period_to_record(period: &scoring::Period) -> FootballPeriodRecord {
     match period {
-        FootballPeriod::KickOff => FootballPeriodRecord::KickOff,
-        FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
-        FootballPeriod::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
-        FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
-        FootballPeriod::ExtraTimeKickOff => FootballPeriodRecord::ExtraTimeKickOff,
-        FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
-        FootballPeriod::ExtraTimeSecondHalfKickOff => {
+        scoring::Period::KickOff => FootballPeriodRecord::KickOff,
+        scoring::Period::HalfTime => FootballPeriodRecord::HalfTime,
+        scoring::Period::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
+        scoring::Period::FullTime => FootballPeriodRecord::FullTime,
+        scoring::Period::ExtraTimeKickOff => FootballPeriodRecord::ExtraTimeKickOff,
+        scoring::Period::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
+        scoring::Period::ExtraTimeSecondHalfKickOff => {
             FootballPeriodRecord::ExtraTimeSecondHalfKickOff
         }
-        FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
-        FootballPeriod::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
+        scoring::Period::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
+        scoring::Period::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
     }
 }
 
-fn period_from_record(rec: &FootballPeriodRecord) -> FootballPeriod {
+fn period_from_record(rec: &FootballPeriodRecord) -> scoring::Period {
     match rec {
-        FootballPeriodRecord::KickOff => FootballPeriod::KickOff,
-        FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
-        FootballPeriodRecord::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
-        FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
-        FootballPeriodRecord::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
-        FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
+        FootballPeriodRecord::KickOff => scoring::Period::KickOff,
+        FootballPeriodRecord::HalfTime => scoring::Period::HalfTime,
+        FootballPeriodRecord::SecondHalfKickOff => scoring::Period::SecondHalfKickOff,
+        FootballPeriodRecord::FullTime => scoring::Period::FullTime,
+        FootballPeriodRecord::ExtraTimeKickOff => scoring::Period::ExtraTimeKickOff,
+        FootballPeriodRecord::ExtraTimeHalfTime => scoring::Period::ExtraTimeHalfTime,
         FootballPeriodRecord::ExtraTimeSecondHalfKickOff => {
-            FootballPeriod::ExtraTimeSecondHalfKickOff
+            scoring::Period::ExtraTimeSecondHalfKickOff
         }
-        FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
-        FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
+        FootballPeriodRecord::ExtraTimeFullTime => scoring::Period::ExtraTimeFullTime,
+        FootballPeriodRecord::PenaltiesComplete => scoring::Period::PenaltiesComplete,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, TimeZone, Utc};
+    use chrono::Utc;
     use poem_openapi::types::ToJSON;
 
     use super::*;
@@ -917,377 +500,51 @@ mod tests {
     };
     use crate::match_format::MatchFormat;
 
-    fn ts(minute: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(1_700_000_000 + minute * 60, 0).unwrap()
-    }
-
-    #[test]
-    fn derives_score_goals_cards_and_substitutions() {
-        let events = vec![
-            (
-                ts(41),
-                FootballLiveEvent::Goal(FootballGoalEvent {
-                    side_id: "riverside".into(),
-                    scorer_player_id: Some("alvarez".into()),
-                    assist_player_id: Some("diaz".into()),
-                    own_goal: false,
-                    penalty: false,
-                    minute: Some(41),
-                    occurred_at: None,
-                }),
-            ),
-            (
-                ts(58),
-                FootballLiveEvent::Card(FootballCardEvent {
-                    side_id: "oak_park".into(),
-                    player_id: "khan".into(),
-                    color: FootballCardColor::Yellow,
-                    minute: Some(58),
-                    occurred_at: None,
-                }),
-            ),
-            // An own goal counts for the side benefiting from it.
-            (
-                ts(63),
-                FootballLiveEvent::Goal(FootballGoalEvent {
-                    side_id: "riverside".into(),
-                    scorer_player_id: None,
-                    assist_player_id: None,
-                    own_goal: true,
-                    penalty: false,
-                    minute: Some(63),
-                    occurred_at: None,
-                }),
-            ),
-            (
-                ts(70),
-                FootballLiveEvent::Substitution(FootballSubstitutionEvent {
-                    side_id: "oak_park".into(),
-                    player_in_id: "moreno".into(),
-                    player_out_id: "khan".into(),
-                    minute: Some(70),
-                    occurred_at: None,
-                }),
-            ),
-            (
-                ts(94),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::FullTime,
-                }),
-            ),
-        ];
-
-        let score = Football::from_events(&events, None);
-
-        assert_eq!(score.score.len(), 1);
-        assert_eq!(score.score.get("riverside"), Some(&2));
-        assert_eq!(score.goals.as_ref().unwrap().len(), 2);
-        assert_eq!(score.cards.as_ref().unwrap().len(), 1);
-        assert_eq!(score.substitutions.as_ref().unwrap().len(), 1);
-        assert!(matches!(score.period, Some(FootballPeriod::FullTime)));
-        assert_eq!(
-            score
-                .period_times
-                .as_ref()
-                .unwrap()
-                .get(&FootballPeriod::FullTime),
-            Some(&ts(94))
-        );
-        assert!(score.goals.as_ref().unwrap()[1].own_goal);
-        assert_eq!(
-            score.substitutions.as_ref().unwrap()[0].player_out_id,
-            "khan"
-        );
-    }
-
-    #[test]
-    fn derives_phase_timestamps_from_period_markers() {
-        let events = vec![
-            (
-                ts(0),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::KickOff,
-                }),
-            ),
-            (
-                ts(46),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::HalfTime,
-                }),
-            ),
-            (
-                ts(60),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::SecondHalfKickOff,
-                }),
-            ),
-        ];
-
-        let score = Football::from_events(&events, None);
-        let period_times = score.period_times.as_ref().unwrap();
-
-        assert_eq!(period_times.get(&FootballPeriod::KickOff), Some(&ts(0)));
-        assert_eq!(period_times.get(&FootballPeriod::HalfTime), Some(&ts(46)));
-        assert_eq!(
-            period_times.get(&FootballPeriod::SecondHalfKickOff),
-            Some(&ts(60))
-        );
-        assert_eq!(period_times.get(&FootballPeriod::FullTime), None);
-        assert!(matches!(
-            score.period,
-            Some(FootballPeriod::SecondHalfKickOff)
-        ));
-    }
-
-    #[test]
-    fn extra_time_and_penalties_markers_get_timestamps_too() {
-        let events = vec![
-            (
-                ts(90),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::ExtraTimeKickOff,
-                }),
-            ),
-            (
-                ts(105),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::ExtraTimeHalfTime,
-                }),
-            ),
-            (
-                ts(120),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::ExtraTimeSecondHalfKickOff,
-                }),
-            ),
-            (
-                ts(150),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::ExtraTimeFullTime,
-                }),
-            ),
-            (
-                ts(160),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::PenaltiesComplete,
-                }),
-            ),
-        ];
-
-        let score = Football::from_events(&events, None);
-        let period_times = score.period_times.as_ref().unwrap();
-
-        assert_eq!(
-            period_times.get(&FootballPeriod::ExtraTimeKickOff),
-            Some(&ts(90))
-        );
-        assert_eq!(
-            period_times.get(&FootballPeriod::ExtraTimeHalfTime),
-            Some(&ts(105))
-        );
-        assert_eq!(
-            period_times.get(&FootballPeriod::ExtraTimeSecondHalfKickOff),
-            Some(&ts(120))
-        );
-        assert_eq!(
-            period_times.get(&FootballPeriod::ExtraTimeFullTime),
-            Some(&ts(150))
-        );
-        assert_eq!(
-            period_times.get(&FootballPeriod::PenaltiesComplete),
-            Some(&ts(160))
-        );
-    }
-
-    #[test]
-    fn penalty_shootout_kicks_tally_scored_only() {
-        let events = vec![
-            (
-                ts(160),
-                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                    side_id: "riverside".into(),
-                    scored: true,
-                }),
-            ),
-            (
-                ts(161),
-                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                    side_id: "oak_park".into(),
-                    scored: false,
-                }),
-            ),
-            (
-                ts(162),
-                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                    side_id: "riverside".into(),
-                    scored: true,
-                }),
-            ),
-            (
-                ts(163),
-                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                    side_id: "oak_park".into(),
-                    scored: true,
-                }),
-            ),
-        ];
-
-        let score = Football::from_events(&events, None);
-        let shootout_score = score.penalty_shootout_score.as_ref().unwrap();
-
-        assert_eq!(score.penalty_shootout.as_ref().unwrap().len(), 4);
-        // Only sides with at least one scored kick get a tally entry — same
-        // "absence means zero" convention as `score`.
-        assert_eq!(shootout_score.len(), 2);
-        assert_eq!(shootout_score.get("riverside"), Some(&2));
-        assert_eq!(shootout_score.get("oak_park"), Some(&1));
-        // A shootout kick never counts as a match goal.
-        assert!(score.score.is_empty());
-        assert!(score.goals.as_ref().unwrap().is_empty());
-    }
-
-    /// Same guard as netball's — see
-    /// `netball::tests::goals_and_fouls_are_stamped_with_occurred_at_from_the_envelope_in_recorded_order`.
-    /// Football's `minute` doesn't reset per period the way netball's does,
-    /// so this doesn't fix a scrambling bug, but it still has to hold: a
-    /// live-scored goal is timestamped by the server's own clock, not
-    /// whatever (if anything) a client sends.
-    #[test]
-    fn goals_cards_and_subs_are_stamped_with_occurred_at_from_the_envelope() {
-        let events = vec![
-            (
-                ts(0),
-                FootballLiveEvent::Goal(FootballGoalEvent {
-                    side_id: "riverside".into(),
-                    scorer_player_id: Some("alvarez".into()),
-                    assist_player_id: None,
-                    own_goal: false,
-                    penalty: false,
-                    minute: None,
-                    occurred_at: None,
-                }),
-            ),
-            (
-                ts(1),
-                FootballLiveEvent::Card(FootballCardEvent {
-                    side_id: "oak_park".into(),
-                    player_id: "khan".into(),
-                    color: FootballCardColor::Yellow,
-                    minute: None,
-                    occurred_at: None,
-                }),
-            ),
-        ];
-
-        let score = Football::from_events(&events, None);
-
-        assert_eq!(score.goals.as_ref().unwrap()[0].occurred_at, Some(ts(0)));
-        assert_eq!(score.cards.as_ref().unwrap()[0].occurred_at, Some(ts(1)));
-    }
-
-    #[test]
-    fn incremental_and_full_fold_agree() {
-        let events = vec![
-            (
-                ts(0),
-                FootballLiveEvent::Period(FootballPeriodEvent {
-                    period: FootballPeriod::KickOff,
-                }),
-            ),
-            (
-                ts(12),
-                FootballLiveEvent::Goal(FootballGoalEvent {
-                    side_id: "riverside".into(),
-                    scorer_player_id: Some("alvarez".into()),
-                    assist_player_id: None,
-                    own_goal: false,
-                    penalty: false,
-                    minute: Some(12),
-                    occurred_at: None,
-                }),
-            ),
-            (
-                ts(58),
-                FootballLiveEvent::Card(FootballCardEvent {
-                    side_id: "oak_park".into(),
-                    player_id: "khan".into(),
-                    color: FootballCardColor::Yellow,
-                    minute: Some(58),
-                    occurred_at: None,
-                }),
-            ),
-        ];
-
-        let full = Football::from_events(&events, None);
-
-        // Apply the same events one at a time, incrementally, and check the
-        // final state matches the full fold exactly.
-        let mut incremental = FootballScore {
-            score: HashMap::new(),
-            goals: Some(Vec::new()),
-            cards: Some(Vec::new()),
-            substitutions: Some(Vec::new()),
-            period: None,
-            period_times: Some(HashMap::new()),
-            penalty_shootout: Some(Vec::new()),
-            penalty_shootout_score: Some(HashMap::new()),
-            players: HashMap::new(),
-        };
-        for (occurred_at, event) in &events {
-            Football::apply_event(&mut incremental, *occurred_at, event, None);
-        }
-
-        assert_eq!(incremental.score.len(), full.score.len());
-        assert_eq!(
-            incremental.goals.as_ref().unwrap().len(),
-            full.goals.as_ref().unwrap().len()
-        );
-        assert_eq!(
-            incremental.cards.as_ref().unwrap().len(),
-            full.cards.as_ref().unwrap().len()
-        );
-        assert_eq!(incremental.period_times, full.period_times);
+    fn ts(s: &str) -> DateTime<Utc> {
+        parse_ts(s)
     }
 
     /// Round-tripping through the DAO mirror must reproduce the same wire
     /// JSON as the original — the property that actually matters here, since
     /// a mapping bug is a value silently changing shape or going missing.
+    /// The fold logic itself (`apply_event`/`winner`) is tested directly in
+    /// `agon_core`, not re-tested here through this zero-logic delegation.
     #[test]
     fn football_live_event_round_trips_through_dao_mirror() {
         let events = vec![
-            FootballLiveEvent::Goal(FootballGoalEvent {
+            scoring::LiveEvent::Goal(scoring::GoalEvent {
                 side_id: "riverside".into(),
                 scorer_player_id: Some("alvarez".into()),
                 assist_player_id: None,
                 own_goal: true,
                 penalty: false,
                 minute: Some(63),
-                occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
+                occurred_at: Some(ts("2024-05-01T20:03:00.000Z")),
             }),
-            FootballLiveEvent::Card(FootballCardEvent {
+            scoring::LiveEvent::Card(scoring::CardEvent {
                 side_id: "oak_park".into(),
                 player_id: "khan".into(),
-                color: FootballCardColor::Red,
+                color: scoring::CardColor::Red,
                 minute: None,
                 occurred_at: None,
             }),
-            FootballLiveEvent::Substitution(FootballSubstitutionEvent {
+            scoring::LiveEvent::Substitution(scoring::SubstitutionEvent {
                 side_id: "oak_park".into(),
                 player_in_id: "moreno".into(),
                 player_out_id: "khan".into(),
                 minute: Some(70),
-                occurred_at: Some(parse_ts("2024-05-01T20:10:00.000Z")),
+                occurred_at: Some(ts("2024-05-01T20:10:00.000Z")),
             }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeKickOff,
+            scoring::LiveEvent::Period(scoring::PeriodEvent {
+                period: scoring::Period::ExtraTimeKickOff,
             }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeSecondHalfKickOff,
+            scoring::LiveEvent::Period(scoring::PeriodEvent {
+                period: scoring::Period::ExtraTimeSecondHalfKickOff,
             }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeFullTime,
+            scoring::LiveEvent::Period(scoring::PeriodEvent {
+                period: scoring::Period::ExtraTimeFullTime,
             }),
-            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+            scoring::LiveEvent::PenaltyShootoutKick(scoring::PenaltyShootoutKick {
                 side_id: "riverside".into(),
                 scored: true,
             }),
@@ -1303,7 +560,7 @@ mod tests {
 
     #[test]
     fn football_format_round_trips_through_dao_mirror() {
-        let format = MatchFormat::Football(FootballFormat {
+        let format = MatchFormat::Football(scoring::Format {
             half_length_minutes: 40,
             num_halves: 2,
             extra_time: true,
@@ -1322,69 +579,73 @@ mod tests {
         let scores = vec![
             // A manually-entered football result: totals only, no detail.
             Score::Football(FootballScore {
-                score: HashMap::from([("side_red".to_string(), 3), ("side_blue".to_string(), 1)]),
-                goals: None,
-                cards: None,
-                substitutions: None,
-                period: None,
-                period_times: None,
-                penalty_shootout: None,
-                penalty_shootout_score: None,
+                inner: scoring::Score {
+                    score: HashMap::from([
+                        ("side_red".to_string(), 3),
+                        ("side_blue".to_string(), 1),
+                    ]),
+                    goals: None,
+                    cards: None,
+                    substitutions: None,
+                    period: None,
+                    period_times: None,
+                    penalty_shootout: None,
+                    penalty_shootout_score: None,
+                },
                 players: HashMap::new(),
             }),
             // A live-scored football result: full goal/card/sub detail.
             Score::Football(FootballScore {
-                score: HashMap::from([("side_red".to_string(), 2), ("side_blue".to_string(), 1)]),
-                goals: Some(vec![
-                    FootballGoalEvent {
-                        side_id: "side_red".into(),
-                        scorer_player_id: Some("player_1".into()),
-                        assist_player_id: Some("player_2".into()),
-                        own_goal: false,
-                        penalty: false,
-                        minute: Some(23),
-                        occurred_at: Some(parse_ts("2024-05-01T20:23:00.000Z")),
-                    },
-                    FootballGoalEvent {
+                inner: scoring::Score {
+                    score: HashMap::from([
+                        ("side_red".to_string(), 2),
+                        ("side_blue".to_string(), 1),
+                    ]),
+                    goals: Some(vec![
+                        scoring::GoalEvent {
+                            side_id: "side_red".into(),
+                            scorer_player_id: Some("player_1".into()),
+                            assist_player_id: Some("player_2".into()),
+                            own_goal: false,
+                            penalty: false,
+                            minute: Some(23),
+                            occurred_at: Some(ts("2024-05-01T20:23:00.000Z")),
+                        },
+                        scoring::GoalEvent {
+                            side_id: "side_blue".into(),
+                            scorer_player_id: None,
+                            assist_player_id: None,
+                            own_goal: true,
+                            penalty: false,
+                            minute: None,
+                            occurred_at: None,
+                        },
+                    ]),
+                    cards: Some(vec![scoring::CardEvent {
                         side_id: "side_blue".into(),
-                        scorer_player_id: None,
-                        assist_player_id: None,
-                        own_goal: true,
-                        penalty: false,
-                        minute: None,
-                        occurred_at: None,
-                    },
-                ]),
-                cards: Some(vec![FootballCardEvent {
-                    side_id: "side_blue".into(),
-                    player_id: "player_3".into(),
-                    color: FootballCardColor::Yellow,
-                    minute: Some(60),
-                    occurred_at: Some(parse_ts("2024-05-01T21:00:00.000Z")),
-                }]),
-                substitutions: Some(vec![FootballSubstitutionEvent {
-                    side_id: "side_red".into(),
-                    player_in_id: "player_4".into(),
-                    player_out_id: "player_1".into(),
-                    minute: Some(75),
-                    occurred_at: Some(parse_ts("2024-05-01T21:15:00.000Z")),
-                }]),
-                period: Some(FootballPeriod::FullTime),
-                period_times: Some(HashMap::from([
-                    (
-                        FootballPeriod::KickOff,
-                        parse_ts("2024-05-01T20:00:00.000Z"),
-                    ),
-                    (
-                        FootballPeriod::FullTime,
-                        parse_ts("2024-05-01T21:45:00.000Z"),
-                    ),
-                ])),
-                penalty_shootout: Some(vec![FootballPenaltyShootoutKick {
-                    side_id: "side_red".into(),
-                    scored: true,
-                }]),
-                penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
+                        player_id: "player_3".into(),
+                        color: scoring::CardColor::Yellow,
+                        minute: Some(60),
+                        occurred_at: Some(ts("2024-05-01T21:00:00.000Z")),
+                    }]),
+                    substitutions: Some(vec![scoring::SubstitutionEvent {
+                        side_id: "side_red".into(),
+                        player_in_id: "player_4".into(),
+                        player_out_id: "player_1".into(),
+                        minute: Some(75),
+                        occurred_at: Some(ts("2024-05-01T21:15:00.000Z")),
+                    }]),
+                    period: Some(scoring::Period::FullTime),
+                    period_times: Some(HashMap::from([
+                        (scoring::Period::KickOff, ts("2024-05-01T20:00:00.000Z")),
+                        (scoring::Period::FullTime, ts("2024-05-01T21:45:00.000Z")),
+                    ])),
+                    penalty_shootout: Some(vec![scoring::PenaltyShootoutKick {
+                        side_id: "side_red".into(),
+                        scored: true,
+                    }]),
+                    penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
+                },
                 players: HashMap::new(),
             }),
         ];

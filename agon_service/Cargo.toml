@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 agon_services_core = { path = "../agon_services_core" }
-agon_core = { path = "../agon_core" }
+agon_core = { path = "../agon_core", features = ["openapi"] }
 poem = "3"
 poem-openapi = { version = "5", features = ["scalar", "chrono"] }
 # CloudFront signed-URL generation (RSA-SHA1 over the canned policy) uses openssl.

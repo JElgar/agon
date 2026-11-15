@@ -46,3 +46,6 @@ config:
   agon_infra:agonDeviceJwtPrivateKey:
     secure: AAABAJbpoFzSXeTCbXM6sRgZibml2uqL+gJ3N506N66hD4DxtCLKR8YvthW2zbA9rJbYbOa1osUIaaCdFFd1rXKsRa+Ct9QjG+2L9hEOJSmo+viVhEtwKioo//uukmwHQwK2uMPkeZkACz5ZKNxImNsc9lMHdGAHgiBM7HgU9E9WZbiWVultsMlXw1oTDG6RA1M9U25zwP2mMrslsh4rR2cTc/8PvcYEyZsTRR2IsYc/lRtCGluO3l8Duyx6HwbS4TbY12FNfpPqF18/wcrQhPfcNGGTcsWo7zM3zXWp93BfsnePxZIxCVV0FTRktxKAcRLYd12nJT2bsKMd1m4/ATKrc3Vav9oAFprxNh1SXWg=
   agon_infra:agonDeviceJwks: '{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"agon-device","x":"g79i00teyjuuH7ElCrbXuSPUVh6AEMo4UbB5UOoTUV4","y":"NMvPu4HUYoR4Ik-6lCkXRymEr-ZtPsM0q6eNoN-ITCA"}]}'
+  agon_infra:googleOauthClientId: 169505942692-0m0vfg0ukb4mmcd4k3c51mk6ulsgbmiv.apps.googleusercontent.com
+  agon_infra:googleOauthClientSecret:
+    secure: AAABAFYDBKQfwM68gNQ4ro6VTvEBoCpew42i1rouXqAVMffxFj71ufvxai+/pnsasBs1u1L/DJ8q55wFQgnyS+Nyag==

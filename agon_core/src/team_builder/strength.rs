@@ -83,6 +83,7 @@ impl RatingInput {
 
 /// Lifetime record in the sport — `GenericSportStatsRecord`'s counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct WinRecord {
     pub played: u64,
     pub wins: u64,
@@ -107,6 +108,7 @@ pub struct History {
 /// Organiser override, relative to this pool. "As expected" is no override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum Level {
     Newer,
     Stronger,
@@ -115,6 +117,7 @@ pub enum Level {
 /// Where an estimate mostly came from — what the UI labels the player with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum Signal {
     /// `RATING_TRUST_MATCHES`+ ranked games: rating only.
     Rated,
@@ -133,6 +136,7 @@ pub enum Signal {
 
 /// The win rate behind an estimate, for the "how was this estimated" sheet.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct WinRateInfo {
     /// `(wins + ½·draws) / played`.
     pub raw: f64,

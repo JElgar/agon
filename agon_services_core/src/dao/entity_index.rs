@@ -18,20 +18,18 @@
 //! **Written on create only.** The four create paths (`create_match`,
 //! `create_user`, `create_team`, `create_tournament`) set the keys. Every later
 //! write to those items is an `UpdateItem`, which leaves the keys in place.
-//! Items written before the index existed get their keys from the one-off
-//! migration (`agon_worker migrate-entity-index`, using
-//! [`Dao::scan_entity_index_missing`] and [`Dao::set_entity_index_keys`]).
+//! Items written before the index existed get their keys from a one-off
+//! migration script, kept off `main` on the `claude/entity-index-migration`
+//! branch (`cargo run -p agon_services_core --example migrate_entity_index`).
 //!
 //! **One partition per type.** A single `ENTITY#match` partition takes about
 //! 1,000 index writes a second, and index writes only happen on create, so
 //! that's 1,000 new matches a second. Spread it over `ENTITY#match#<n>` if it
 //! ever gets close.
 
-use aws_sdk_dynamodb::types::AttributeValue;
-
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_GSI4PK, ATTR_GSI4SK, ATTR_PK, ATTR_SK, item_pk, item_sk, s};
+use super::item::{ATTR_GSI4PK, item_pk, item_sk, s};
 use super::keys::{Pk, Sk};
 use super::page::{Page, decode_cursor, encode_cursor};
 
@@ -98,16 +96,6 @@ pub fn index_sk(created_at: &str, id: &str) -> String {
     format!("{created_at}#{id}")
 }
 
-/// An indexed item that doesn't have its index keys yet (from before the index
-/// existed), as found by [`Dao::scan_entity_index_missing`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MissingEntityKeys {
-    pub kind: EntityKind,
-    pub id: String,
-    /// Empty when the stored item has no `created_at`; it then sorts oldest.
-    pub created_at: String,
-}
-
 impl Dao {
     /// One page of ids of `kind`, newest first (or oldest first), from the entity
     /// index. Fetch the items themselves with the usual getters or batch gets.
@@ -145,92 +133,6 @@ impl Dao {
         }
         let next_cursor = out.last_evaluated_key.map(encode_cursor).transpose()?;
         Ok(Page { items, next_cursor })
-    }
-
-    /// Migration: one page of indexed-type items that don't have index keys yet.
-    /// A filtered `Scan`, projecting only keys and `created_at`. As with any
-    /// filtered scan, a page can hold fewer items than `page_size`, or none,
-    /// while `next_cursor` is still `Some`: keep paging until it's `None`.
-    #[tracing::instrument(skip(self))]
-    pub async fn scan_entity_index_missing(
-        &self,
-        cursor: Option<&str>,
-        page_size: i32,
-    ) -> DaoResult<Page<MissingEntityKeys>> {
-        let start_key = cursor.map(decode_cursor).transpose()?;
-        let out = self
-            .client
-            .scan()
-            .table_name(self.table())
-            .filter_expression(
-                "attribute_not_exists(#g4) AND ( \
-                   (begins_with(#pk, :m) AND #sk = :meta) OR \
-                   (begins_with(#pk, :u) AND #sk = :profile) OR \
-                   (begins_with(#pk, :t) AND #sk = :meta) OR \
-                   (begins_with(#pk, :tr) AND #sk = :meta) )",
-            )
-            .projection_expression("#pk, #sk, #created")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#sk", ATTR_SK)
-            .expression_attribute_names("#g4", ATTR_GSI4PK)
-            .expression_attribute_names("#created", "created_at")
-            .expression_attribute_values(":m", s(Pk::Match(String::new()).to_string()))
-            .expression_attribute_values(":u", s(Pk::User(String::new()).to_string()))
-            .expression_attribute_values(":t", s(Pk::Team(String::new()).to_string()))
-            .expression_attribute_values(":tr", s(Pk::Tournament(String::new()).to_string()))
-            .expression_attribute_values(":meta", s(Sk::Meta.to_string()))
-            .expression_attribute_values(":profile", s(Sk::Profile.to_string()))
-            .limit(page_size)
-            .set_exclusive_start_key(start_key)
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let mut items = Vec::new();
-        for item in out.items.unwrap_or_default() {
-            let Some((kind, id)) = EntityKind::of_key(&item_pk(&item)?, &item_sk(&item)?) else {
-                continue;
-            };
-            let created_at = match item.get("created_at") {
-                Some(AttributeValue::S(v)) => v.clone(),
-                _ => String::new(),
-            };
-            items.push(MissingEntityKeys {
-                kind,
-                id,
-                created_at,
-            });
-        }
-        let next_cursor = out.last_evaluated_key.map(encode_cursor).transpose()?;
-        Ok(Page { items, next_cursor })
-    }
-
-    /// Migration: give one existing item its index keys. Only touches an item
-    /// that exists and has no keys yet, so it's safe to re-run and never creates
-    /// an item. Returns whether it wrote.
-    #[tracing::instrument(skip(self))]
-    pub async fn set_entity_index_keys(&self, item: &MissingEntityKeys) -> DaoResult<bool> {
-        let (pk, sk) = item.kind.item_key(&item.id);
-        let result = self
-            .client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(pk.to_string()))
-            .key(ATTR_SK, s(sk.to_string()))
-            .update_expression("SET #g4pk = :g4pk, #g4sk = :g4sk")
-            .condition_expression("attribute_exists(#pk) AND attribute_not_exists(#g4pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#g4pk", ATTR_GSI4PK)
-            .expression_attribute_names("#g4sk", ATTR_GSI4SK)
-            .expression_attribute_values(":g4pk", s(item.kind.index_pk()))
-            .expression_attribute_values(":g4sk", s(index_sk(&item.created_at, &item.id)))
-            .send()
-            .await;
-        match result {
-            Ok(_) => Ok(true),
-            Err(e) if super::is_update_conditional_failure(&e) => Ok(false),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
     }
 }
 

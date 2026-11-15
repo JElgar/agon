@@ -129,6 +129,12 @@ pub struct MatchSearchHits {
 #[derive(Clone)]
 pub struct SearchClient {
     client: Client,
+    // Kept alongside `client` so `count` below can issue its own request
+    // instead of going through the SDK's `get_stats` — see that method's
+    // doc comment for why.
+    base_url: String,
+    api_key: String,
+    http: reqwest::Client,
 }
 
 /// Only the `id` field is read back from search hits; everything else is
@@ -155,11 +161,17 @@ impl SearchClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         // Trim a trailing slash so URL joins are predictable.
         let base_url = base_url.into().trim_end_matches('/').to_string();
+        let api_key = api_key.into();
         // Only fails if the api key can't be encoded as an HTTP header value,
         // which never happens for the keys this service is configured with.
-        let client = Client::new(base_url, Some(api_key.into()))
+        let client = Client::new(base_url.clone(), Some(api_key.clone()))
             .expect("invalid meilisearch client configuration");
-        Self { client }
+        Self {
+            client,
+            base_url,
+            api_key,
+            http: reqwest::Client::new(),
+        }
     }
 
     /// Upsert one document into an index. Meilisearch replaces any existing
@@ -190,14 +202,40 @@ impl SearchClient {
 
     /// Exact count of documents in an index (Meilisearch's own stats, not an
     /// estimate) — e.g. for an admin-panel "total users" figure.
+    ///
+    /// Issues the stats request directly rather than through the SDK's
+    /// `Index::get_stats`, which deserializes into a struct that also
+    /// requires several newer, embedding-related fields
+    /// (`numberOfEmbeddedDocuments` etc) added in later Meilisearch releases.
+    /// Meilisearch's own compatibility note ("guarantees compatibility with
+    /// v1.x... but some features may not be present") means an older v1.x
+    /// server's `/indexes/:uid/stats` response can omit those fields, which
+    /// fails that struct's deserialization outright — losing the one field
+    /// (`numberOfDocuments`) this actually needs. Decoding only that field
+    /// here is forward- and backward-compatible with the stats shape across
+    /// any v1.x server.
     pub async fn count(&self, index: Index) -> SearchResult<u64> {
-        let stats = self
-            .client
-            .index(index.name())
-            .get_stats()
+        #[derive(Deserialize)]
+        struct DocumentCount {
+            #[serde(rename = "numberOfDocuments")]
+            number_of_documents: u64,
+        }
+
+        let url = format!("{}/indexes/{}/stats", self.base_url, index.name());
+        let response = self
+            .http
+            .get(&url)
+            .bearer_auth(&self.api_key)
+            .send()
+            .await
+            .map_err(|e| SearchError(e.to_string()))?
+            .error_for_status()
+            .map_err(|e| SearchError(e.to_string()))?;
+        let stats: DocumentCount = response
+            .json()
             .await
             .map_err(|e| SearchError(e.to_string()))?;
-        Ok(stats.number_of_documents as u64)
+        Ok(stats.number_of_documents)
     }
 
     /// Run a search against an index, returning ranked document ids and a

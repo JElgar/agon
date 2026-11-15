@@ -44,6 +44,7 @@ pub mod team;
 pub mod tournament_ops;
 pub mod user;
 pub mod waitlist;
+pub mod youtube;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;

@@ -266,6 +266,11 @@ pub enum Sk {
     /// revoke). The actual credential is `AUTH#<device_sub>`
     /// (`Pk::AuthGuard`) — revoking deletes both together.
     PairedDevice(String),
+    /// A user's connected YouTube channel (see `dao::youtube`), in the user
+    /// partition. `#YOUTUBE` — a singleton marker, not a value key: a user
+    /// has at most one connection, reconnecting replaces it in place rather
+    /// than creating a second item.
+    YoutubeConnection,
     /// Records what a match contributed to one participant's per-sport stats
     /// (`{ played, won }`), in the match's partition. `STATCONTRIB#<userId>`.
     /// The async stats reconciler diffs the desired contribution (from the
@@ -338,6 +343,7 @@ impl Sk {
             Sk::Profile => "#PROFILE",
             Sk::Meta => "#META",
             Sk::Guard => "#GUARD",
+            Sk::YoutubeConnection => "#YOUTUBE",
             Sk::Follower(_) => "FOLLOWER",
             Sk::Member(_) => "MEMBER",
             Sk::Side(_) => "SIDE",
@@ -541,7 +547,9 @@ impl fmt::Display for Sk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // Marker keys (the prefix is the whole key).
-            Sk::Profile | Sk::Meta | Sk::Guard => write!(f, "{}", self.prefix()),
+            Sk::Profile | Sk::Meta | Sk::Guard | Sk::YoutubeConnection => {
+                write!(f, "{}", self.prefix())
+            }
 
             // Single-value keys.
             Sk::Follower(v)
@@ -601,6 +609,7 @@ impl FromStr for Sk {
         // Marker keys.
         match s {
             "#PROFILE" => return Ok(Sk::Profile),
+            "#YOUTUBE" => return Ok(Sk::YoutubeConnection),
             "#META" => return Ok(Sk::Meta),
             "#GUARD" => return Ok(Sk::Guard),
             _ => {}
@@ -720,6 +729,7 @@ mod tests {
         sk_roundtrip(Sk::Profile, "#PROFILE");
         sk_roundtrip(Sk::Meta, "#META");
         sk_roundtrip(Sk::Guard, "#GUARD");
+        sk_roundtrip(Sk::YoutubeConnection, "#YOUTUBE");
     }
 
     #[test]

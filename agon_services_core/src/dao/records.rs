@@ -1686,6 +1686,29 @@ pub struct PairedDeviceRecord {
     pub paired_at: String,
 }
 
+/// `USER#<uid>` / `#YOUTUBE` — a user's connected YouTube channel (see
+/// `dao::youtube`), for live-streaming/video-upload matches to it. One per
+/// user; reconnecting overwrites in place. `encrypted_refresh_token` is
+/// opaque ciphertext to this crate — encryption/decryption is the calling
+/// service's concern (it owns the key), this is just storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct YoutubeConnectionRecord {
+    pub user_id: String,
+    /// The connected channel's id (`channels.list` `id`), for building
+    /// channel links and as a stable identity independent of a rename.
+    pub channel_id: String,
+    /// The connected channel's display name at connect time, for
+    /// "Connected as {channel_title}" UI — not kept in sync with renames.
+    pub channel_title: String,
+    /// Base64, AES-256-GCM-encrypted Google OAuth refresh token (nonce
+    /// prepended by the encrypting service) — never the plaintext token.
+    pub encrypted_refresh_token: String,
+    /// Space-separated OAuth scopes actually granted, as Google returned
+    /// them — not assumed from what was requested.
+    pub scope: String,
+    pub connected_at: String,
+}
+
 /// `ASSET#<assetId>` / `#META` — an uploadable asset.
 ///
 /// `status` is "pending" | "uploaded" | "failed". `url` is set once uploaded.

@@ -35,3 +35,6 @@ cron = "0.15.0"
 # to fetch and decode.
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Building the Google OAuth consent URL (youtube.rs) with properly
+# percent-encoded query params.
+url = "2"

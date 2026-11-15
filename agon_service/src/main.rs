@@ -4382,9 +4382,10 @@ impl Api {
                 )));
             }
         } else if input.starts_at <= now_ts - MAX_SCHEDULED_START_IN_PAST {
-            return Ok(CreateMatchResponse::ValidationError(PlainText(
-                "a scheduled match's time can't be more than 24 hours in the past".to_string(),
-            )));
+            return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                "a scheduled match's time can't be more than {} hours in the past",
+                MAX_SCHEDULED_START_IN_PAST.num_hours()
+            ))));
         }
 
         let now = now_iso();
@@ -6122,9 +6123,10 @@ impl Api {
             )));
         }
         if input.first_round_starts_at <= chrono::Utc::now() - MAX_SCHEDULED_START_IN_PAST {
-            return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                "first_round_starts_at can't be more than 24 hours in the past".to_string(),
-            )));
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(format!(
+                "first_round_starts_at can't be more than {} hours in the past",
+                MAX_SCHEDULED_START_IN_PAST.num_hours()
+            ))));
         }
         if input.min_teams < 2 {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(

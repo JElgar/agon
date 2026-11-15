@@ -580,11 +580,8 @@ impl MaterializeSeries {
             MaterializeOutcome::Finish => Ok(()),
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 ctx.timer(to_std_duration(sleep)).await;
-                // `continue_as_new` succeeds with `Infallible`: it never
-                // returns normally. Matching on that uninhabited value makes
-                // this arm diverge for the type checker, where a trailing
-                // `?` alone has type `Infallible` (not this fn's `Result`)
-                // and `?; Ok(())` trips clippy's unreachable-code lint.
+                // `continue_as_new` only ever returns `Err` (its `Ok` is `Infallible`),
+                // so after `?` there's no value left: match it away to `!`.
                 match ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())? {}
             }
         }

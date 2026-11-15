@@ -30,7 +30,7 @@ import { SetsScoreEditor } from '@/components/agon/logmatch/SetsScoreEditor'
 import { formatDefaultHint, playedSets, type SetRow } from '@/lib/logMatch'
 import { cn } from '@/lib/utils'
 import { ROSTER_IDENTITY_MAX_PLAYERS, rosterIdentityName } from '@/lib/members'
-import { shortDate, toDateTimeLocal } from '@/lib/datetime'
+import { MAX_START_HOURS_IN_PAST, isTooFarInPast, shortDate, toDateTimeLocal } from '@/lib/datetime'
 import { countOccurrencesThrough, occurrenceDate } from '@/lib/seriesOccurrences'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 import { currentUserQuery } from '@/hooks/useCurrentUser'
@@ -311,7 +311,11 @@ export function LogMatchPage() {
     const ts = new Date(startsAt).getTime()
     if (Number.isNaN(ts)) return 'Pick a valid date and time'
     if (mode === 'completed' && ts > Date.now()) return 'A match that has been played must be in the past'
-    if (mode === 'scheduled' && ts <= Date.now()) return 'An upcoming match must be in the future'
+    if (mode === 'scheduled') {
+      if (isTooFarInPast(startsAt)) {
+        return `An upcoming match can't start more than ${MAX_START_HOURS_IN_PAST} hours in the past`
+      }
+    }
     return null
   }, [startsAt, mode])
 

@@ -185,6 +185,13 @@ impl Dao {
                 .build(),
             _ => meta_item,
         };
+        let meta_item = ItemBuilder::new(meta_item)
+            .entity(
+                super::entity_index::EntityKind::Match,
+                &match_.created_at,
+                &match_.id,
+            )
+            .build();
 
         let put_meta = Put::builder()
             .table_name(self.table())

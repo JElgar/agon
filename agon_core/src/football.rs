@@ -8,13 +8,14 @@ use serde::{Deserialize, Serialize};
 /// A football match's result: the goal tally, plus optional richer detail.
 /// Every optional field is populated (`Some`, even if empty) once live
 /// scoring starts — only a bare manual entry leaves them `None`.
+///
+/// `agon_service` flattens this into its own `FootballScore` wrapper
+/// (which adds `players`), so this type's own OpenAPI name must differ from
+/// `"FootballScore"` — poem-openapi's `#[oai(flatten)]` silently drops the
+/// flattened fields instead of erroring if the flattened type's registered
+/// name collides with the containing struct's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
-// Not "FootballScore": that name belongs to `agon_service`'s wrapper, which
-// flattens this in and adds `players`. poem-openapi's schema registry is
-// keyed by name, so sharing one made the wrapper's published schema lose
-// every field below (only `players` survived), breaking the UI's types.
-// Nor plain "Score", which is the API's sport-tagged union.
 #[cfg_attr(feature = "openapi", oai(rename = "FootballScoreFields"))]
 pub struct Score {
     /// Goal tally, keyed by side id — exactly one entry per side, so a map

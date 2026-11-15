@@ -63,6 +63,13 @@ const installK3s = new command.remote.Command('install-k3s', {
 	create: 'curl -sfL https://get.k3s.io | sh -s - --disable=traefik',
 })
 
+// OpenSearch refuses to start unless the host allows enough memory-mapped
+// areas. Set it now and persist it across reboots. Idempotent.
+const opensearchSysctl = new command.remote.Command('opensearch-vm-max-map-count', {
+	connection,
+	create: "sysctl -w vm.max_map_count=262144 && echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf",
+}, { dependsOn: [installK3s] })
+
 const getKubeconfig = new command.remote.Command('get-kubeconfig', {
 	connection,
 	create: 'cat /etc/rancher/k3s/k3s.yaml',
@@ -365,11 +372,20 @@ const dynamoTable = new aws.dynamodb.Table("agon", {
 		{ name: "GSI2SK", type: "S" },
 		{ name: "GSI3PK", type: "S" },
 		{ name: "GSI3SK", type: "S" },
+		{ name: "GSI4PK", type: "S" },
+		{ name: "GSI4SK", type: "S" },
 	],
 	globalSecondaryIndexes: [
 		{ name: "GSI1", hashKey: "GSI1PK", rangeKey: "GSI1SK", projectionType: "ALL" },
 		{ name: "GSI2", hashKey: "GSI2PK", rangeKey: "GSI2SK", projectionType: "ALL" },
 		{ name: "GSI3", hashKey: "GSI3PK", rangeKey: "GSI3SK", projectionType: "ALL" },
+		// Entity index: every match / user / team / tournament, newest first by
+		// type (`ENTITY#<type>` / `<created_at>#<id>`). KEYS_ONLY on purpose:
+		// DynamoDB only writes to it when an item is created, deleted or has
+		// its keys changed, so likes, comments and edits never cost an index
+		// write. Readers get ids and fetch items themselves.
+		// See agon_core/src/dao/entity_index.rs.
+		{ name: "GSI4", hashKey: "GSI4PK", rangeKey: "GSI4SK", projectionType: "KEYS_ONLY" },
 	],
 	// Streams feed the async fan-out / search-indexing pipeline.
 	streamEnabled: true,
@@ -975,6 +991,84 @@ const meiliService = new k8s.core.v1.Service("meilisearch-service", {
 
 // Cluster-internal Meilisearch URL for the service and worker.
 const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`);
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// OpenSearch: match + per-player stats store
+// Single node, in-cluster only (no ingress, like Meilisearch), so the security
+// plugin is off. The worker shadow-writes to it off the DynamoDB stream; nothing
+// reads it on a request path yet. DynamoDB stays the source of truth, so the
+// index can always be rebuilt with `agon_worker backfill-opensearch`
+// (see docs/opensearch.md).
+//
+// Always deployed. Memory: ~1 GB heap, ~2 GB resident.
+// ───────────────────────────────────────────────────────────────────────────
+const opensearchPvc = new k8s.core.v1.PersistentVolumeClaim("opensearch-data", {
+	metadata: { name: "opensearch-data", namespace: "default" },
+	spec: {
+		accessModes: ["ReadWriteOnce"],
+		resources: { requests: { storage: config.get("opensearchStorage") ?? "10Gi" } },
+	},
+}, { provider: k8sProvider });
+
+const opensearchLabels = { app: "opensearch" };
+new k8s.apps.v1.Deployment("opensearch-deployment", {
+	metadata: { name: "opensearch" },
+	spec: {
+		selector: { matchLabels: opensearchLabels },
+		replicas: 1,
+		// One RWO volume: never run two pods against it.
+		strategy: { type: "Recreate" },
+		template: {
+			metadata: { labels: opensearchLabels },
+			spec: {
+				// The image runs as uid/gid 1000; let it own the volume.
+				securityContext: { fsGroup: 1000 },
+				containers: [
+					{
+						name: "opensearch",
+						image: "opensearchproject/opensearch:2.18.0",
+						ports: [{ containerPort: 9200 }],
+						env: [
+							{ name: "discovery.type", value: "single-node" },
+							{ name: "DISABLE_SECURITY_PLUGIN", value: "true" },
+							{ name: "DISABLE_INSTALL_DEMO_CONFIG", value: "true" },
+							{ name: "OPENSEARCH_JAVA_OPTS", value: config.get("opensearchJavaOpts") ?? "-Xms1g -Xmx1g" },
+						],
+						resources: {
+							requests: { memory: "1536Mi", cpu: "250m" },
+							limits: { memory: "2560Mi" },
+						},
+						volumeMounts: [{ name: "data", mountPath: "/usr/share/opensearch/data" }],
+						readinessProbe: {
+							httpGet: { path: "/_cluster/health?local=true", port: 9200 },
+							initialDelaySeconds: 20,
+							periodSeconds: 10,
+						},
+						livenessProbe: {
+							tcpSocket: { port: 9200 },
+							initialDelaySeconds: 60,
+							periodSeconds: 20,
+						},
+					},
+				],
+				volumes: [
+					{ name: "data", persistentVolumeClaim: { claimName: opensearchPvc.metadata.name } },
+				],
+			},
+		},
+	},
+}, { provider: k8sProvider, dependsOn: [opensearchSysctl] });
+
+const opensearchService = new k8s.core.v1.Service("opensearch-service", {
+	metadata: { name: "opensearch" },
+	spec: {
+		selector: opensearchLabels,
+		ports: [{ name: "http", port: 9200, targetPort: 9200 }],
+	},
+}, { provider: k8sProvider });
+
+const opensearchUrl = opensearchService.metadata.name.apply(name => `http://${name}:9200`);
 
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1846,6 +1940,8 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-worker" },
+							// OpenSearch shadow write (see the OpenSearch section).
+							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 						],
 					},
 				],

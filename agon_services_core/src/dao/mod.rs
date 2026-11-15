@@ -26,6 +26,7 @@ pub mod audience;
 pub mod batch;
 pub mod device;
 pub mod device_pairing;
+pub mod entity_index;
 pub mod feed;
 pub mod follow;
 pub mod invitation;

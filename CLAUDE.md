@@ -19,6 +19,7 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 - **Web Framework**: Poem with poem-openapi for automatic OpenAPI generation
 - **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_services_core` DAO. See `docs/dynamodb-design.md`.
 - **Search**: Meilisearch powers the discovery/search endpoints (users, teams, matches), kept in sync by `agon_worker`.
+- **Stats store**: OpenSearch holds match documents and per-player match rows for team stats and leaderboards. Shadow writes only for now (`agon_worker` keeps it in sync; nothing reads it yet). See `docs/opensearch.md`.
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
 - **Observability**: OTLP export (logs/traces/metrics) from both binaries via
@@ -100,3 +101,4 @@ Required environment variables (see `.env.example`):
 - Single-table DynamoDB access via `aws_sdk_dynamodb`; typed `Pk`/`Sk` keys, never hand-written key strings
 - Uniqueness guards enforced with conditional puts (`EMAIL#<email>`, `AUTH#<sub>`); multi-item writes use `TransactWriteItems` (e.g. user + email-guard + auth-guard on signup)
 - Custom ID generation using base64url-encoded random bytes (`new_id`)
+- Entity index (GSI4, keys only): every match, user, team and tournament is listed under `ENTITY#<type>` / `<created_at>#<id>`, set on create only (`ItemBuilder::entity`). Use `Dao::list_entity_ids` to enumerate a type instead of scanning. Any new create path for those types must call `.entity(...)`. Items from before the index existed get their keys from a one-off migration script kept on the `claude/entity-index-migration` branch (run once per environment). See `agon_services_core/src/dao/entity_index.rs`.

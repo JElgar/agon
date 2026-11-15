@@ -8,9 +8,15 @@ use serde::{Deserialize, Serialize};
 /// A football match's result: the goal tally, plus optional richer detail.
 /// Every optional field is populated (`Some`, even if empty) once live
 /// scoring starts — only a bare manual entry leaves them `None`.
+///
+/// `agon_service` flattens this into its own `FootballScore` wrapper
+/// (which adds `players`), so this type's own OpenAPI name must differ from
+/// `"FootballScore"` — poem-openapi's `#[oai(flatten)]` silently drops the
+/// flattened fields instead of erroring if the flattened type's registered
+/// name collides with the containing struct's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
-#[cfg_attr(feature = "openapi", oai(rename = "FootballScore"))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballScoreFields"))]
 pub struct Score {
     /// Goal tally, keyed by side id — exactly one entry per side, so a map
     /// rather than the `Vec<{side_id, ...}>` shape used where order or

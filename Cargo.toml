@@ -5,5 +5,5 @@ resolver = "2"
 # `openapi_client` form their own workspace (see agon_tests/Cargo.toml) so a
 # clean checkout / Docker build of the service or worker never references the
 # generated client, which isn't present until `make generate-schema` runs them.
-members = ["agon_core", "agon_service", "agon_worker"]
+members = ["agon_core", "agon_scoring", "agon_service", "agon_worker"]
 exclude = ["agon_tests", "openapi_client"]

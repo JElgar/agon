@@ -38,10 +38,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agon_scoring"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agon_service"
 version = "0.1.0"
 dependencies = [
  "agon_core",
+ "agon_scoring",
  "aws-config",
  "aws-sdk-s3",
  "base64 0.22.1",

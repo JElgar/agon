@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 agon_core = { path = "../agon_core" }
+agon_scoring = { path = "../agon_scoring" }
 poem = "3"
 poem-openapi = { version = "5", features = ["scalar", "chrono"] }
 # CloudFront signed-URL generation (RSA-SHA1 over the canned policy) uses openssl.

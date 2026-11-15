@@ -68,7 +68,8 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
         return Ok(());
     };
 
-    if tournament.entry_audience == agon_services_core::dao::records::TournamentEntryAudienceRecord::Players
+    if tournament.entry_audience
+        == agon_services_core::dao::records::TournamentEntryAudienceRecord::Players
     {
         // `winner_team_id` is a synthetic squad id here, not a real team —
         // there's no team membership to self-join from, so the squad's

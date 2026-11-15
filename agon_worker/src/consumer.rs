@@ -263,7 +263,9 @@ enum WorkflowStart {
 /// once, not on every subsequent modify of an already-accepted invitation.
 fn workflow_for(event: &ChangeEvent) -> Vec<WorkflowStart> {
     use agon_services_core::dao::keys::{Pk, Sk};
-    use agon_services_core::dao::records::{InvitationContextRecord, InvitationRecord, MatchRecord};
+    use agon_services_core::dao::records::{
+        InvitationContextRecord, InvitationRecord, MatchRecord,
+    };
 
     if event.kind.is_remove() {
         return Vec::new();

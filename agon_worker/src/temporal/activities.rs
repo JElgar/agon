@@ -152,8 +152,10 @@ impl AgonActivities {
             .map_err(activity_err)?;
         let match_id = claimed.match_id;
 
-        let mut sides: std::collections::HashMap<String, agon_services_core::dao::records::MatchSideRecord> =
-            Default::default();
+        let mut sides: std::collections::HashMap<
+            String,
+            agon_services_core::dao::records::MatchSideRecord,
+        > = Default::default();
         for side in &input.sides {
             let side_id = agon_services_core::id::new_id();
             sides.insert(

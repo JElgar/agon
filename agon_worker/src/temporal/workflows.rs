@@ -493,7 +493,8 @@ impl MaterializeSeries {
         else {
             return Ok(());
         };
-        let Some(weekday) = agon_services_core::series::weekday_from_sunday_index(series.weekday) else {
+        let Some(weekday) = agon_services_core::series::weekday_from_sunday_index(series.weekday)
+        else {
             return Ok(());
         };
         let Ok(timezone) = series.timezone.parse::<chrono_tz::Tz>() else {

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 /// scoring starts — only a bare manual entry leaves them `None`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballScore"))]
 pub struct Score {
     /// Goal tally, keyed by side id — exactly one entry per side, so a map
     /// rather than the `Vec<{side_id, ...}>` shape used where order or
@@ -62,6 +63,7 @@ impl Default for Score {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballGoalEvent"))]
 pub struct GoalEvent {
     /// The side this goal counts for.
     pub side_id: String,
@@ -86,7 +88,10 @@ pub struct GoalEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Enum))]
-#[cfg_attr(feature = "openapi", oai(rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "openapi",
+    oai(rename = "FootballCardColor", rename_all = "snake_case")
+)]
 pub enum CardColor {
     Yellow,
     Red,
@@ -94,6 +99,7 @@ pub enum CardColor {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballCardEvent"))]
 pub struct CardEvent {
     pub side_id: String,
     pub player_id: String,
@@ -106,6 +112,7 @@ pub struct CardEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballSubstitutionEvent"))]
 pub struct SubstitutionEvent {
     pub side_id: String,
     pub player_in_id: String,
@@ -119,6 +126,7 @@ pub struct SubstitutionEvent {
 /// One kick in a penalty shootout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballPenaltyShootoutKick"))]
 pub struct PenaltyShootoutKick {
     /// The side taking this kick.
     pub side_id: String,
@@ -128,7 +136,10 @@ pub struct PenaltyShootoutKick {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Enum))]
-#[cfg_attr(feature = "openapi", oai(rename_all = "snake_case"))]
+#[cfg_attr(
+    feature = "openapi",
+    oai(rename = "FootballPeriod", rename_all = "snake_case")
+)]
 pub enum Period {
     /// Kickoff — the moment the match clock actually starts. Recorded once,
     /// when the scorer starts live scoring; distinct from the match's
@@ -192,6 +203,7 @@ impl std::str::FromStr for Period {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballPeriodEvent"))]
 pub struct PeriodEvent {
     pub period: Period,
 }
@@ -201,7 +213,10 @@ pub struct PeriodEvent {
 /// here.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Union))]
-#[cfg_attr(feature = "openapi", oai(one_of, discriminator_name = "kind"))]
+#[cfg_attr(
+    feature = "openapi",
+    oai(rename = "FootballLiveEvent", one_of, discriminator_name = "kind")
+)]
 pub enum LiveEvent {
     Goal(GoalEvent),
     Card(CardEvent),
@@ -212,6 +227,7 @@ pub enum LiveEvent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(poem_openapi::Object))]
+#[cfg_attr(feature = "openapi", oai(rename = "FootballFormat"))]
 pub struct Format {
     /// Minutes per half, e.g. 45.
     pub half_length_minutes: u32,

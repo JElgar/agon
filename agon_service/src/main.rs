@@ -6123,10 +6123,12 @@ impl Api {
             )));
         }
         if input.first_round_starts_at <= chrono::Utc::now() - MAX_SCHEDULED_START_IN_PAST {
-            return Ok(CreateTournamentResponse::ValidationError(PlainText(format!(
-                "first_round_starts_at can't be more than {} hours in the past",
-                MAX_SCHEDULED_START_IN_PAST.num_hours()
-            ))));
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "first_round_starts_at can't be more than {} hours in the past",
+                    MAX_SCHEDULED_START_IN_PAST.num_hours()
+                ),
+            )));
         }
         if input.min_teams < 2 {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(

@@ -580,7 +580,9 @@ impl MaterializeSeries {
             MaterializeOutcome::Finish => Ok(()),
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 ctx.timer(to_std_duration(sleep)).await;
-                ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())?
+                // `continue_as_new` only ever returns `Err` (its `Ok` is `Infallible`),
+                // so after `?` there's no value left: match it away to `!`.
+                match ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())? {}
             }
         }
     }

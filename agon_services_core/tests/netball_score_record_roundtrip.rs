@@ -14,7 +14,7 @@
 //! docker compose up -d dynamodb-local dynamodb-local-init
 //! AWS_ENDPOINT_URL=http://localhost:8002 AWS_REGION=eu-west-1 \
 //!   AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=localsecret \
-//!   cargo test -p agon_core --test netball_score_record_roundtrip
+//!   cargo test -p agon_services_core --test netball_score_record_roundtrip
 //! ```
 //! or a bare `DynamoDBLocal.jar` on the same port, with no docker daemon
 //! needed — same env vars, pointed at wherever it's listening. Either way the
@@ -28,8 +28,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
-use agon_core::sports::netball::{
+use agon_services_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_services_core::sports::netball::{
     NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord, NetballPeriodRecord,
     NetballPositionRecord, NetballScoreRecord,
 };
@@ -186,9 +186,9 @@ async fn stored_netball_score_json_still_deserializes() {
         "last_seq": 3
     });
 
-    use agon_core::dao::item::to_item;
-    use agon_core::dao::keys::{Pk, Sk};
-    use agon_core::dao::match_ops::TYPE_MATCH_SCORE;
+    use agon_services_core::dao::item::to_item;
+    use agon_services_core::dao::keys::{Pk, Sk};
+    use agon_services_core::dao::match_ops::TYPE_MATCH_SCORE;
 
     let item = to_item(
         &Pk::Match(match_id.clone()),

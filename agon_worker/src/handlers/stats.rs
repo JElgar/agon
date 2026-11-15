@@ -20,9 +20,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use agon_core::dao::Dao;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::stats::{MatchContribution, MatchOutcome};
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::stats::{MatchContribution, MatchOutcome};
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -107,7 +107,7 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
         }
 
         for (user_id, (outcome, player_ids)) in played {
-            let contribution = agon_core::sports::contribution(
+            let contribution = agon_services_core::sports::contribution(
                 &sport,
                 &cs.score,
                 &player_ids,

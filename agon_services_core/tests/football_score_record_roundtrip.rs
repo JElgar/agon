@@ -6,8 +6,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
-use agon_core::sports::football::{
+use agon_services_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_services_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballGoalEventRecord, FootballScoreRecord,
     FootballSubstitutionEventRecord,
 };
@@ -34,7 +34,7 @@ async fn football_score_record_round_trips_through_dynamodb() {
 
     let mut period_times = HashMap::new();
     period_times.insert(
-        agon_core::sports::football::FootballPeriodRecord::KickOff,
+        agon_services_core::sports::football::FootballPeriodRecord::KickOff,
         "2026-01-10T15:00:00Z".to_string(),
     );
 
@@ -80,10 +80,10 @@ async fn football_score_record_round_trips_through_dynamodb() {
                 minute: Some(70),
                 occurred_at: None,
             }]),
-            period: Some(agon_core::sports::football::FootballPeriodRecord::FullTime),
+            period: Some(agon_services_core::sports::football::FootballPeriodRecord::FullTime),
             period_times: Some(period_times),
             penalty_shootout: Some(vec![
-                agon_core::sports::football::FootballPenaltyShootoutKickRecord {
+                agon_services_core::sports::football::FootballPenaltyShootoutKickRecord {
                     side_id: "side_a".to_string(),
                     scored: true,
                 },
@@ -179,9 +179,9 @@ async fn stored_football_score_json_still_deserializes() {
         "last_seq": 4
     });
 
-    use agon_core::dao::item::to_item;
-    use agon_core::dao::keys::{Pk, Sk};
-    use agon_core::dao::match_ops::TYPE_MATCH_SCORE;
+    use agon_services_core::dao::item::to_item;
+    use agon_services_core::dao::keys::{Pk, Sk};
+    use agon_services_core::dao::match_ops::TYPE_MATCH_SCORE;
 
     let item = to_item(
         &Pk::Match(match_id.clone()),

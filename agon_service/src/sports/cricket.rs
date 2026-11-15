@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 
 use poem_openapi::{Enum, Object, Union};
 
-use agon_core::sports::cricket::Cricket;
-use agon_core::sports::cricket::{
+use agon_services_core::sports::cricket::Cricket;
+use agon_services_core::sports::cricket::{
     BestBowlingFiguresRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
     CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
     CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,

@@ -31,7 +31,9 @@ use rand::SeedableRng;
 use rand::seq::SliceRandom;
 use rand_chacha::ChaCha8Rng;
 
-use crate::rating::{BETA, SCALE};
+use serde::{Deserialize, Serialize};
+
+use super::scale::{BETA, SCALE};
 
 /// Splits whose `Σμ` spread is within this of the best (native μ; 0.5 is 15
 /// display points) count as equally even.
@@ -50,7 +52,8 @@ pub const RESTARTS: usize = 12;
 /// At most this many distinct near-best splits are kept for the re-roll.
 const CANDIDATE_CAP: usize = 256;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Method {
     Random,
     AutoBalanced,
@@ -65,20 +68,39 @@ pub struct PoolSlot {
     pub pinned_to: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuildError {
-    #[error("there are no sides to place players into")]
     NoSides,
-    #[error("player is pinned to side {0}, which doesn't exist")]
     BadPin(usize),
-    #[error("{players} players don't fit: the sides hold {capacity} at most")]
     OverCapacity { players: usize, capacity: usize },
-    #[error("side {0} has more players pinned to it than it holds")]
     PinnedOverCap(usize),
 }
 
+// Hand-written rather than `thiserror`, to keep this crate's dependency
+// list to what a wasm32 build needs.
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSides => write!(f, "there are no sides to place players into"),
+            Self::BadPin(s) => write!(f, "player is pinned to side {s}, which doesn't exist"),
+            Self::OverCapacity { players, capacity } => {
+                write!(
+                    f,
+                    "{players} players don't fit: the sides hold {capacity} at most"
+                )
+            }
+            Self::PinnedOverCap(s) => {
+                write!(f, "side {s} has more players pinned to it than it holds")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
 /// How even a split came out, in the units the UI shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Even,
     Close,
@@ -101,7 +123,7 @@ pub struct Balance {
     pub verdict: Verdict,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WinProbability {
     pub expected: f64,
     pub low: f64,
@@ -462,7 +484,7 @@ pub fn balance(players: &[PoolSlot], sides: &[Vec<usize>]) -> Balance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rating::INITIAL_SIGMA;
+    use crate::team_builder::scale::INITIAL_SIGMA;
 
     fn slot(mu: f64, sigma: f64) -> PoolSlot {
         PoolSlot {

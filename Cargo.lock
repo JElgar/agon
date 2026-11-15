@@ -12,30 +12,21 @@ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 name = "agon_core"
 version = "0.1.0"
 dependencies = [
- "aws-config",
- "aws-sdk-dynamodb",
- "base64 0.22.1",
  "chrono",
- "chrono-tz",
- "google-fcm1",
- "meilisearch-sdk",
- "opentelemetry",
- "opentelemetry-appender-tracing",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
+ "poem-openapi",
  "rand 0.9.1",
  "rand_chacha 0.9.0",
- "rustls 0.23.28",
  "serde",
- "serde_dynamo",
  "serde_json",
- "skillratings",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "yup-oauth2",
+]
+
+[[package]]
+name = "agon_core_wasm"
+version = "0.1.0"
+dependencies = [
+ "agon_core",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -43,6 +34,7 @@ name = "agon_service"
 version = "0.1.0"
 dependencies = [
  "agon_core",
+ "agon_services_core",
  "aws-config",
  "aws-sdk-s3",
  "base64 0.22.1",
@@ -67,10 +59,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "agon_services_core"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "google-fcm1",
+ "meilisearch-sdk",
+ "opentelemetry",
+ "opentelemetry-appender-tracing",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rand 0.9.1",
+ "rustls 0.23.28",
+ "serde",
+ "serde_dynamo",
+ "serde_json",
+ "skillratings",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "yup-oauth2",
+]
+
+[[package]]
 name = "agon_worker"
 version = "0.1.0"
 dependencies = [
- "agon_core",
+ "agon_services_core",
  "aws-config",
  "aws-sdk-sqs",
  "chrono",

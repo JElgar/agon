@@ -3,7 +3,7 @@
 //!
 //! # Adding a sport
 //!
-//! 1. Add `agon_core::sports::<sport>`: the sport's record types (score,
+//! 1. Add `agon_services_core::sports::<sport>`: the sport's record types (score,
 //!    format, live event, lifetime stats), a unit marker type named after the
 //!    sport, and `impl SportRecord` for it. List the stats record's personal
 //!    bests with [`personal_bests!`].
@@ -33,7 +33,7 @@ pub mod netball;
 ///
 /// - `modeled`: sports with their own score, format, live-event and stats
 ///   types. `Variant` names the marker type at
-///   `agon_core::sports::<key>::<Variant>`, which implements [`SportRecord`]
+///   `agon_services_core::sports::<key>::<Variant>`, which implements [`SportRecord`]
 ///   here and `agon_service::sports::Sport` in the API crate.
 /// - `generic`: sports scored with the shared set-by-set shape and common
 ///   stats only. They have no live scoring.

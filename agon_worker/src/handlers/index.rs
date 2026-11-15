@@ -9,15 +9,15 @@
 //! endpoints need to match on and render a row. Full hydration happens from
 //! DynamoDB when a result is opened.
 
-use agon_core::dao::Dao;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::match_ops::MatchAggregate;
-use agon_core::dao::records::{TeamRecord, UserRecord};
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::match_ops::MatchAggregate;
+use agon_services_core::dao::records::{TeamRecord, UserRecord};
 use serde::Serialize;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
-use agon_core::search::{Index, SearchClient};
+use agon_services_core::search::{Index, SearchClient};
 
 /// A user search document (index `users`).
 #[derive(Debug, Serialize)]
@@ -78,7 +78,7 @@ pub struct MatchDoc {
     /// open_join.is_some()`) — the Discover "open to ringers" filter.
     open: bool,
     /// `open` and currently has room for another individual arrival — see
-    /// `agon_core::dao::open_join::open_has_space`'s doc comment on what
+    /// `agon_services_core::dao::open_join::open_has_space`'s doc comment on what
     /// this approximates. Meaningless (always `false`) when `open` is
     /// `false`.
     open_has_space: bool,
@@ -226,6 +226,6 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
         drawing_participant_ids: drawing_participant_ids.into_iter().collect(),
         series_id: m.series_id.clone(),
         open: m.open_join.is_some(),
-        open_has_space: agon_core::dao::open_join::open_has_space(agg),
+        open_has_space: agon_services_core::dao::open_join::open_has_space(agg),
     }
 }

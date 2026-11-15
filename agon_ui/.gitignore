@@ -31,3 +31,6 @@ src/types/api.ts
 /playwright-report
 /blob-report
 /playwright/.cache
+
+# wasm-bindgen output of agon_core_wasm (`npm run build:wasm`)
+src/wasm/

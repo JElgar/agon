@@ -25,7 +25,7 @@
 //! client deserializes `AttributeValue` as a strict tagged union and rejects
 //! the untagged `{}` outright — "Union did not contain a valid variant" —
 //! which fails the *entire* GetRecords response, not just that one
-//! attribute. Since `agon_core`'s records commonly carry an empty map early
+//! attribute. Since `agon_services_core`'s records commonly carry an empty map early
 //! in their life (e.g. a fresh user's `stats: {}`), this isn't a rare edge
 //! case locally — it's most records, most of the time.
 //!

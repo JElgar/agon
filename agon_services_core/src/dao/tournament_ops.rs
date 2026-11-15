@@ -2,7 +2,7 @@
 //! (request/accept/withdraw), the entry-count counter, status transitions,
 //! and bracket edges. Generating a tournament's matches from an accepted
 //! entry list is not part of this module — the pure shape (which matches,
-//! which fixtures, which squads) lives in `agon_core::tournament`; actually
+//! which fixtures, which squads) lives in `agon_services_core::tournament`; actually
 //! writing them is `agon_service`'s `start` handler, via the ordinary
 //! `Dao::create_match` every other match creation path uses, same split as
 //! `dao::series_ops`/`agon_worker`'s `materialize_series`.

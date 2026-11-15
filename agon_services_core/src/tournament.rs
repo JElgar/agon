@@ -1,13 +1,13 @@
 //! Pure tournament generation algorithms: knockout bracket construction,
 //! round-robin fixture lists, and the snake draft a teamless tournament uses
 //! to assemble squads. No DynamoDB/DAO types here — same separation as
-//! `agon_core::series`'s date math versus `dao::series_ops`'s storage, kept
+//! `agon_services_core::series`'s date math versus `dao::series_ops`'s storage, kept
 //! so these are directly unit-testable and so the service layer and any
 //! future caller can never disagree on what a given entrant list produces.
 //!
 //! Match ids aren't minted here: a plan addresses its own matches by
 //! placeholder ids (`"R<round>M<slot>"`) so the whole bracket/fixture shape
-//! is deterministic and assertable in a test without touching `agon_core::id`.
+//! is deterministic and assertable in a test without touching `agon_services_core::id`.
 //! The caller (the DAO/service layer, which does mint real ids) replaces
 //! each placeholder with a freshly minted match id before writing anything.
 

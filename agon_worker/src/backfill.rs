@@ -10,8 +10,14 @@
 //! - **as a repair tool**, any time. It's idempotent: each match is rebuilt from
 //!   the current DynamoDB state, so re-running only rewrites the same documents.
 //!
-//! It scans the table (only `MATCH#…/#META` keys), syncs matches with bounded
-//! concurrency and retries, and logs a resumable cursor after every page.
+//! It lists matches from the entity index (GSI4, `ENTITY#match`, oldest first),
+//! so it reads only match keys rather than scanning the table. It syncs them
+//! with bounded concurrency and retries, and logs a resumable cursor after every
+//! page.
+//!
+//! **Run the entity-index migration first** on a table that predates GSI4
+//! (`claude/entity-index-migration`). A match without index keys isn't listed,
+//! so it would be skipped silently. `--match <id>` doesn't use the index.
 //!
 //! ```text
 //! agon_worker backfill-opensearch [--concurrency 8] [--page-size 500]
@@ -29,13 +35,14 @@
 use std::time::Duration;
 
 use agon_services_core::dao::Dao;
+use agon_services_core::dao::entity_index::EntityKind;
 use agon_services_core::opensearch::{OpenSearchClient, SyncOutcome, all_indices, sync_match};
 use futures::StreamExt;
 
 #[derive(Debug, Clone)]
 pub struct BackfillArgs {
     pub concurrency: usize,
-    pub page_size: i32,
+    pub page_size: u32,
     pub resume: Option<String>,
     pub only: Vec<String>,
     pub swap: bool,
@@ -155,10 +162,10 @@ pub async fn run(args: BackfillArgs) -> i32 {
     let mut cursor = args.resume.clone();
     let mut pages = 0u64;
     loop {
-        let page = match scan_with_retry(&dao, cursor.as_deref(), args.page_size).await {
+        let page = match list_with_retry(&dao, cursor.as_deref(), args.page_size).await {
             Ok(p) => p,
             Err(e) => {
-                tracing::error!(error = %e, resume = ?cursor, "scan failed; re-run with --resume <cursor> to continue");
+                tracing::error!(error = %e, resume = ?cursor, "listing matches failed; re-run with --resume <cursor> to continue");
                 log_summary(&counts);
                 return 1;
             }
@@ -277,15 +284,18 @@ async fn sync_with_retry(
     Err(last)
 }
 
-async fn scan_with_retry(
+async fn list_with_retry(
     dao: &Dao,
     cursor: Option<&str>,
-    page_size: i32,
+    page_size: u32,
 ) -> Result<agon_services_core::dao::Page<String>, String> {
     let mut delay = Duration::from_millis(500);
     let mut last = String::new();
     for attempt in 0..5 {
-        match dao.scan_match_ids(None, cursor, page_size).await {
+        match dao
+            .list_entity_ids(EntityKind::Match, false, cursor, page_size)
+            .await
+        {
             Ok(p) => return Ok(p),
             Err(e) => {
                 last = e.to_string();

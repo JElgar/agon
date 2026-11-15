@@ -108,7 +108,7 @@ agon_worker backfill-opensearch --resume <cursor>   # continue from a logged cur
 
 Other flags:
 - `--concurrency N`: matches synced in parallel. Default 8.
-- `--page-size N`: keys examined per scan page. Default 500.
+- `--page-size N`: match ids per page read from the entity index. Default 500.
 - `--no-swap`: fill the index without moving the aliases.
 - `--delete-old`: after the swap, delete the superseded index versions.
 
@@ -119,6 +119,11 @@ variables, not the worker's SQS, Meilisearch or Temporal settings.
 - **Locally:** `make backfill-opensearch-local` reads DynamoDB Local. Plain
   `cargo run -p agon_worker -- backfill-opensearch` reads whatever DynamoDB the
   `AWS_*` settings point at.
+
+It lists matches from the entity index (GSI4), not a table scan. On a table
+that predates the index, run the entity-index migration first
+(`claude/entity-index-migration`), or matches without index keys are skipped.
+`--match` reads matches directly and doesn't need the index.
 
 It logs `reading dynamodb` with the table and endpoint before it does
 anything, so check that line when you're not sure which table you're on.

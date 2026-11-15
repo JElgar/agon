@@ -23,12 +23,17 @@ function sideNameFor(match: Match, sideId: string | null | undefined): string {
 }
 
 /**
- * "Review the final roster" flow — every player on `match` whose invitation
- * is still pending, with a one-click Revoke per row. Opened from
- * `PendingInvitesNudge`, which surfaces it as a dismissible heads-up before
- * kickoff or a result is published: a still-pending invite next to a game
- * that's clearly already happened without that person is usually stale, not
- * something to keep waiting on.
+ * Every player on `match` whose invitation is still pending, with a
+ * one-click Revoke per row. Opened either from `PendingInvitesNudge` (a
+ * dismissible heads-up before kickoff or a result is published: a
+ * still-pending invite next to a game that's clearly already happened
+ * without that person is usually stale, not something to keep waiting on),
+ * or directly from the scheduled-match screen's pending-invites entry point.
+ *
+ * A reserving invite (`reserve_spot`) already holds a roster spot and shows
+ * in "Who's going" too (as "Invited") — flagged here as "holds a spot" so
+ * revoking it is understood to free that spot, unlike an ordinary pending
+ * invite, which doesn't count either way.
  *
  * Match admin only to open (mirrors who can send/revoke invites elsewhere);
  * callers gate that themselves.
@@ -61,11 +66,12 @@ export function PendingInvitesDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Review the final roster</DialogTitle>
+          <DialogTitle>Pending invites</DialogTitle>
           <DialogDescription>
-            These invites are still unanswered. Revoke any that clearly aren't
-            playing, or leave them — they don't count toward the roster
-            either way.
+            These invites are still unanswered. "Holds a spot" invites
+            already count toward the roster; revoking one frees that spot.
+            The rest don't count either way — revoke any that clearly aren't
+            playing, or leave them.
           </DialogDescription>
         </DialogHeader>
 
@@ -87,7 +93,7 @@ export function PendingInvitesDialog({
                       {memberName(p.member)}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {sideNameFor(match, p.side_id)} · invited
+                      {sideNameFor(match, p.side_id)} · {p.member.invitation!.reserve_spot ? 'holds a spot' : 'invited'}
                     </span>
                   </div>
                 </div>

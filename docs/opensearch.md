@@ -8,8 +8,8 @@ OpenSearch can be rebuilt from it at any time.
 
 | Index (read alias) | One document per | Used for (once reads move over) |
 |---|---|---|
-| `matches` | match, any status. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.

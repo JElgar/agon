@@ -13578,7 +13578,12 @@ async fn main() {
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
     let api_service = OpenApiService::new(
-        (Api, admin::AdminApi, youtube::YoutubeApi, team_stats::TeamStatsApi),
+        (
+            Api,
+            admin::AdminApi,
+            youtube::YoutubeApi,
+            team_stats::TeamStatsApi,
+        ),
         "Agon API",
         "1.0",
     )

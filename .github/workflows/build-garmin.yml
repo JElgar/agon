@@ -5,7 +5,7 @@ env:
   # The Garmin EULA's hash changes whenever the EULA text does, and
   # `agreement accept` needs the current one or it's rejected. Obtain it by
   # running `connect-iq-sdk-manager agreement view` locally and store the
-  # printed hash in the CONNECTIQ_AGREEMENT_HASH repo secret.
+  # printed hash in the GARMIN_CONNECTIQ_AGREEMENT_HASH repo secret.
   CONNECTIQ_SDK_MANAGER_VERSION: v1.3.0
   # Exact version, not a range, so a CI run today and in six months compile
   # against the same SDK. Bump by hand when the watch app needs a newer one.
@@ -23,7 +23,7 @@ jobs:
             | sh -s -- -d "$CONNECTIQ_SDK_MANAGER_VERSION"
 
       - name: Accept Connect IQ SDK license agreement
-        run: connect-iq-sdk-manager agreement accept --agreement-hash="${{ secrets.CONNECTIQ_AGREEMENT_HASH }}"
+        run: connect-iq-sdk-manager agreement accept --agreement-hash="${{ secrets.GARMIN_CONNECTIQ_AGREEMENT_HASH }}"
 
       - name: Log in to Garmin
         env:
@@ -46,7 +46,7 @@ jobs:
       # secret so the real .der is never committed — it's gitignored
       # (agon_garmin_app/.gitignore: *.der).
       - name: Write developer key
-        run: echo "${{ secrets.CONNECTIQ_DEVELOPER_KEY_B64 }}" | base64 -d > developer_key.der
+        run: echo "${{ secrets.GARMIN_CONNECTIQ_DEVELOPER_KEY_B64 }}" | base64 -d > developer_key.der
 
       - name: Build
         run: |

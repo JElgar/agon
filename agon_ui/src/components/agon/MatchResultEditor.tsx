@@ -100,9 +100,11 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
  */
 export function MatchResultEditor({
   match,
+  videoGoals,
   onDone,
 }: {
   match: Match
+  videoGoals?: components['schemas']['FootballGoalEvent'][]
   onDone: () => void
 }) {
   const queryClient = useQueryClient()
@@ -119,6 +121,10 @@ export function MatchResultEditor({
   // The result to prepopulate the form with: confirmed if there is one, else
   // a still-pending submission awaiting the other side's confirmation.
   const currentScore = displayScore(match)?.score
+  const footballInitial: Score | undefined = !currentScore && videoGoals?.length
+    ? { type: 'Football', score: {}, goals: videoGoals, players: {} }
+    : currentScore
+  const [videoComplete, setVideoComplete] = useState(false)
   const [sets, setSets] = useState<SetRow[]>(() => seedSets(match, aId, bId))
   const [points, setPoints] = useState<[string, string]>(() => seedPoints(match, aId, bId))
   const [pointsA, pointsB] = points
@@ -193,6 +199,14 @@ export function MatchResultEditor({
   const save = useMutation({
     mutationFn: async (override: boolean): Promise<'saved' | 'conflict'> => {
       if (!built) throw new Error('Enter a score first')
+      if (videoGoals) {
+        const { data: latest } = await fetchClient.GET('/matches/{match_id}', {
+          params: { path: { match_id: match.id } },
+        })
+        if (!latest || displayScore(latest) || latest.status === 'in_progress' || latest.status === 'cancelled') {
+          throw new Error('The match changed. Reopen the result editor to review its current score.')
+        }
+      }
       const body: UpdateMatchInput = {
         score: built.score,
       }
@@ -229,7 +243,7 @@ export function MatchResultEditor({
           sideA={sideA}
           sideB={sideB}
           players={match.players}
-          initial={currentScore}
+          initial={footballInitial}
           onChange={setDetailBuilt}
         />
       ) : isCricket && sideA && sideB ? (
@@ -355,12 +369,18 @@ export function MatchResultEditor({
         </p>
       )}
 
+      {videoGoals && (
+        <label className="flex min-h-11 items-center gap-2 text-sm">
+          <input type="checkbox" checked={videoComplete} onChange={(event) => setVideoComplete(event.target.checked)} />
+          I’ve added any other goals and checked the full match result.
+        </label>
+      )}
       <PendingInvitesNudge match={match} />
 
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={!built || save.isPending}
+          disabled={!built || save.isPending || (!!videoGoals && !videoComplete)}
           onClick={() => save.mutate(!!conflict)}
         >
           {save.isPending ? 'Saving…' : conflict ? 'Save anyway' : 'Save result'}

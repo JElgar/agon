@@ -12,10 +12,21 @@ export default defineConfig(({ mode }) => {
   // process.env) is what actually reads .env for a config-time value like
   // this — Vite only auto-loads .env into process.env for client code.
   const env = loadEnv(mode, __dirname, '')
-  const apiProxyTarget = env.AGON_API_PROXY_TARGET || 'https://agon.staging.get-agon.com'
+  const demo = mode === 'video-demo'
+  const videoWorker = env.AGON_VIDEO_WORKER_URL || (demo ? 'http://127.0.0.1:7002' : '')
+  const apiProxyTarget = demo ? videoWorker : env.AGON_API_PROXY_TARGET || 'https://agon.staging.get-agon.com'
 
   return {
   plugins: [
+    ...(demo ? [{
+      name: 'video-demo-route',
+      configureServer(server: import('vite').ViteDevServer) {
+        server.middlewares.use((req, _res, next) => {
+          if (req.url === '/matches/demo') req.url = '/video-demo.html'
+          next()
+        })
+      },
+    }] : []),
     react(),
     tailwindcss(),
     VitePWA({
@@ -110,6 +121,9 @@ export default defineConfig(({ mode }) => {
   ],
   resolve: {
     alias: {
+      ...(demo ? {
+        '@/wasm/agon_core/agon_core_wasm': path.resolve(__dirname, './video-demo/unused-wasm.ts'),
+      } : {}),
       '@': path.resolve(__dirname, './src'),
     },
   },
@@ -131,10 +145,11 @@ export default defineConfig(({ mode }) => {
       // reaches it (see agon-api-ingress in agon_infra/index.ts). A local
       // agon_service has no ingress in front of it, so this proxy strips it
       // instead whenever pointed directly at one.
+      ...(videoWorker ? { '/video-analysis': { target: videoWorker, changeOrigin: true } } : {}),
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,
-        ...(env.AGON_API_PROXY_TARGET ? { rewrite: (path: string) => path.replace(/^\/api/, '') } : {}),
+        ...((demo || env.AGON_API_PROXY_TARGET) ? { rewrite: (path: string) => path.replace(/^\/api/, '') } : {}),
       }
     },
   },

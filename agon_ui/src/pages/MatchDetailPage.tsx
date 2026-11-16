@@ -69,6 +69,7 @@ import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
 import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
 import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
+import { VideoAnalysisPanel } from '@/components/agon/VideoAnalysisPanel'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { SideAdminsEditor } from '@/components/agon/SideAdminsEditor'
@@ -201,6 +202,7 @@ export function MatchDetailPage() {
 
   return (
     <MatchDetail
+      key={query.data.id}
       match={query.data}
       currentUserId={currentUserId}
       onBack={() => navigate(-1)}
@@ -220,6 +222,7 @@ function MatchDetail({
   onBack: () => void
 }) {
   const [editingResult, setEditingResult] = useState(false)
+  const [videoGoals, setVideoGoals] = useState<components['schemas']['FootballGoalEvent'][]>()
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
   // The tab bar: Summary/Timeline/Players for football and netball, cricket
@@ -408,6 +411,7 @@ function MatchDetail({
           <DropdownMenuItem
             onSelect={() => {
               setMatchTab('summary')
+              setVideoGoals(undefined)
               setEditingResult(true)
             }}
           >
@@ -466,6 +470,28 @@ function MatchDetail({
     </>
   )
 
+  const resultTools = (
+    <>
+      {canEdit && !cancelled && match.match_type === 'football' &&
+        (import.meta.env.VITE_VIDEO_ANALYSIS === '1' || import.meta.env.MODE === 'video-demo') && (
+        <VideoAnalysisPanel
+          match={match}
+          canImport={!scoreInfo && !isCurrentlyLive && !editingResult}
+          onImport={(goals) => {
+            setVideoGoals(goals)
+            setEditingResult(true)
+          }}
+        />
+      )}
+      {editingResult && (
+        <MatchResultEditor match={match} videoGoals={videoGoals} onDone={() => {
+          setVideoGoals(undefined)
+          setEditingResult(false)
+        }} />
+      )}
+    </>
+  )
+
   if (isScheduledInvite) {
     return (
       <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-4 md:mb-0 md:min-h-0 xl:max-w-[1040px]">
@@ -476,6 +502,7 @@ function MatchDetail({
           onBack={onBack}
           onShare={() => shareMatch(match)}
           onEdit={() => navigate(`/matches/${match.id}/edit`)}
+          resultTools={resultTools}
         />
       </div>
     )
@@ -580,7 +607,7 @@ function MatchDetail({
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
       {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
-      {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
+      {resultTools}
     </>
   )
   // The sport's summary cards, shared by the Summary tab and the desktop board.

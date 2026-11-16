@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
@@ -180,6 +180,7 @@ export function ScheduledMatchInvite({
   onBack,
   onShare,
   onEdit,
+  resultTools,
 }: {
   match: Match
   currentUserId?: string
@@ -187,6 +188,7 @@ export function ScheduledMatchInvite({
   onBack: () => void
   onShare: () => void
   onEdit: () => void
+  resultTools?: ReactNode
 }) {
   const queryClient = useQueryClient()
   const [sideA, sideB] = match.sides
@@ -407,6 +409,8 @@ export function ScheduledMatchInvite({
                   <Radio className="size-5" /> Start scoring
                 </Link>
               )}
+
+              {resultTools}
 
               {going.length > 0 && (
                 <Card className="flex flex-col p-0">

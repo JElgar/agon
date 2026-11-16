@@ -23,6 +23,13 @@ pub struct Team {
     pub follower_count: u32,
     /// Whether the requesting user follows this team.
     pub is_followed_by_me: bool,
+    /// The team's colour (`#rrggbb`), if it has one. Squad teams do.
+    pub colour: Option<String>,
+    /// Set when this team is a teamless tournament's squad: the tournament
+    /// it belongs to, to link back to. Such a team only exists inside that
+    /// tournament: it can't be searched, followed, joined or managed through
+    /// the team endpoints (rename it as a squad on the tournament instead).
+    pub tournament_id: Option<String>,
 }
 
 /// A person's membership of a team: the shared `Member` (user or external,

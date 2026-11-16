@@ -402,9 +402,9 @@ function TournamentMatchRow({ match }: { match: TournamentMatchSummary }) {
 }
 
 /** A standings row's `entrant_id` is the `team_id` its match sides carry —
- *  a real team's id, or a teamless tournament's synthetic `"squad-<n>"` —
- *  so its display name comes off those sides (a squad's organiser-set name
- *  is the side's own `name`), the same way `TournamentMatchRow` names them. */
+ *  a real team's id, or a teamless tournament's squad team (see
+ *  `Team.tournament_id`) — so its display name comes off those sides (the
+ *  server fills in `team_name`), the same way `TournamentMatchRow` names them. */
 function entrantNames(matches: TournamentMatchSummary[]): Map<string, string> {
   const names = new Map<string, string>()
   for (const match of matches) {

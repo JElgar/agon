@@ -333,6 +333,33 @@ pub struct TeamRecord {
     #[serde(default)]
     pub follower_count: u64,
     pub created_at: String,
+    /// The team's colour (`#rrggbb`), shown on its match sides. Only squad
+    /// teams set it for now; other teams get a colour derived from their id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
+    /// Set when this team is a teamless tournament's squad: the tournament it
+    /// belongs to. A tournament team exists only inside that tournament. It
+    /// isn't searchable, followable or listed under anyone's teams, can't be
+    /// managed through the team endpoints, and can't play outside the
+    /// tournament. See [`squad_team_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_id: Option<String>,
+}
+
+impl TeamRecord {
+    /// True for a teamless tournament's squad team.
+    pub fn is_tournament_team(&self) -> bool {
+        self.tournament_id.is_some()
+    }
+}
+
+/// The team id of squad `squad` (the entries' 0-based `squad` index) in a
+/// teamless tournament. Deterministic, so starting a tournament twice (a
+/// retry after a partial failure) finds the same teams instead of making
+/// duplicates, and any code holding a tournament and a squad index can name
+/// its team without a lookup.
+pub fn squad_team_id(tournament_id: &str, squad: u32) -> String {
+    format!("{tournament_id}.squad{squad}")
 }
 
 /// `TEAM#<teamId>` / `MEMBER#<membershipId>` — a team membership. Embeds the

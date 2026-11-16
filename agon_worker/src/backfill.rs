@@ -1,5 +1,5 @@
-//! `agon_worker backfill-opensearch`: rebuild every match's OpenSearch documents
-//! from DynamoDB.
+//! `agon_worker backfill-opensearch`: rebuild every match's and user's
+//! OpenSearch documents from DynamoDB.
 //!
 //! Use it:
 //! - **once, to load existing history** after OpenSearch is first deployed;
@@ -7,22 +7,24 @@
 //!   worker first, so live changes already go to the new index, then run this
 //!   to fill it. When it finishes cleanly it points the read aliases at the new
 //!   version;
-//! - **as a repair tool**, any time. It's idempotent: each match is rebuilt from
-//!   the current DynamoDB state, so re-running only rewrites the same documents.
+//! - **as a repair tool**, any time. It's idempotent: each match or user is
+//!   rebuilt from the current DynamoDB state, so re-running only rewrites the
+//!   same documents.
 //!
-//! It lists matches from the entity index (GSI4, `ENTITY#match`, oldest first),
-//! so it reads only match keys rather than scanning the table. It syncs them
-//! with bounded concurrency and retries, and logs a resumable cursor after every
-//! page.
+//! It lists matches and users from the entity index (GSI4, `ENTITY#match` /
+//! `ENTITY#user`, oldest first), so it reads only their keys rather than
+//! scanning the table. Both run in the same invocation, each with its own
+//! bounded concurrency, retries and resumable cursor, logged after every page.
 //!
 //! **Run the entity-index migration first** on a table that predates GSI4
-//! (`claude/entity-index-migration`). A match without index keys isn't listed,
-//! so it would be skipped silently. `--match <id>` doesn't use the index.
+//! (`claude/entity-index-migration`). A match or user without index keys isn't
+//! listed, so it would be skipped silently. `--match <id>` doesn't use the
+//! index, and targets matches only (no analogous per-user flag yet).
 //!
 //! ```text
 //! agon_worker backfill-opensearch [--concurrency 8] [--page-size 500]
-//!                                 [--resume <cursor>] [--match <id>]...
-//!                                 [--no-swap] [--delete-old]
+//!                                 [--resume <cursor>] [--resume-users <cursor>]
+//!                                 [--match <id>]... [--no-swap] [--delete-old]
 //! ```
 //!
 //! Needs `AGON_TABLE_NAME`, AWS credentials and `OPENSEARCH_URL` (plus the
@@ -36,7 +38,9 @@ use std::time::Duration;
 
 use agon_services_core::dao::Dao;
 use agon_services_core::dao::entity_index::EntityKind;
-use agon_services_core::opensearch::{OpenSearchClient, SyncOutcome, all_indices, sync_match};
+use agon_services_core::opensearch::{
+    OpenSearchClient, SyncOutcome, UserSyncOutcome, all_indices, sync_match, sync_user,
+};
 use futures::StreamExt;
 
 #[derive(Debug, Clone)]
@@ -44,6 +48,7 @@ pub struct BackfillArgs {
     pub concurrency: usize,
     pub page_size: u32,
     pub resume: Option<String>,
+    pub resume_users: Option<String>,
     pub only: Vec<String>,
     pub swap: bool,
     pub delete_old: bool,
@@ -55,6 +60,7 @@ impl Default for BackfillArgs {
             concurrency: 8,
             page_size: 500,
             resume: None,
+            resume_users: None,
             only: Vec::new(),
             swap: true,
             delete_old: false,
@@ -84,6 +90,7 @@ impl BackfillArgs {
                         .map_err(|_| "--page-size must be a number")?;
                 }
                 "--resume" => out.resume = Some(value("--resume")?),
+                "--resume-users" => out.resume_users = Some(value("--resume-users")?),
                 "--match" => out.only.push(value("--match")?),
                 "--no-swap" => out.swap = false,
                 "--delete-old" => out.delete_old = true,
@@ -102,6 +109,13 @@ struct Counts {
     indexed: u64,
     removed: u64,
     player_rows: u64,
+    failed: u64,
+}
+
+#[derive(Debug, Default)]
+struct UserCounts {
+    indexed: u64,
+    removed: u64,
     failed: u64,
 }
 
@@ -197,17 +211,56 @@ pub async fn run(args: BackfillArgs) -> i32 {
         }
     }
 
+    let mut user_counts = UserCounts::default();
+    let mut user_cursor = args.resume_users.clone();
+    let mut user_pages = 0u64;
+    loop {
+        let page = match list_users_with_retry(&dao, user_cursor.as_deref(), args.page_size).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, resume = ?user_cursor, "listing users failed; re-run with --resume-users <cursor> to continue");
+                log_user_summary(&user_counts);
+                return 1;
+            }
+        };
+        let results: Vec<_> = futures::stream::iter(page.items.iter())
+            .map(|id| {
+                let (os, dao, now) = (&os, &dao, &now);
+                async move { (id.clone(), user_sync_with_retry(os, dao, id, now).await) }
+            })
+            .buffer_unordered(args.concurrency)
+            .collect()
+            .await;
+        for (id, res) in results {
+            record_user(&mut user_counts, &id, res);
+        }
+        user_pages += 1;
+        user_cursor = page.next_cursor;
+        tracing::info!(
+            pages = user_pages,
+            indexed = user_counts.indexed,
+            removed = user_counts.removed,
+            failed = user_counts.failed,
+            "user backfill progress"
+        );
+        if user_cursor.is_none() {
+            break;
+        }
+    }
+
     for def in all_indices() {
         if let Err(e) = os.refresh(&os.write_index(&def)).await {
             tracing::warn!(error = %e, "refresh failed");
         }
     }
     log_summary(&counts);
+    log_user_summary(&user_counts);
 
-    if counts.failed > 0 {
+    if counts.failed > 0 || user_counts.failed > 0 {
         tracing::error!(
-            failed = counts.failed,
-            "some matches failed; aliases NOT moved. Fix the cause and re-run (it's safe to repeat)"
+            matches_failed = counts.failed,
+            users_failed = user_counts.failed,
+            "some matches or users failed; aliases NOT moved. Fix the cause and re-run (it's safe to repeat)"
         );
         return 1;
     }
@@ -255,7 +308,27 @@ fn log_summary(c: &Counts) {
         removed = c.removed,
         player_rows = c.player_rows,
         failed = c.failed,
-        "backfill finished"
+        "match backfill finished"
+    );
+}
+
+fn record_user(counts: &mut UserCounts, id: &str, res: Result<UserSyncOutcome, String>) {
+    match res {
+        Ok(UserSyncOutcome::Indexed) => counts.indexed += 1,
+        Ok(UserSyncOutcome::Removed) => counts.removed += 1,
+        Err(e) => {
+            counts.failed += 1;
+            tracing::error!(user_id = %id, error = %e, "user failed after retries");
+        }
+    }
+}
+
+fn log_user_summary(c: &UserCounts) {
+    tracing::info!(
+        indexed = c.indexed,
+        removed = c.removed,
+        failed = c.failed,
+        "user backfill finished"
     );
 }
 
@@ -309,6 +382,56 @@ async fn list_with_retry(
     Err(last)
 }
 
+/// [`sync_with_retry`], for users.
+async fn user_sync_with_retry(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    id: &str,
+    now: &str,
+) -> Result<UserSyncOutcome, String> {
+    let mut delay = Duration::from_millis(500);
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match sync_user(os, dao, id, now, false).await {
+            Ok(o) => return Ok(o),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 4 {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// [`list_with_retry`], for users.
+async fn list_users_with_retry(
+    dao: &Dao,
+    cursor: Option<&str>,
+    page_size: u32,
+) -> Result<agon_services_core::dao::Page<String>, String> {
+    let mut delay = Duration::from_millis(500);
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match dao
+            .list_entity_ids(EntityKind::User, false, cursor, page_size)
+            .await
+        {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 4 {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +456,12 @@ mod tests {
         assert!(!a.swap);
         assert_eq!(a.only, vec!["m1", "m2"]);
         assert_eq!(a.page_size, 500);
+    }
+
+    #[test]
+    fn parses_resume_users() {
+        let a = BackfillArgs::parse(&args(&["--resume-users", "cursor123"])).unwrap();
+        assert_eq!(a.resume_users.as_deref(), Some("cursor123"));
     }
 
     #[test]

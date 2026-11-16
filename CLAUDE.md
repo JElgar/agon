@@ -19,7 +19,7 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 - **Web Framework**: Poem with poem-openapi for automatic OpenAPI generation
 - **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_services_core` DAO. See `docs/dynamodb-design.md`.
 - **Search**: Meilisearch powers the discovery/search endpoints (users, teams, matches), kept in sync by `agon_worker`.
-- **Stats store**: OpenSearch holds match documents and per-player match rows for team stats and leaderboards. Shadow writes only for now (`agon_worker` keeps it in sync; nothing reads it yet). See `docs/opensearch.md`.
+- **Stats store**: OpenSearch holds match documents, per-player match rows (team stats and leaderboards) and a `users` index. `agon_worker` keeps it in sync; `matches`/`match_stats` are still shadow writes only (nothing reads them yet), but `users` backs `GET /admin/stats`'s total-users count. See `docs/opensearch.md`.
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
 - **Observability**: OTLP export (logs/traces/metrics) from both binaries via

@@ -19,7 +19,9 @@ use poem_openapi::{ApiResponse, OpenApi};
 
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
-use crate::{page_limit, require_uid, search_cursor, search_internal, search_offset};
+use crate::{
+    opensearch_internal, page_limit, require_uid, search_cursor, search_internal, search_offset,
+};
 
 pub struct AdminApi;
 
@@ -58,6 +60,16 @@ fn admin_user_from_record(record: &dao::records::UserRecord) -> models::User {
 }
 
 #[derive(ApiResponse)]
+enum GetStatsResponse {
+    #[oai(status = 200)]
+    Stats(Json<models::Stats>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum ListUsersResponse {
     #[oai(status = 200)]
     Users(Json<models::UserPage>),
@@ -88,16 +100,27 @@ enum UpdateUserResponse {
 #[OpenApi]
 impl AdminApi {
     /// Admin panel: usage aggregates shown at the top of each resource page.
+    /// Reads the `users` OpenSearch index, not Meilisearch: an exact
+    /// document count via OpenSearch's own `_count` endpoint, not coupled to
+    /// Meilisearch's stats response shape (which varies enough across
+    /// versions to break a naive count — see `agon_services_core::search`'s
+    /// `SearchClient::count`, kept for `GET /admin/users`' search but no
+    /// longer used here).
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
-    ) -> Result<Json<models::Stats>> {
-        let total_users = search
-            .count(agon_services_core::search::Index::Users)
+        Data(opensearch): Data<&Option<agon_services_core::opensearch::OpenSearchClient>>,
+    ) -> Result<GetStatsResponse> {
+        let Some(os) = opensearch else {
+            return Ok(GetStatsResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
+        let total_users = os
+            .count(&agon_services_core::opensearch::USERS.alias(os.prefix()))
             .await
-            .map_err(search_internal)?;
-        Ok(Json(models::Stats { total_users }))
+            .map_err(opensearch_internal)?;
+        Ok(GetStatsResponse::Stats(Json(models::Stats { total_users })))
     }
 
     /// Admin panel: list/search every user, full account detail. Reuses the

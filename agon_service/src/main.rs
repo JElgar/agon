@@ -13341,6 +13341,12 @@ fn search_internal(err: agon_services_core::error::SearchError) -> poem::Error {
     poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+/// Map an OpenSearch error to a 500, same rationale as `search_internal`.
+fn opensearch_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
+    error!("opensearch error: {err}");
+    poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "git")]
 #[command(about = "Agon Service CLI", long_about = None)]
@@ -13613,6 +13619,17 @@ async fn main() {
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
             let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
 
+            // OpenSearch — only `GET /admin/stats` reads it so far (the
+            // `users` index; see `admin::get_stats`). `None` when
+            // `OPENSEARCH_URL` is unset, in which case that endpoint reports
+            // 503 rather than failing to start, same convention as
+            // `device_signer`/`youtube_oauth` below.
+            let opensearch = agon_services_core::opensearch::OpenSearchClient::from_env()
+                .unwrap_or_else(|e| {
+                    error!("invalid OpenSearch settings; admin stats will report 503: {e}");
+                    None
+                });
+
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
             // browsers reject the preflight), and mixing `*` with specific origins
@@ -13659,6 +13676,7 @@ async fn main() {
                 .around(admin_auth_middleware)
                 .data(dao)
                 .data(search)
+                .data(opensearch)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

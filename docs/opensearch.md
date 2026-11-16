@@ -1,15 +1,18 @@
-# OpenSearch: match and per-player stats store
+# OpenSearch: match, per-player stats and users store
 
-**Status: shadow writes only.** The worker keeps OpenSearch in sync, but no API
-endpoint reads from it yet. DynamoDB is the source of truth, and everything in
-OpenSearch can be rebuilt from it at any time.
+**Status: `matches`/`match_stats` are shadow writes only** — the worker keeps
+them in sync, but no API endpoint reads either yet. `users` is the exception:
+it backs `GET /admin/stats`'s "total users" figure, the first thing that reads
+OpenSearch on a request path. DynamoDB is the source of truth throughout, and
+every index here can be rebuilt from it at any time.
 
 ## What's stored
 
-| Index (read alias) | One document per | Used for (once reads move over) |
+| Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
+| `matches` | match, any status. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists (once reads move over) |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice (once reads move over) |
+| `users` | user: id, creation time, admin flag | the admin panel's total-users count (`GET /admin/stats`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
@@ -44,12 +47,21 @@ every roster (`PLAYER#`) write. It rebuilds that match's documents from DynamoDB
 Likes and comments rewrite `#META` too. When the only change is to those
 counters, the handler skips the match without reading anything.
 
-A failure is logged (`opensearch: sync failed`) and **not retried**, because
-nothing reads OpenSearch yet and an outage mustn't hold up the stream. Run the
-backfill to repair. Revisit this once reads move over.
+The same handler also runs on every user `#PROFILE` write, rebuilding that
+user's `users` document (`agon_services_core::opensearch::sync_user`) — just
+an index, no player rows or stale-row cleanup to do.
+
+A failure is logged (`opensearch: match/user sync failed`) and **not
+retried**: an outage mustn't hold up the stream, and `GET /admin/stats`
+tolerates the same brief staleness every other async-indexed read in this app
+already does. Run the backfill to repair.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.
+`agon_service` needs this too now (not just `agon_worker`), since `GET
+/admin/stats` reads the `users` index directly — it reports 503 while
+`OPENSEARCH_URL` is unset, same convention as the other optional integrations
+(device pairing, YouTube).
 
 ## Running it
 
@@ -91,8 +103,9 @@ thing on the node.
 
 ## Backfill
 
-`agon_worker backfill-opensearch` rebuilds every match's documents from
-DynamoDB. It's idempotent, so it's safe to re-run at any time.
+`agon_worker backfill-opensearch` rebuilds every match's and user's documents
+from DynamoDB, in the same run. It's idempotent, so it's safe to re-run at any
+time.
 
 ```bash
 agon_worker backfill-opensearch                  # everything, then point the aliases at this version
@@ -103,14 +116,17 @@ agon_worker backfill-opensearch --match m_123 --match m_456   # repair specific 
 ```
 
 ```bash
-agon_worker backfill-opensearch --resume <cursor>   # continue from a logged cursor
+agon_worker backfill-opensearch --resume <cursor> --resume-users <cursor>   # continue from logged cursors
 ```
 
 Other flags:
-- `--concurrency N`: matches synced in parallel. Default 8.
-- `--page-size N`: match ids per page read from the entity index. Default 500.
-- `--no-swap`: fill the index without moving the aliases.
+- `--concurrency N`: matches and users synced in parallel (each has its own pool). Default 8.
+- `--page-size N`: ids per page read from the entity index. Default 500.
+- `--no-swap`: fill the indices without moving the aliases.
 - `--delete-old`: after the swap, delete the superseded index versions.
+
+`--match` targets specific matches only — there's no analogous per-user flag
+yet, since nothing has needed to repair one user's document in isolation.
 
 It needs only `AGON_TABLE_NAME`, AWS credentials and the `OPENSEARCH_*`
 variables, not the worker's SQS, Meilisearch or Temporal settings.
@@ -120,16 +136,16 @@ variables, not the worker's SQS, Meilisearch or Temporal settings.
   `cargo run -p agon_worker -- backfill-opensearch` reads whatever DynamoDB the
   `AWS_*` settings point at.
 
-It lists matches from the entity index (GSI4), not a table scan. On a table
-that predates the index, run the entity-index migration first
-(`claude/entity-index-migration`), or matches without index keys are skipped.
+It lists matches and users from the entity index (GSI4), not a table scan. On
+a table that predates the index, run the entity-index migration first
+(`claude/entity-index-migration`), or items without index keys are skipped.
 `--match` reads matches directly and doesn't need the index.
 
 It logs `reading dynamodb` with the table and endpoint before it does
 anything, so check that line when you're not sure which table you're on.
 
-The aliases only move if every match succeeded. Failed matches are logged with
-their ids; fix the cause and re-run.
+The aliases only move if every match *and* every user succeeded. Failures are
+logged with their ids; fix the cause and re-run.
 
 ## Changing the schema
 

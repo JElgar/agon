@@ -137,10 +137,13 @@ fn match_stats_body() -> Value {
     })
 }
 
-/// One document per user. See [`crate::opensearch::docs::UserDoc`]. Minimal
-/// for now — it exists to back the admin panel's "total users" count (the
-/// first thing to read from OpenSearch on a request path), not a user search
-/// index; `GET /admin/users` still searches Meilisearch.
+/// One document per user. See [`crate::opensearch::docs::UserDoc`]. It
+/// exists to back the admin panel's "total users" count (the first thing to
+/// read from OpenSearch on a request path), not a user search index; `GET
+/// /admin/users` still searches Meilisearch. Carries enough of the account
+/// record (name, email) to be useful standalone when looking at the index
+/// directly (e.g. in OpenSearch Dashboards), without becoming a second
+/// search index to keep in sync with Meilisearch's.
 pub const USERS: IndexDef = IndexDef {
     name: "users",
     version: 1,
@@ -154,6 +157,8 @@ fn users_body() -> Value {
             "dynamic": "strict",
             "properties": {
                 "user_id": { "type": "keyword" },
+                "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
+                "email": { "type": "keyword" },
                 "created_at": { "type": "date" },
                 "is_admin": { "type": "boolean" },
                 "indexed_at": { "type": "date" }

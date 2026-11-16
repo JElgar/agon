@@ -12,7 +12,7 @@ every index here can be rebuilt from it at any time.
 |---|---|---|
 | `matches` | match, any status. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists (once reads move over) |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice (once reads move over) |
-| `users` | user: id, creation time, admin flag | the admin panel's total-users count (`GET /admin/stats`, `agon_service/src/admin/mod.rs`) |
+| `users` | user: id, name, email, creation time, admin flag | the admin panel's total-users count (`GET /admin/stats`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.

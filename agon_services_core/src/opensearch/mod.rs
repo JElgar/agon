@@ -17,9 +17,10 @@
 //!   everything a leaderboard filters on (team, opponent, kind, tournament,
 //!   year, sport) plus that player's counters. Leaderboards and every
 //!   per-player slice come from here.
-//! - **`users`**: one minimal document per user. Backs the admin panel's
-//!   "total users" count (`GET /admin/stats`) — the first thing that reads
-//!   OpenSearch on a request path. Not a user search index; `GET
+//! - **`users`**: one document per user (id, name, email, creation time,
+//!   admin flag). Backs the admin panel's "total users" count (`GET
+//!   /admin/stats`) — the first thing that reads OpenSearch on a request
+//!   path. Not a user search index; `GET
 //!   /admin/users` still searches Meilisearch.
 //!
 //! Each index is versioned. The worker writes to the physical index for the

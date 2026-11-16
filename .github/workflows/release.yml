@@ -28,6 +28,12 @@ jobs:
     uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit
 
+  build-garmin:
+    needs: changes
+    if: needs.changes.outputs.garmin == 'true'
+    uses: JElgar/agon/.github/workflows/build-garmin.yml@main
+    secrets: inherit
+
   publish-service:
     needs: [changes, build-service]
     if: needs.changes.outputs.service == 'true'

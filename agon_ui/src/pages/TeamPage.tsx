@@ -18,6 +18,7 @@ import {
   ShieldMinus,
   ShieldPlus,
   Trash2,
+  Trophy,
   UserMinus,
   UserPlus,
 } from 'lucide-react'
@@ -179,8 +180,12 @@ export function TeamPage() {
   const myRole: TeamRole | undefined = members.find(
     (m) => m.member.type === 'User' && m.member.user_id === currentUserId,
   )?.role
-  const isOwner = myRole === 'owner'
-  const canManage = isOwner || myRole === 'admin'
+  // A teamless tournament's squad is a team that only exists inside its
+  // tournament: it's managed (renamed, recoloured) from the tournament, and
+  // can't be edited, joined, left or followed here.
+  const tournamentId = team.tournament_id ?? null
+  const isOwner = !tournamentId && myRole === 'owner'
+  const canManage = !tournamentId && (isOwner || myRole === 'admin')
   const existingUserIds = members
     .map((m) => (m.member.type === 'User' ? m.member.user_id : null))
     .filter((id): id is string => id !== null)
@@ -233,10 +238,16 @@ export function TeamPage() {
               {team.name}
             </h1>
             <p className="text-sm text-muted-foreground">
-              <span className="font-bold text-foreground">
-                {team.follower_count.toLocaleString()}
-              </span>{' '}
-              {team.follower_count === 1 ? 'follower' : 'followers'} ·{' '}
+              {tournamentId ? (
+                'Tournament squad · '
+              ) : (
+                <>
+                  <span className="font-bold text-foreground">
+                    {team.follower_count.toLocaleString()}
+                  </span>{' '}
+                  {team.follower_count === 1 ? 'follower' : 'followers'} ·{' '}
+                </>
+              )}
               <span className="font-bold text-foreground">{memberCountLabel}</span>{' '}
               {members.length === 1 ? 'member' : 'members'}
             </p>
@@ -276,9 +287,19 @@ export function TeamPage() {
               )}
             </>
           )}
-          {/* A member (owner/admin/plain) leaves; a non-member follows —
-              mutually exclusive, so exactly one of these always renders. */}
-          {myRole ? (
+          {/* A squad links back to its tournament instead. Otherwise a member
+              (owner/admin/plain) leaves and a non-member follows — mutually
+              exclusive, so exactly one of these always renders. */}
+          {tournamentId ? (
+            <Button
+              variant="outline"
+              className="flex-1 gap-2 rounded-2xl md:flex-none"
+              onClick={() => navigate(`/tournaments/${tournamentId}`)}
+            >
+              <Trophy className="size-4" />
+              View tournament
+            </Button>
+          ) : myRole ? (
             <LeaveTeamDialog
               teamId={team.id}
               teamName={team.name}

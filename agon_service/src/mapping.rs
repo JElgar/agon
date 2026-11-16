@@ -1266,6 +1266,8 @@ pub fn team_from_records(team: &TeamRecord, is_followed_by_me: bool) -> Team {
         invite_token: team.invite_token.clone(),
         follower_count: team.follower_count as u32,
         is_followed_by_me,
+        colour: team.colour.clone(),
+        tournament_id: team.tournament_id.clone(),
     }
 }
 

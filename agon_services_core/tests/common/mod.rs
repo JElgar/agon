@@ -11,7 +11,10 @@ use agon_services_core::dao::Dao;
 /// expose its internal client.
 pub struct TestEnv {
     pub dao: Dao,
+    // Not every test reads the raw client or table name.
+    #[allow(dead_code)]
     pub client: aws_sdk_dynamodb::Client,
+    #[allow(dead_code)]
     pub table: String,
 }
 

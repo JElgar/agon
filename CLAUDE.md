@@ -37,6 +37,13 @@ is mapped to a stable internal user id via an `AUTH#<sub>` guard item — the
 internal id (not the `sub`) is what every other key references, so the auth
 provider can change without rewriting user-keyed data.
 
+**Tournament teams.** A teamless tournament's squads become real teams when it
+starts (`TeamRecord.tournament_id` set, id `<tournamentId>.squad<n>` from
+`squad_team_id`). They exist only inside that tournament: not searchable,
+followable or in anyone's "my teams", not manageable through the team
+endpoints, and refused as a side outside the tournament. Any new team listing
+must skip teams with `tournament_id` set.
+
 ## Development Commands
 
 ### Setup

@@ -19,7 +19,7 @@ use opensearch::http::response::Response;
 use opensearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
 use opensearch::indices::{
     IndicesCreateParts, IndicesDeleteParts, IndicesExistsParts, IndicesGetAliasParts,
-    IndicesRefreshParts,
+    IndicesGetMappingParts, IndicesRefreshParts,
 };
 use opensearch::params::Refresh;
 use opensearch::{BulkParts, OpenSearch, SearchParts};
@@ -348,9 +348,22 @@ impl OpenSearchClient {
             .collect())
     }
 
-    /// Run a raw `_search` against an index or alias. Used by the backfill's
-    /// verification and by tests; no request path reads OpenSearch yet. Typed
-    /// read queries will wrap this in this module.
+    /// The mapping of an index or alias, keyed by physical index name.
+    pub async fn get_mapping(&self, index: &str) -> OpenSearchResult<Value> {
+        let resp = self
+            .client
+            .indices()
+            .get_mapping(IndicesGetMappingParts::Index(&[index]))
+            .send()
+            .await?;
+        let (status, body) = Self::read(resp).await?;
+        Self::check(status, &body)?;
+        Ok(body)
+    }
+
+    /// Run a raw `_search` against an index or alias. The typed reads in
+    /// [`super::team_stats`] wrap this; callers outside this module shouldn't
+    /// build query JSON.
     pub async fn search(&self, index: &str, body: Value) -> OpenSearchResult<Value> {
         let resp = self
             .client

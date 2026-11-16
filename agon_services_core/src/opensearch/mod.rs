@@ -2,9 +2,9 @@
 //!
 //! DynamoDB stays the source of truth. OpenSearch holds documents derived from
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
-//! the `agon_worker backfill-opensearch` command. Nothing reads it on a request
-//! path yet: this is the shadow-write stage, so a failure here never fails a
-//! user-facing write.
+//! the `agon_worker backfill-opensearch` command. The team summary and
+//! leaderboard endpoints read it through [`team_stats`]. A sync failure never
+//! fails a user-facing write.
 //!
 //! Two indices (see [`schema`]):
 //!
@@ -21,11 +21,14 @@
 //! which the backfill points at a version once that version is complete. A
 //! schema change is: bump the version, deploy, run the backfill, which fills
 //! the new index and swaps the alias.
+//!
+//! Reads go through [`team_stats`], which queries the aliases.
 
 pub mod client;
 pub mod docs;
 pub mod schema;
 pub mod sync;
+pub mod team_stats;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
 pub use docs::{MatchDocs, build_match_docs};

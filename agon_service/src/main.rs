@@ -105,6 +105,10 @@ use notification::{
 // doc comment for why this can't be done from `agon_ui` (a client-only SPA).
 mod share;
 
+// Team summary and leaderboard, read from OpenSearch. Its own `OpenApi`
+// type, combined with `Api` like `admin::AdminApi`.
+mod team_stats;
+
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
@@ -13574,7 +13578,7 @@ async fn main() {
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
     let api_service = OpenApiService::new(
-        (Api, admin::AdminApi, youtube::YoutubeApi),
+        (Api, admin::AdminApi, youtube::YoutubeApi, team_stats::TeamStatsApi),
         "Agon API",
         "1.0",
     )
@@ -13612,6 +13616,16 @@ async fn main() {
                 std::env::var("MEILI_URL").unwrap_or_else(|_| "http://localhost:7700".to_string());
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
             let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
+
+            // OpenSearch, for the team stats reads (`team_stats`). Optional:
+            // without OPENSEARCH_URL those endpoints answer 503 and nothing
+            // else changes.
+            let stats_store = team_stats::StatsStore(
+                agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
+                    error!("invalid OpenSearch settings; team stats disabled: {e}");
+                    None
+                }),
+            );
 
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
@@ -13659,6 +13673,7 @@ async fn main() {
                 .around(admin_auth_middleware)
                 .data(dao)
                 .data(search)
+                .data(stats_store)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

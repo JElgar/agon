@@ -10,7 +10,9 @@ import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
-const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// `prod` owns the bare domain; every other stack (staging, dev, ...) gets its
+// own `<stack>.get-agon.com` subdomain, so they can never collide with it.
+const baseDomain = subdomainPrefix === "prod" ? "get-agon.com" : `${subdomainPrefix}.get-agon.com`;
 // The UI's public URL — same host as `fullDomain` further down (kept as a
 // separate constant: that one's a bare hostname for the Ingress `host`
 // field, this is a full URL the worker uses to build push-notification deep

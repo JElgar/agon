@@ -13,11 +13,17 @@ const subdomainPrefix = pulumi.getStack();
 // `prod` owns the bare domain; every other stack (staging, dev, ...) gets its
 // own `<stack>.get-agon.com` subdomain, so they can never collide with it.
 const baseDomain = subdomainPrefix === "prod" ? "get-agon.com" : `${subdomainPrefix}.get-agon.com`;
+// The hostname the UI/API are actually served on. Every other stack gets an
+// `agon.` subdomain of its own base domain (e.g. `agon.staging.get-agon.com`);
+// `prod` serves straight off the bare domain itself (`get-agon.com`, no
+// `agon.` prefix) per James's call — that's the production website's domain,
+// not a subdomain of it.
+const uiHostname = subdomainPrefix === "prod" ? baseDomain : `agon.${baseDomain}`;
 // The UI's public URL — same host as `fullDomain` further down (kept as a
 // separate constant: that one's a bare hostname for the Ingress `host`
 // field, this is a full URL the worker uses to build push-notification deep
 // links, needed up here since it's declared well before `fullDomain` is).
-const agonUiUrl = `https://agon.${baseDomain}`;
+const agonUiUrl = `https://${uiHostname}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -54,6 +60,21 @@ const dnsRecord = new cloudflare.DnsRecord('record', {
 	ttl: 300,
 	proxied: false,
 });
+
+// A DNS wildcard (`*.<base>`) never covers the zone's own apex, so `prod`
+// (served at the bare `get-agon.com`, not an `agon.` subdomain of it) needs
+// its own apex record alongside the wildcard above — the wildcard still
+// covers prod's other subdomains (grafana., temporal.).
+const apexDnsRecord = subdomainPrefix === "prod"
+	? new cloudflare.DnsRecord('record-apex', {
+		zoneId: cloudflareZoneId,
+		name: baseDomain,
+		type: 'A',
+		content: nodeIpv4,
+		ttl: 300,
+		proxied: false,
+	})
+	: undefined;
 
 const connection = {
 	host: nodeIpv4,
@@ -476,7 +497,9 @@ new aws.s3.BucketCorsConfigurationV2("agon-assets", {
 	corsRules: [
 		{
 			allowedMethods: ["PUT", "GET", "HEAD"],
-			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com"],
+			// The `*.get-agon.com` wildcard only matches a subdomain, not the bare
+			// apex `prod` serves the UI from, so that one's listed explicitly too.
+			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com", "https://get-agon.com"],
 			allowedHeaders: ["*"],
 			exposeHeaders: ["ETag"],
 			maxAgeSeconds: 3000,
@@ -2089,7 +2112,7 @@ const uiService = new k8s.core.v1.Service("agon-ui-service", {
 	},
 }, { provider: k8sProvider });
 
-const fullDomain = `agon.${baseDomain}`;
+const fullDomain = uiHostname;
 
 const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
 	apiVersion: "cert-manager.io/v1",

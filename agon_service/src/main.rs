@@ -13771,10 +13771,14 @@ async fn main() {
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
             // browsers reject the preflight), and mixing `*` with specific origins
             // in poem's Cors doesn't act as a catch-all anyway. Local dev is the
-            // Vite server, pinned to 5173; deployed origins match the get-agon.com
-            // regex.
+            // Vite server, pinned to 5173; other stacks' subdomains match the
+            // get-agon.com regex. `prod` serves the UI from the bare domain
+            // itself rather than a subdomain of it, so it needs its own explicit
+            // entry — the regex's `.` only matches a subdomain label, not "no
+            // label at all".
             let cors = Cors::new()
                 .allow_origin("http://localhost:5173")
+                .allow_origin("https://get-agon.com")
                 .allow_origin_regex("https://*.get-agon.com")
                 .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
                 .allow_headers(vec!["content-type", "authorization"])

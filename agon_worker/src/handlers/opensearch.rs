@@ -4,7 +4,7 @@
 //! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
 //! documents from DynamoDB with [`agon_services_core::opensearch::sync_match`].
 //!
-//! **Shadow mode.** Nothing reads OpenSearch on a request path yet, so a
+//! **Shadow mode.** No screen reads OpenSearch yet, so a
 //! failure here is logged and swallowed rather than failing the message: an
 //! OpenSearch outage must not push stream events into the DLQ or delay the
 //! handlers that matter today. The backfill (`agon_worker backfill-opensearch`)

@@ -124,10 +124,11 @@ OPENSEARCH_LOCAL_ENV = AWS_ENDPOINT_URL=http://localhost:8002 AWS_REGION=eu-west
 	AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=localsecret \
 	OPENSEARCH_URL=http://localhost:9200
 
-# Integration tests: documents and queries (opensearch_roundtrip), then the
+# Integration tests: documents and queries (opensearch_roundtrip), the team
+# stats reads (opensearch_team_stats), then the
 # DynamoDB -> OpenSearch sync path (opensearch_dynamodb_sync).
 test-opensearch-local:
-	$(OPENSEARCH_LOCAL_ENV) cargo test -p agon_services_core --test opensearch_roundtrip --test opensearch_dynamodb_sync
+	$(OPENSEARCH_LOCAL_ENV) cargo test -p agon_services_core --test opensearch_roundtrip --test opensearch_team_stats --test opensearch_dynamodb_sync
 
 # Backfill the local OpenSearch from DynamoDB Local's `agon` table.
 backfill-opensearch-local:

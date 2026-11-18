@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
+import { TeamLink } from '@/components/agon/TeamLink'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -193,8 +194,10 @@ export function FootballHeroCard({
         ))}
       <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
         <div className="flex min-w-0 flex-col items-center gap-2">
-          {avatars ? avatars[0] : <SideDisc side={sideA} index={0} />}
-          <span className={nameClass(aWon, bWon)}>{nameA}</span>
+          <TeamLink teamId={sideA?.team_id}>{avatars ? avatars[0] : <SideDisc side={sideA} index={0} />}</TeamLink>
+          <TeamLink teamId={sideA?.team_id} className={cn(nameClass(aWon, bWon), 'hover:underline')}>
+            {nameA}
+          </TeamLink>
           {state === 'scheduled' && <span className="-mt-1.5 text-[13px] text-muted-foreground">{sideA?.player_count ?? 0} going</span>}
         </div>
         {hasScore ? (
@@ -216,8 +219,10 @@ export function FootballHeroCard({
           </span>
         )}
         <div className="flex min-w-0 flex-col items-center gap-2">
-          {avatars ? avatars[1] : <SideDisc side={sideB} index={1} />}
-          <span className={nameClass(bWon, aWon)}>{nameB}</span>
+          <TeamLink teamId={sideB?.team_id}>{avatars ? avatars[1] : <SideDisc side={sideB} index={1} />}</TeamLink>
+          <TeamLink teamId={sideB?.team_id} className={cn(nameClass(bWon, aWon), 'hover:underline')}>
+            {nameB}
+          </TeamLink>
           {state === 'scheduled' && <span className="-mt-1.5 text-[13px] text-muted-foreground">{sideB?.player_count ?? 0} going</span>}
         </div>
       </div>
@@ -1310,7 +1315,9 @@ export function SideHeading({ side, index, name, meta }: { side?: MatchSide; ind
   return (
     <div className="mt-1.5 flex items-center gap-2.5 px-1">
       <SideSwatch side={side} index={index} size={14} />
-      <span className="flex-1 truncate font-display text-[19px] font-bold">{name}</span>
+      <TeamLink teamId={side?.team_id} className="flex-1 truncate font-display text-[19px] font-bold hover:underline">
+        {name}
+      </TeamLink>
       {meta && <span className="text-[13px] text-muted-foreground">{meta}</span>}
     </div>
   )

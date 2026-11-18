@@ -11,6 +11,7 @@ import {
   type NetballScore,
 } from '@/lib/netballScore'
 import { sideDisplayName } from '@/lib/members'
+import { NestedTeamLink } from '@/components/agon/TeamLink'
 
 /** How often the clock label re-renders. Minute-granularity, so this just
  *  needs to be frequent enough to feel live, not per-second. */
@@ -63,10 +64,10 @@ export function NetballMatchBlock({
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
       <div className="flex items-center justify-between">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <NestedTeamLink teamId={sideA?.team_id} className="flex min-w-0 flex-1 items-center gap-2">
           <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameA}</span>
-        </div>
+        </NestedTeamLink>
         <div className="px-3 text-center">
           <div className="text-2xl font-medium leading-none tracking-tight">
             {goalsFor(sideA?.id)}
@@ -80,10 +81,13 @@ export function NetballMatchBlock({
             })()}
           </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+        <NestedTeamLink
+          teamId={sideB?.team_id}
+          className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right"
+        >
           <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameB}</span>
-        </div>
+        </NestedTeamLink>
       </div>
 
       {events.length > 0 && (

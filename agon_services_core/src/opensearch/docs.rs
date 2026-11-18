@@ -429,13 +429,58 @@ pub fn to_value<T: Serialize>(doc: &T) -> Value {
     serde_json::to_value(doc).expect("documents always serialize")
 }
 
+/// One user (index `users`). Backs the admin panel's total-users count, not
+/// a search index — `name`/`email` are carried so the document is readable
+/// on its own (e.g. in OpenSearch Dashboards), not to make this a second
+/// place that searches users.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UserDoc {
+    pub user_id: String,
+    pub name: String,
+    pub email: String,
+    pub created_at: String,
+    pub is_admin: bool,
+    pub indexed_at: String,
+}
+
+/// Build a user's document. `now` is stamped as `indexed_at`.
+pub fn build_user_doc(user: &crate::dao::records::UserRecord, now: &str) -> UserDoc {
+    UserDoc {
+        user_id: user.id.clone(),
+        name: user.name.clone(),
+        email: user.email.clone(),
+        created_at: user.created_at.clone(),
+        is_admin: user.is_admin,
+        indexed_at: now.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dao::records::{
         ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationKindRecord, MatchPlayerRecord,
-        MatchRecord, MatchSideRecord,
+        MatchRecord, MatchSideRecord, UserRecord,
     };
+
+    #[test]
+    fn user_doc_carries_name_email_admin_flag_and_creation_time() {
+        let user: UserRecord = serde_json::from_value(serde_json::json!({
+            "id": "u1",
+            "email": "u1@example.com",
+            "name": "User One",
+            "created_at": "2026-01-01T00:00:00Z",
+            "is_admin": true,
+        }))
+        .expect("user");
+        let doc = build_user_doc(&user, "2026-11-16T00:00:00Z");
+        assert_eq!(doc.user_id, "u1");
+        assert_eq!(doc.name, "User One");
+        assert_eq!(doc.email, "u1@example.com");
+        assert_eq!(doc.created_at, "2026-01-01T00:00:00Z");
+        assert!(doc.is_admin);
+        assert_eq!(doc.indexed_at, "2026-11-16T00:00:00Z");
+    }
 
     fn side(id: &str, team: Option<&str>) -> MatchSideRecord {
         serde_json::from_value(serde_json::json!({ "side_id": id, "team_id": team })).expect("side")

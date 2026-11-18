@@ -22,6 +22,9 @@ aws-sdk-dynamodb = "1"
 tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
+# Direct use in `search::SearchClient::count` — see its doc comment for why
+# it bypasses the SDK's own stats call.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 opensearch = { version = "2.4", default-features = false, features = ["rustls-tls"] }
 # Weng-Lin / OpenSkill ratings, the engine behind `rating`. MIT/Apache-2.0
 # and unencumbered — TrueSkill, the algorithm it approximates, is patented

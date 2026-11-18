@@ -7,8 +7,8 @@
 use serde_json::json;
 
 use super::client::{BulkOp, OpenSearchClient, OpenSearchError};
-use super::docs::{build_match_docs, player_doc_id};
-use super::schema::{MATCH_STATS, MATCHES};
+use super::docs::{build_match_docs, build_user_doc, player_doc_id};
+use super::schema::{MATCH_STATS, MATCHES, USERS};
 use crate::dao::Dao;
 use crate::dao::error::DaoError;
 
@@ -111,4 +111,44 @@ pub async fn sync_match(
     Ok(SyncOutcome::Indexed {
         player_rows: docs.players.len(),
     })
+}
+
+/// What happened to the user, for logging and backfill counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserSyncOutcome {
+    /// User document written.
+    Indexed,
+    /// The user no longer exists; their document was removed.
+    Removed,
+}
+
+/// Rebuild `user_id`'s document in this build's physical `users` index.
+/// Idempotent, same as [`sync_match`]: always rebuilt from the current
+/// DynamoDB state.
+pub async fn sync_user(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    user_id: &str,
+    now: &str,
+    wait_for_refresh: bool,
+) -> Result<UserSyncOutcome, SyncError> {
+    let users_index = os.write_index(&USERS);
+    let Some(user) = dao.get_user(user_id).await? else {
+        os.bulk_with(
+            &[BulkOp::Delete {
+                index: users_index,
+                id: user_id.to_string(),
+            }],
+            wait_for_refresh,
+        )
+        .await?;
+        return Ok(UserSyncOutcome::Removed);
+    };
+    let doc = build_user_doc(&user, now);
+    os.bulk_with(
+        &[BulkOp::index(&users_index, user_id, &doc)?],
+        wait_for_refresh,
+    )
+    .await?;
+    Ok(UserSyncOutcome::Indexed)
 }

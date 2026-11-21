@@ -58,6 +58,7 @@ import {
 } from '@/lib/pendingInvite'
 import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { identifyPosthogUser } from '@/lib/posthog'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -293,6 +294,7 @@ function AuthenticatedApp() {
         const { data, response } = await fetchClient.GET('/users/me')
         if (data) {
           setHasProfileCache(true)
+          identifyPosthogUser(data.profile.id)
           return 'has-profile'
         }
         if (response.status === 404) {

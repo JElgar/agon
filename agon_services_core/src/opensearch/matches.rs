@@ -109,7 +109,10 @@ pub async fn search_matches(
     size: u32,
 ) -> OpenSearchResult<(Vec<MatchRow>, u64)> {
     let resp = os
-        .search(&MATCHES.alias(os.prefix()), search_query(filters, offset, size))
+        .search(
+            &MATCHES.alias(os.prefix()),
+            search_query(filters, offset, size),
+        )
         .await?;
     Ok(parse_search(&resp))
 }

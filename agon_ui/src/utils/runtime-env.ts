@@ -21,6 +21,12 @@ const runtimeEnv = {
   // Firebase values above — restricted by HTTP referrer, not by secrecy.
   // Unset means the location field stays plain text, no autocomplete.
   VITE_GOOGLE_MAPS_API_KEY: '${VITE_GOOGLE_MAPS_API_KEY}',
+  // PostHog project API key + API host (see src/lib/posthog.ts). Public/
+  // client-safe, same as the Firebase/Maps values above — PostHog's project
+  // key is meant to ship in the bundle, it's not a secret. Unset means
+  // analytics stay off (isPosthogConfigured).
+  VITE_POSTHOG_KEY: '${VITE_POSTHOG_KEY}',
+  VITE_POSTHOG_HOST: '${VITE_POSTHOG_HOST}',
 }
 
 type RuntimeEnv = typeof runtimeEnv;
@@ -38,6 +44,8 @@ export function getRuntimeEnv(): RuntimeEnv {
       VITE_FIREBASE_APP_ID: import.meta.env.VITE_FIREBASE_APP_ID,
       VITE_FIREBASE_VAPID_KEY: import.meta.env.VITE_FIREBASE_VAPID_KEY,
       VITE_GOOGLE_MAPS_API_KEY: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+      VITE_POSTHOG_KEY: import.meta.env.VITE_POSTHOG_KEY,
+      VITE_POSTHOG_HOST: import.meta.env.VITE_POSTHOG_HOST,
     };
   }
 

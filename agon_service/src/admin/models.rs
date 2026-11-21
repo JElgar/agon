@@ -10,8 +10,8 @@
 //! as they were — this rename is Rust-side only, so the wire contract and
 //! generated clients are unaffected.
 //!
-//! Scoped to the `users` resource for now — matches/series/teams get their
-//! own admin endpoints (and their own `models` types) in follow-up PRs.
+//! Covers the `users` and `matches` resources — series/teams get their own
+//! admin endpoints (and their own `models` types) in follow-up PRs.
 
 use poem_openapi::Object;
 
@@ -49,11 +49,34 @@ pub struct UpdateUserInput {
     pub is_admin: Option<bool>,
 }
 
+/// A match row as seen in the admin panel's list — just what that list
+/// shows (name, sport, status, kick-off); the full match detail is a click
+/// through to the match's own page, not duplicated here.
+#[derive(Object)]
+#[oai(rename = "AdminMatch")]
+pub struct Match {
+    pub id: String,
+    pub name: String,
+    pub sport: String,
+    pub status: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One page of `GET /admin/matches`. Same offset-cursor convention as
+/// [`UserPage`].
+#[derive(Object)]
+#[oai(rename = "AdminMatchPage")]
+pub struct MatchPage {
+    pub items: Vec<Match>,
+    pub next_cursor: Option<String>,
+}
+
 /// Usage aggregates shown at the top of the admin panel's resource pages.
-/// One field per resource the panel covers — grows as matches/series/teams
-/// get their own admin pages.
+/// One field per resource the panel covers — grows as series/teams get
+/// their own admin pages.
 #[derive(Object)]
 #[oai(rename = "AdminStats")]
 pub struct Stats {
     pub total_users: u64,
+    pub total_matches: u64,
 }

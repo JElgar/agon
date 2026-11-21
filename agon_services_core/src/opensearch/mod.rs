@@ -4,11 +4,12 @@
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
 //! the `agon_worker backfill-opensearch` command. A sync failure never fails
 //! a user-facing write. The team summary and leaderboard endpoints read the
-//! match data through [`team_stats`]; the admin panel's `GET /admin/stats`
-//! and `GET /admin/users` read the `users` index through
-//! [`client::OpenSearchClient::count`] and [`users::search_users`]. All
-//! report 503 while `OPENSEARCH_URL` is unset, same convention as the other
-//! optional integrations.
+//! match data through [`team_stats`]; the admin panel's `GET /admin/stats`,
+//! `GET /admin/users` and `GET /admin/matches` read the `users`/`matches`
+//! indices through [`client::OpenSearchClient::count`],
+//! [`users::search_users`] and [`matches::search_matches`]. All report 503
+//! while `OPENSEARCH_URL` is unset, same convention as the other optional
+//! integrations.
 //!
 //! Three indices (see [`schema`]):
 //!
@@ -36,6 +37,7 @@
 
 pub mod client;
 pub mod docs;
+pub mod matches;
 pub mod schema;
 pub mod sync;
 pub mod team_stats;
@@ -43,6 +45,7 @@ pub mod users;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
 pub use docs::{MatchDocs, build_match_docs, build_user_doc};
+pub use matches::{MatchFilters, search_matches};
 pub use schema::{IndexDef, MATCH_STATS, MATCHES, USERS, all_indices};
 pub use sync::{SyncError, SyncOutcome, UserSyncOutcome, sync_match, sync_user};
 pub use users::search_users;

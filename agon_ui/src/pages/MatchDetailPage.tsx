@@ -242,6 +242,12 @@ function MatchDetail({
   const iAmOwner = isMatchOwner(match, currentUserId)
   const iAmParticipant = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
+  // Mirrors the server's `DELETE /matches/:match_id` guard: deletable only
+  // while every roster row is the caller's own (nobody else playing, invited,
+  // or waiting on an invite) — otherwise it can only be cancelled.
+  const hasOtherPlayers = match.players.some(
+    (p) => !(p.member.type === 'User' && p.member.user_id === currentUserId),
+  )
   const isLiveSport =
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
 
@@ -658,7 +664,12 @@ function MatchDetail({
         </div>
       )}
       {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
-      {canEdit && !cancelled && <CancelMatch match={match} />}
+      {canEdit &&
+        (hasOtherPlayers ? (
+          !cancelled && <CancelMatch match={match} />
+        ) : (
+          <DeleteMatch match={match} />
+        ))}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>
   )
@@ -1136,6 +1147,76 @@ function CancelMatch({ match }: { match: Match }) {
           variant="outline"
           size="sm"
           disabled={cancel.isPending}
+          onClick={() => setConfirming(false)}
+        >
+          Keep match
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * "Delete match" action, shown instead of `CancelMatch` once nobody but the
+ * caller is on the roster (mirrors the server's `DELETE /matches/:match_id`
+ * guard). Same two-step confirm; on success the match is gone, so this
+ * navigates away rather than refreshing the now-404ing detail query.
+ */
+function DeleteMatch({ match }: { match: Match }) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const [confirming, setConfirming] = useState(false)
+
+  const remove = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.DELETE('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+      })
+      if (error) throw new Error('Failed to delete the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+      navigate('/')
+    },
+  })
+
+  if (!confirming) {
+    return (
+      <Button
+        variant="ghost"
+        className="text-sm text-destructive hover:text-destructive"
+        onClick={() => setConfirming(true)}
+      >
+        Delete match
+      </Button>
+    )
+  }
+
+  return (
+    <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4">
+      <p className="text-sm font-medium">Delete this match?</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        It'll be gone for good — there's no undo.
+      </p>
+      {remove.isError && (
+        <p className="mt-1 text-xs text-destructive">
+          Something went wrong. Please try again.
+        </p>
+      )}
+      <div className="mt-3 flex gap-2">
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={remove.isPending}
+          onClick={() => remove.mutate()}
+        >
+          {remove.isPending ? 'Deleting…' : 'Yes, delete it'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={remove.isPending}
           onClick={() => setConfirming(false)}
         >
           Keep match

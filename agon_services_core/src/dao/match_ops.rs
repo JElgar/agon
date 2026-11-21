@@ -1298,6 +1298,57 @@ impl Dao {
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
+
+    /// Permanently delete a match: its meta item and every item in its
+    /// partition — sides (embedded on meta), players, likes, comments, score
+    /// submissions, live events. Same whole-partition cascade as
+    /// `Dao::delete_team`. Authorization (no other players on the roster,
+    /// caller is a match admin) is the caller's responsibility. Idempotent:
+    /// deleting an already-gone (or never existed) match is a no-op.
+    #[tracing::instrument(skip(self))]
+    pub async fn delete_match(&self, match_id: &str) -> DaoResult<()> {
+        let pk = Pk::Match(match_id.into()).to_string();
+        let mut start_key = None;
+        let mut requests = Vec::new();
+
+        loop {
+            let out = self
+                .client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_values(":pk", s(pk.clone()))
+                .projection_expression("#pk, #sk")
+                .expression_attribute_names("#sk", ATTR_SK)
+                .set_exclusive_start_key(start_key)
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+            for key in out.items.unwrap_or_default() {
+                let delete = aws_sdk_dynamodb::types::DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(delete)
+                        .build(),
+                );
+            }
+
+            match out.last_evaluated_key {
+                Some(k) => start_key = Some(k),
+                None => break,
+            }
+        }
+
+        for chunk in requests.chunks(super::batch::BATCH_WRITE_MAX) {
+            self.flush_batch_write(chunk.to_vec()).await?;
+        }
+        Ok(())
+    }
 }
 
 /// Serialize any record value into a DynamoDB AttributeValue (nested map/list).

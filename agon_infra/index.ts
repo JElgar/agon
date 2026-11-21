@@ -1931,6 +1931,8 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							// after rendering their OG tags server-side. Same var/value as
 							// agon_worker's push-notification deep links below.
 							{ name: "AGON_UI_URL", value: agonUiUrl },
+							// Team summary and leaderboard reads (see the OpenSearch section).
+							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 						]
 					},
 				],

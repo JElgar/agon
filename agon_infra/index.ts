@@ -2180,7 +2180,15 @@ new k8s.networking.v1.Ingress("agon-api-ingress", {
 		namespace: "default",
 		annotations: {
 			"kubernetes.io/ingress.class": "nginx",
-			"cert-manager.io/cluster-issuer": issuer.metadata.name,
+			// No cluster-issuer annotation here: this ingress shares its TLS
+			// secret (`agon-cert`) with `agon-ingress`, which already carries
+			// the annotation. Annotating both triggers cert-manager's
+			// ingress-shim controller to separately reconcile the *same*
+			// Certificate object from two different Ingresses, which races
+			// with the explicit `certificate` CustomResource above over
+			// ownership of `.spec.dnsNames` (Server-Side Apply field
+			// conflict) — most visible on a brand-new cluster's first apply,
+			// before ownership has settled.
 			"nginx.ingress.kubernetes.io/rewrite-target": "/$2",
 			"nginx.ingress.kubernetes.io/use-regex": "true",
 		},

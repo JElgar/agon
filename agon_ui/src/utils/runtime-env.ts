@@ -27,6 +27,10 @@ const runtimeEnv = {
   // analytics stay off (isPosthogConfigured).
   VITE_POSTHOG_KEY: '${VITE_POSTHOG_KEY}',
   VITE_POSTHOG_HOST: '${VITE_POSTHOG_HOST}',
+  // Pulumi stack name (e.g. "staging", "prod") — one PostHog project is
+  // shared across environments, so every event is tagged with this as a
+  // super property to tell them apart (see src/lib/posthog.ts).
+  VITE_POSTHOG_ENVIRONMENT: '${VITE_POSTHOG_ENVIRONMENT}',
 }
 
 type RuntimeEnv = typeof runtimeEnv;
@@ -46,6 +50,7 @@ export function getRuntimeEnv(): RuntimeEnv {
       VITE_GOOGLE_MAPS_API_KEY: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
       VITE_POSTHOG_KEY: import.meta.env.VITE_POSTHOG_KEY,
       VITE_POSTHOG_HOST: import.meta.env.VITE_POSTHOG_HOST,
+      VITE_POSTHOG_ENVIRONMENT: import.meta.env.VITE_POSTHOG_ENVIRONMENT,
     };
   }
 

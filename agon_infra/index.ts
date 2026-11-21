@@ -2077,6 +2077,13 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 								name: "VITE_POSTHOG_HOST",
 								value: config.get("posthogHost"),
 							},
+							// One PostHog project is shared across stacks — tag every
+							// event with the stack name so staging/prod can be told
+							// apart (see agon_ui/src/lib/posthog.ts).
+							{
+								name: "VITE_POSTHOG_ENVIRONMENT",
+								value: pulumi.getStack(),
+							},
 						],
 					},
 				],

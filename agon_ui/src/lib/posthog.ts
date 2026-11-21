@@ -28,6 +28,12 @@ export function initPosthog(): void {
     persistence: 'memory',
     person_profiles: 'identified_only',
   })
+
+  // One PostHog project is shared across staging/prod — tag every event
+  // with the environment (the Pulumi stack name) so they can be told apart.
+  if (isSet(env.VITE_POSTHOG_ENVIRONMENT)) {
+    posthog.register({ environment: env.VITE_POSTHOG_ENVIRONMENT })
+  }
 }
 
 /** Ties the current PostHog session to the signed-in account's internal

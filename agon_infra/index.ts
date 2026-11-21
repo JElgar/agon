@@ -10,12 +10,20 @@ import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
-const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// `prod` owns the bare domain; every other stack (staging, dev, ...) gets its
+// own `<stack>.get-agon.com` subdomain, so they can never collide with it.
+const baseDomain = subdomainPrefix === "prod" ? "get-agon.com" : `${subdomainPrefix}.get-agon.com`;
+// The hostname the UI/API are actually served on. Every other stack gets an
+// `agon.` subdomain of its own base domain (e.g. `agon.staging.get-agon.com`);
+// `prod` serves straight off the bare domain itself (`get-agon.com`, no
+// `agon.` prefix) per James's call — that's the production website's domain,
+// not a subdomain of it.
+const uiHostname = subdomainPrefix === "prod" ? baseDomain : `agon.${baseDomain}`;
 // The UI's public URL — same host as `fullDomain` further down (kept as a
 // separate constant: that one's a bare hostname for the Ingress `host`
 // field, this is a full URL the worker uses to build push-notification deep
 // links, needed up here since it's declared well before `fullDomain` is).
-const agonUiUrl = `https://agon.${baseDomain}`;
+const agonUiUrl = `https://${uiHostname}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -52,6 +60,21 @@ const dnsRecord = new cloudflare.DnsRecord('record', {
 	ttl: 300,
 	proxied: false,
 });
+
+// A DNS wildcard (`*.<base>`) never covers the zone's own apex, so `prod`
+// (served at the bare `get-agon.com`, not an `agon.` subdomain of it) needs
+// its own apex record alongside the wildcard above — the wildcard still
+// covers prod's other subdomains (grafana., temporal.).
+const apexDnsRecord = subdomainPrefix === "prod"
+	? new cloudflare.DnsRecord('record-apex', {
+		zoneId: cloudflareZoneId,
+		name: baseDomain,
+		type: 'A',
+		content: nodeIpv4,
+		ttl: 300,
+		proxied: false,
+	})
+	: undefined;
 
 const connection = {
 	host: nodeIpv4,
@@ -474,7 +497,9 @@ new aws.s3.BucketCorsConfigurationV2("agon-assets", {
 	corsRules: [
 		{
 			allowedMethods: ["PUT", "GET", "HEAD"],
-			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com"],
+			// The `*.get-agon.com` wildcard only matches a subdomain, not the bare
+			// apex `prod` serves the UI from, so that one's listed explicitly too.
+			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com", "https://get-agon.com"],
 			allowedHeaders: ["*"],
 			exposeHeaders: ["ETag"],
 			maxAgeSeconds: 3000,
@@ -1099,30 +1124,25 @@ const opensearchUrl = opensearchService.metadata.name.apply(name => `http://${na
 // ───────────────────────────────────────────────────────────────────────────
 // GCP: Firebase Cloud Messaging (push notifications)
 //
-// Reuses the single "agon" GCP project already created manually (the same one
-// Supabase's Google Auth uses) — Pulumi does NOT create or own the project
-// itself here. Shared across all stages for now, deliberately: a proper
-// per-stage split (separate GCP projects, a GCP Organization so it can be
-// fully IaC, Pulumi-managed Supabase projects) was scoped out as a follow-up,
-// not because it isn't worth doing — see git history on this file for that
-// design discussion. Keeping this shared for now means:
-//   - Apply this section from ONE stack only. Every resource below is scoped
-//     to the single shared project, so running `pulumi up` from a second
-//     stack would fight the first over ownership of the same physical
-//     resources (Firebase attachment, the API-enablement toggles). Pick
-//     whichever stack you actually deploy from (e.g. `staging`, since that's
-//     what CI drives) and only ever apply from there until the per-stage
-//     migration happens.
-//   - The FCM sender service account + key below are likewise shared, not
-//     per-environment — every stage's worker would authenticate as the same
-//     identity. Fine for now; revisit alongside the project split.
+// Reuses a GCP project already created manually — Pulumi does NOT create or
+// own the project itself here, only resources inside it. Scoped per Pulumi
+// stack via the `gcp:project` config below, so each stage can point at its
+// own GCP project (keeping FCM/Firebase/Maps resources fully isolated, same
+// as every other per-stage resource in this file) or, if you'd rather share
+// one project across stages, at the same project id as another stack. There
+// is no code-level assumption either way — but sharing a project means every
+// resource below (fixed, non-stack-qualified names) is a singleton across
+// whichever stacks point at it, so only apply this section from one of them;
+// a second stack's `pulumi up` would fight the first over ownership of the
+// same physical resources (Firebase attachment, the FCM service account,
+// the Web App, the Maps key).
 //
 //   pulumi config set gcp:project agon   # defaults to "agon" if unset
 //
 // Needs ambient GCP credentials (e.g. `gcloud auth application-default
-// login`) with edit access on the existing "agon" project — no
-// project-creator/org/billing permissions required, since nothing here
-// creates a project.
+// login`, or `gcp:credentials` set to a service account key) with edit
+// access on the target project — no project-creator/org/billing permissions
+// required, since nothing here creates a project.
 //
 // The worker (agon_worker) is the only FCM consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
@@ -2108,7 +2128,7 @@ const uiService = new k8s.core.v1.Service("agon-ui-service", {
 	},
 }, { provider: k8sProvider });
 
-const fullDomain = `agon.${baseDomain}`;
+const fullDomain = uiHostname;
 
 const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
 	apiVersion: "cert-manager.io/v1",

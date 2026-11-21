@@ -45,7 +45,7 @@ pub mod users;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
 pub use docs::{MatchDocs, build_match_docs, build_user_doc};
-pub use matches::search_matches;
+pub use matches::{MatchFilters, search_matches};
 pub use schema::{IndexDef, MATCH_STATS, MATCHES, USERS, all_indices};
 pub use sync::{SyncError, SyncOutcome, UserSyncOutcome, sync_match, sync_user};
 pub use users::search_users;

@@ -26,19 +26,33 @@ pub struct MatchRow {
 
 const SOURCE_FIELDS: [&str; 5] = ["match_id", "name", "sport", "status", "starts_at"];
 
+/// Filters for [`search_query`]/[`search_matches`], bundled into one type so
+/// neither function has to take each one as its own argument.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MatchFilters<'a> {
+    /// Free-text match on the name. Empty/absent browses everyone.
+    pub q: Option<&'a str>,
+    pub sport: Option<&'a str>,
+    pub status: Option<&'a str>,
+    /// Only matches starting at or after this time (inclusive).
+    pub from: Option<&'a str>,
+    /// Only matches starting at or before this time (inclusive).
+    pub to: Option<&'a str>,
+}
+
 /// The `matches` query behind [`search_matches`]. An empty/absent `q` browses
 /// everyone; `sport`/`status` are exact filters; `from`/`to` bound
 /// `starts_at` (either end optional). Newest-first, same convention as
 /// [`super::users::search_query`].
-pub fn search_query(
-    q: Option<&str>,
-    sport: Option<&str>,
-    status: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    offset: u32,
-    size: u32,
-) -> Value {
+pub fn search_query(filters: MatchFilters, offset: u32, size: u32) -> Value {
+    let MatchFilters {
+        q,
+        sport,
+        status,
+        from,
+        to,
+    } = filters;
+
     let mut filter = Vec::new();
     if let Some(sport) = sport {
         filter.push(json!({ "term": { "sport": sport } }));
@@ -90,19 +104,12 @@ pub fn parse_search(resp: &Value) -> (Vec<MatchRow>, u64) {
 /// hit count, for the caller to turn into a next-page offset.
 pub async fn search_matches(
     os: &OpenSearchClient,
-    q: Option<&str>,
-    sport: Option<&str>,
-    status: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
+    filters: MatchFilters<'_>,
     offset: u32,
     size: u32,
 ) -> OpenSearchResult<(Vec<MatchRow>, u64)> {
     let resp = os
-        .search(
-            &MATCHES.alias(os.prefix()),
-            search_query(q, sport, status, from, to, offset, size),
-        )
+        .search(&MATCHES.alias(os.prefix()), search_query(filters, offset, size))
         .await?;
     Ok(parse_search(&resp))
 }
@@ -113,7 +120,7 @@ mod tests {
 
     #[test]
     fn no_filters_browses_everyone_newest_first() {
-        let q = search_query(None, None, None, None, None, 0, 20);
+        let q = search_query(MatchFilters::default(), 0, 20);
         assert_eq!(q["query"], json!({ "bool": { "must": [], "filter": [] } }));
         assert_eq!(q["sort"][0], json!({ "starts_at": "desc" }));
         assert_eq!(q["from"], 0);
@@ -123,11 +130,13 @@ mod tests {
     #[test]
     fn sport_status_and_date_range_become_term_and_range_filters() {
         let q = search_query(
-            None,
-            Some("football"),
-            Some("completed"),
-            Some("2026-01-01T00:00:00Z"),
-            Some("2026-12-31T23:59:59Z"),
+            MatchFilters {
+                sport: Some("football"),
+                status: Some("completed"),
+                from: Some("2026-01-01T00:00:00Z"),
+                to: Some("2026-12-31T23:59:59Z"),
+                ..Default::default()
+            },
             0,
             20,
         );
@@ -141,7 +150,14 @@ mod tests {
 
     #[test]
     fn non_empty_query_matches_name_as_a_prefix() {
-        let q = search_query(Some("derby"), None, None, None, None, 40, 20);
+        let q = search_query(
+            MatchFilters {
+                q: Some("derby"),
+                ..Default::default()
+            },
+            40,
+            20,
+        );
         assert_eq!(
             q["query"]["bool"]["must"][0],
             json!({ "multi_match": { "query": "derby", "type": "bool_prefix", "fields": ["name"] } })

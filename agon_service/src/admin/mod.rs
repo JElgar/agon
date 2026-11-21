@@ -199,18 +199,17 @@ impl AdminApi {
         let status = status.as_ref().map(crate::mapping::match_status_str);
         let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
-        let (rows, total) = agon_services_core::opensearch::matches::search_matches(
-            os,
-            query.as_deref(),
+        let filters = agon_services_core::opensearch::matches::MatchFilters {
+            q: query.as_deref(),
             sport,
             status,
-            from.as_deref(),
-            to.as_deref(),
-            offset,
-            limit,
-        )
-        .await
-        .map_err(opensearch_internal)?;
+            from: from.as_deref(),
+            to: to.as_deref(),
+        };
+        let (rows, total) =
+            agon_services_core::opensearch::matches::search_matches(os, filters, offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
 
         let consumed = offset.saturating_add(rows.len() as u32);
         let next_offset = ((consumed as u64) < total).then_some(consumed);

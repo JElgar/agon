@@ -492,21 +492,21 @@ impl Dao {
     }
 
     /// The teamless-tournament counterpart to
-    /// [`Self::fill_tournament_bracket_side`]: `team_id` is a synthetic
-    /// squad id, not a real team, so there's no team to resolve a name/logo
-    /// or self-join from — `squad_name`/`squad_colour` are written directly
-    /// instead of being removed, and `team_join_enabled` is left `false`.
-    /// Returns `true` on a genuine first fill, same meaning as the other
-    /// method — the caller still has to copy the squad's actual player
-    /// roster across separately (via `add_match_player_tx`), since that
-    /// isn't part of this single-item update.
+    /// [`Self::fill_tournament_bracket_side`]: `team_id` is the winning
+    /// squad's team (a tournament team, see `TeamRecord::tournament_id`). Like
+    /// the other method it clears the placeholder name (and any colour), so
+    /// the side shows the team's own name and colour. Unlike it, it leaves
+    /// `team_join_enabled` off: a squad's roster is fixed, so its members
+    /// shouldn't be invited to self-join. Returns `true` on a genuine first
+    /// fill, same meaning as the other method. The caller still has to copy
+    /// the squad's player roster across separately (via
+    /// `add_match_player_tx`), since that isn't part of this single-item
+    /// update.
     pub async fn fill_tournament_bracket_squad_side(
         &self,
         match_id: &str,
         side_id: &str,
-        squad_id: &str,
-        squad_name: &str,
-        squad_colour: &str,
+        team_id: &str,
     ) -> DaoResult<bool> {
         let result = self
             .client
@@ -515,7 +515,7 @@ impl Dao {
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
             .update_expression(
-                "SET sides.#sid.team_id = :team, sides.#sid.#name = :name, sides.#sid.colour = :colour",
+                "SET sides.#sid.team_id = :team REMOVE sides.#sid.#name, sides.#sid.colour",
             )
             .condition_expression(
                 "attribute_exists(#pk) AND attribute_exists(sides.#sid) AND attribute_not_exists(sides.#sid.team_id)",
@@ -523,9 +523,7 @@ impl Dao {
             .expression_attribute_names("#pk", ATTR_PK)
             .expression_attribute_names("#sid", side_id)
             .expression_attribute_names("#name", "name")
-            .expression_attribute_values(":team", s(squad_id))
-            .expression_attribute_values(":name", s(squad_name))
-            .expression_attribute_values(":colour", s(squad_colour))
+            .expression_attribute_values(":team", s(team_id))
             .send()
             .await;
         match result {

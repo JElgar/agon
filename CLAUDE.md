@@ -19,7 +19,7 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 - **Web Framework**: Poem with poem-openapi for automatic OpenAPI generation
 - **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_services_core` DAO. See `docs/dynamodb-design.md`.
 - **Search**: Meilisearch powers the discovery/search endpoints (users, teams, matches), kept in sync by `agon_worker`.
-- **Stats store**: OpenSearch holds match documents, per-player match rows (team stats and leaderboards) and a `users` index. `agon_worker` keeps it in sync; `matches`/`match_stats` are still shadow writes only (nothing reads them yet), but `users` backs `GET /admin/stats`'s total-users count. See `docs/opensearch.md`.
+- **Stats store**: OpenSearch holds match documents, per-player match rows (team stats and leaderboards) and a `users` index. `agon_worker` keeps it in sync; `GET /teams/{id}/summary` and `/leaderboard` read the match data (`agon_service/src/team_stats.rs`, though the UI doesn't use them yet), and `users` backs `GET /admin/stats`'s total-users count. See `docs/opensearch.md`.
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
 - **Observability**: OTLP export (logs/traces/metrics) from both binaries via
@@ -36,6 +36,13 @@ as edge items and GSI projections rather than SQL joins. Identity: the JWT `sub`
 is mapped to a stable internal user id via an `AUTH#<sub>` guard item — the
 internal id (not the `sub`) is what every other key references, so the auth
 provider can change without rewriting user-keyed data.
+
+**Tournament teams.** A teamless tournament's squads become real teams when it
+starts (`TeamRecord.tournament_id` set, id `<tournamentId>.squad<n>` from
+`squad_team_id`). They exist only inside that tournament: not searchable,
+followable or in anyone's "my teams", not manageable through the team
+endpoints, and refused as a side outside the tournament. Any new team listing
+must skip teams with `tournament_id` set.
 
 ## Development Commands
 

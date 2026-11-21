@@ -71,32 +71,12 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
     if tournament.entry_audience
         == agon_services_core::dao::records::TournamentEntryAudienceRecord::Players
     {
-        // `winner_team_id` is a synthetic squad id here, not a real team —
-        // there's no team membership to self-join from, so the squad's
-        // actual roster (whoever played this match for the winning side)
-        // has to be copied across explicitly.
-        // A squad side always carries its squad's name/colour — both
-        // `start_tournament` and a manually added match copy them from
-        // `TournamentRecord::squad_label` — so there's nothing to fall back
-        // to here; a side without them is a bug upstream, not a default.
-        let (Some(squad_name), Some(squad_colour)) =
-            (winner_side.name.clone(), winner_side.colour.clone())
-        else {
-            tracing::error!(
-                match_id = %into_match_id,
-                squad_id = %winner_team_id,
-                "squad side has no name/colour; not filling the next bracket slot"
-            );
-            return Ok(());
-        };
+        // `winner_team_id` is the winning squad's tournament team. Its roster
+        // is fixed rather than self-joined (team join stays off for squads),
+        // so whoever played this match for the winning side is copied across
+        // explicitly.
         let filled = dao
-            .fill_tournament_bracket_squad_side(
-                into_match_id,
-                into_side_id,
-                &winner_team_id,
-                &squad_name,
-                &squad_colour,
-            )
+            .fill_tournament_bracket_squad_side(into_match_id, into_side_id, &winner_team_id)
             .await?;
         if filled {
             for player in &agg.players {

@@ -36,6 +36,11 @@ jobs:
       - run: pnpm install
         working-directory: agon_infra
 
+      - name: Install Pulumi CLI
+        run: |
+          curl -fsSL https://get.pulumi.com | sh
+          echo "$HOME/.pulumi/bin" >> "$GITHUB_PATH"
+
       - name: Read e2e test account from Pulumi
         working-directory: agon_infra
         run: |

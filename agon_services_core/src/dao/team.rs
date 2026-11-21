@@ -111,6 +111,112 @@ impl Dao {
         }
     }
 
+    /// Create a teamless tournament's squad team with all of its members, in
+    /// one transaction. Returns `false` (and writes nothing) if the team
+    /// already exists, so a retried tournament start reuses it.
+    ///
+    /// Unlike [`Self::create_team`], this is built so the team can't leak
+    /// out of its tournament:
+    /// - no entity-index keys, so team enumeration (admin, backfills) skips it;
+    /// - members get no `UTEAMS#` projection, so it's never in anyone's
+    ///   "my teams";
+    /// - nobody follows it, so it's never in "followed teams" and adds no
+    ///   follower fan-out (the players are on every match's roster anyway).
+    ///
+    /// `team.tournament_id` must be set. A transaction holds at most 100
+    /// items, so a squad can have at most 99 members, far above any real
+    /// squad size.
+    #[tracing::instrument(skip(self, team, members), fields(team_id = %team.id))]
+    pub async fn create_tournament_team(
+        &self,
+        team: &TeamRecord,
+        members: &[TeamMemberRecord],
+    ) -> DaoResult<bool> {
+        use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+
+        if team.tournament_id.is_none() {
+            return Err(DaoError::Dynamo(format!(
+                "create_tournament_team: team {} has no tournament_id",
+                team.id
+            )));
+        }
+        if members.len() > 99 {
+            return Err(DaoError::Dynamo(format!(
+                "create_tournament_team: {} members is more than one transaction holds",
+                members.len()
+            )));
+        }
+        let meta = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(to_item(
+                &Pk::Team(team.id.clone()),
+                &Sk::Meta,
+                TYPE_TEAM,
+                team,
+            )?))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let mut items = vec![TransactWriteItem::builder().put(meta).build()];
+        for m in members {
+            let put = Put::builder()
+                .table_name(self.table())
+                .set_item(Some(to_item(
+                    &Pk::Team(team.id.clone()),
+                    &Sk::Member(m.membership_id.clone()),
+                    TYPE_TEAM_MEMBER,
+                    m,
+                )?))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().put(put).build());
+        }
+        match self
+            .client
+            .transact_write_items()
+            .set_transact_items(Some(items))
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Ok(false),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set a tournament team's name and colour (a squad renamed after the
+    /// tournament started). `NotFound` if the team doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_team_label(
+        &self,
+        team_id: &str,
+        name: &str,
+        colour: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET #name = :name, colour = :colour")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#name", "name")
+            .expression_attribute_values(":name", s(name))
+            .expression_attribute_values(":colour", s(colour))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("team {team_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Fetch a team's meta only (no members).
     #[tracing::instrument(skip(self))]
     pub async fn get_team_meta(&self, team_id: &str) -> DaoResult<Option<TeamRecord>> {

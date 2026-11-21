@@ -2,11 +2,12 @@
 //!
 //! DynamoDB stays the source of truth. OpenSearch holds documents derived from
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
-//! the `agon_worker backfill-opensearch` command. A write failure here never
-//! fails a user-facing write — `matches`/`match_stats` are still shadow-only
-//! (nothing reads them yet); `users` is the first index with a real reader
-//! (`GET /admin/stats`), which reports 503 while `OPENSEARCH_URL` is unset,
-//! same convention as the other optional integrations.
+//! the `agon_worker backfill-opensearch` command. A sync failure never fails
+//! a user-facing write. The team summary and leaderboard endpoints read the
+//! match data through [`team_stats`]; `GET /admin/stats` reads the `users`
+//! index directly via [`client::OpenSearchClient::count`]. Both report 503
+//! while `OPENSEARCH_URL` is unset, same convention as the other optional
+//! integrations.
 //!
 //! Three indices (see [`schema`]):
 //!
@@ -19,20 +20,23 @@
 //!   per-player slice come from here.
 //! - **`users`**: one document per user (id, name, email, creation time,
 //!   admin flag). Backs the admin panel's "total users" count (`GET
-//!   /admin/stats`) — the first thing that reads OpenSearch on a request
-//!   path. Not a user search index; `GET
-//!   /admin/users` still searches Meilisearch.
+//!   /admin/stats`). Not a user search index; `GET /admin/users` still
+//!   searches Meilisearch.
 //!
 //! Each index is versioned. The worker writes to the physical index for the
 //! version compiled into it (`matches_v1`); readers use the alias (`matches`),
 //! which the backfill points at a version once that version is complete. A
 //! schema change is: bump the version, deploy, run the backfill, which fills
 //! the new index and swaps the alias.
+//!
+//! Match/leaderboard reads go through [`team_stats`], which queries the
+//! aliases; the `users` count is read directly.
 
 pub mod client;
 pub mod docs;
 pub mod schema;
 pub mod sync;
+pub mod team_stats;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
 pub use docs::{MatchDocs, build_match_docs, build_user_doc};

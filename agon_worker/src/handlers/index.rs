@@ -126,6 +126,9 @@ async fn index_team(
         return Ok(());
     }
     match dao.get_team_meta(team_id).await? {
+        // A tournament's squad team is never searchable: it only exists
+        // inside its tournament (see `TeamRecord::tournament_id`).
+        Some(t) if t.is_tournament_team() => search.delete(Index::Teams, team_id).await?,
         Some(t) => search.upsert(Index::Teams, &team_doc(&t)).await?,
         None => search.delete(Index::Teams, team_id).await?,
     }

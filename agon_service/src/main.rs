@@ -105,6 +105,10 @@ use notification::{
 // doc comment for why this can't be done from `agon_ui` (a client-only SPA).
 mod share;
 
+// Team summary and leaderboard, read from OpenSearch. Its own `OpenApi`
+// type, combined with `Api` like `admin::AdminApi`.
+mod team_stats;
+
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
@@ -980,9 +984,10 @@ struct CreateMatchSideInput {
     /// (`CreateMatchInput.tournament_id` set, and that tournament's
     /// `entry_audience` is `"players"`) — the 0-based squad number entries
     /// are assigned via `POST /tournaments/:id/entries/:entrant_id/squad`.
-    /// Mutually exclusive with `team_id`/`name`/`colour`, which the server
-    /// fills in from the squad instead (same synthetic-squad-as-team shape
-    /// `start_tournament` uses). Rejected everywhere else.
+    /// Mutually exclusive with `team_id`/`name`/`colour`: the server sets
+    /// `team_id` to the squad's tournament team (the one `start_tournament`
+    /// created), and the side shows that team's name and colour. Rejected
+    /// everywhere else.
     tournament_squad: Option<u32>,
 }
 
@@ -1418,10 +1423,11 @@ struct Tournament {
     generation: Option<TournamentGenerationInput>,
     entry_count: u64,
     /// A teamless tournament's squad name/colour, keyed by squad index
-    /// (as a string) — only ever set for entries that have a squad, via
-    /// `PUT /tournaments/{id}/squads/{squad}`. A squad with no entry here
-    /// falls back to a generated "Squad N" label and palette colour once
-    /// the tournament starts.
+    /// (as a string), set via `PUT /tournaments/{id}/squads/{squad}`. Every
+    /// squad needs one before the tournament can start. On start each squad
+    /// becomes a tournament team carrying this name and colour, and match
+    /// sides and standings rows refer to it by that team's id. Renaming a
+    /// squad after that renames its team.
     squad_labels: HashMap<String, SquadLabel>,
     created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -4206,19 +4212,15 @@ impl Api {
                                 "no accepted entrants are assigned to squad {squad}"
                             ))));
                         }
-                        let Some(label) = tournament.squad_label(squad) else {
-                            return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
-                                "squad {} has no name/colour yet — set it on the tournament's entries page",
-                                squad + 1
-                            ))));
-                        };
-                        let (label, colour) = (label.name.clone(), label.colour.clone());
+                        // The squad's tournament team, created when the
+                        // tournament started. The side shows the team's name
+                        // and colour, so nothing is copied onto it.
                         squad_side_client_ids.insert(side.client_id.clone(), squad);
                         resolved_sides.push(CreateMatchSideInput {
                             client_id: side.client_id,
-                            team_id: Some(format!("squad-{squad}")),
-                            name: Some(label),
-                            colour: Some(colour),
+                            team_id: Some(dao::records::squad_team_id(&tournament_id, squad)),
+                            name: None,
+                            colour: None,
                             max_players: side.max_players,
                             team_join_enabled: Some(false),
                             tournament_squad: None,
@@ -4227,6 +4229,12 @@ impl Api {
                 }
             }
             input.sides = resolved_sides;
+        } else if let Some(msg) =
+            tournament_team_side_refusal(dao, input.sides.iter().filter_map(|s| s.team_id.clone()))
+                .await?
+        {
+            // Outside a tournament, no side may be a tournament's squad team.
+            return Ok(CreateMatchResponse::ValidationError(PlainText(msg)));
         }
 
         // Resolve any header images to asset id + stored URL (must be
@@ -5654,6 +5662,12 @@ impl Api {
             }
         }
 
+        if let Some(msg) =
+            tournament_team_side_refusal(dao, input.sides.iter().map(|s| s.team_id.clone())).await?
+        {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+        }
+
         // `name`/`colour` are derby overrides, same exception
         // `CreateMatchSideInput`'s own fields document: only valid when
         // another side in the template shares the same team.
@@ -6344,16 +6358,25 @@ impl Api {
                 format!("tournament is already full ({max} entries)"),
             )));
         }
-        if tournament.entry_audience == dao::records::TournamentEntryAudienceRecord::Teams
-            && dao
-                .get_team(&input.entrant_id)
+        if tournament.entry_audience == dao::records::TournamentEntryAudienceRecord::Teams {
+            match dao
+                .get_team_meta(&input.entrant_id)
                 .await
                 .map_err(dao_internal)?
-                .is_none()
-        {
-            return Ok(AddTournamentEntryResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            {
+                None => {
+                    return Ok(AddTournamentEntryResponse::NotFound(PlainText(
+                        "team not found".into(),
+                    )));
+                }
+                // A squad's team only plays in the tournament that made it.
+                Some(team) if team.is_tournament_team() => {
+                    return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                        "a tournament squad's team can't enter another tournament".into(),
+                    )));
+                }
+                Some(_) => {}
+            }
         }
 
         let entry = dao::records::TournamentEntryRecord {
@@ -6447,9 +6470,10 @@ impl Api {
     /// Set (or replace) a squad's name/colour, same idea as naming/colouring
     /// an ad-hoc match side — purely organisational, no existence check on
     /// the squad itself (a squad is just an index an entry's `squad` field
-    /// points at). Only while the tournament is still `"open"`; `start`
-    /// reads whatever's set here, falling back to a generated "Squad N" and
-    /// palette colour for any squad with no label.
+    /// points at). While the tournament is `"open"` it only sets the label,
+    /// which `start` requires for every squad and copies onto the squad's
+    /// tournament team. While it's `"in_progress"` it also renames that team,
+    /// so every match shows the new name and colour.
     #[oai(path = "/tournaments/:tournament_id/squads/:squad", method = "put")]
     async fn set_tournament_squad_label(
         &self,
@@ -6481,9 +6505,9 @@ impl Api {
                 "squads only apply to a teamless tournament".into(),
             )));
         }
-        if tournament.status != "open" {
+        if tournament.status != "open" && tournament.status != "in_progress" {
             return Ok(SetSquadLabelResponse::ValidationError(PlainText(format!(
-                "tournament is `{}`, not `open`",
+                "tournament is `{}`; squads can only be renamed while it's open or in progress",
                 tournament.status
             ))));
         }
@@ -6491,6 +6515,28 @@ impl Api {
             name: input.name.clone(),
             colour: input.colour.clone(),
         };
+        // Once started, each squad is a tournament team and its matches show
+        // the team's name and colour, so renaming the team renames the squad
+        // everywhere. The label is kept in step for the entries page.
+        if tournament.status == "in_progress" {
+            match dao
+                .set_tournament_team_label(
+                    &dao::records::squad_team_id(&tournament_id, squad),
+                    &label.name,
+                    &label.colour,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(dao::DaoError::NotFound(_)) => {
+                    return Ok(SetSquadLabelResponse::ValidationError(PlainText(format!(
+                        "squad {} isn't playing in this tournament",
+                        squad + 1
+                    ))));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            }
+        }
         dao.set_tournament_squad_label(&tournament_id, squad, &label)
             .await
             .map_err(dao_internal)?;
@@ -6601,11 +6647,10 @@ impl Api {
             }
         }
 
-        // Filled only for a teamless tournament: each fixed squad's display
-        // label/colour and member user ids, keyed by the synthetic entrant
-        // id generation assigns it (`"squad-<position>"`).
-        let mut squad_members: HashMap<String, Vec<String>> = HashMap::new();
-        let mut squad_labels: HashMap<String, (String, String)> = HashMap::new();
+        // Filled only for a teamless tournament: each squad's team (see
+        // `squad_team_id`), keyed by team id, with its member user ids. The
+        // teams are created below, once every squad has validated.
+        let mut squad_teams: Vec<(dao::records::TeamRecord, Vec<String>)> = Vec::new();
 
         let ordered: Vec<String> = match tournament.entry_audience {
             dao::records::TournamentEntryAudienceRecord::Teams => {
@@ -6662,13 +6707,8 @@ impl Api {
                         ),
                     )));
                 }
-                let mut synthetic_ids: Vec<String> = Vec::new();
-                for (position, (squad_num, members)) in by_squad.into_iter().enumerate() {
-                    let synthetic_id = format!("squad-{position}");
-                    // Looked up by the entry's actual `squad` index, not
-                    // `position` (dense after compaction), so a sparse
-                    // squad numbering (e.g. 0 and 2 used, not 1) still finds
-                    // the label the organiser actually set.
+                let now = now_iso();
+                for (squad_num, members) in by_squad {
                     let Some(label) = tournament.squad_label(squad_num) else {
                         return Ok(StartTournamentResponse::ValidationError(PlainText(
                             format!(
@@ -6677,18 +6717,55 @@ impl Api {
                             ),
                         )));
                     };
-                    squad_labels.insert(
-                        synthetic_id.clone(),
-                        (label.name.clone(), label.colour.clone()),
-                    );
-                    squad_members.insert(synthetic_id.clone(), members);
-                    synthetic_ids.push(synthetic_id);
+                    let team = dao::records::TeamRecord {
+                        id: dao::records::squad_team_id(&tournament_id, squad_num),
+                        name: label.name.clone(),
+                        logo_url: None,
+                        invite_token: None,
+                        follower_count: 0,
+                        created_at: now.clone(),
+                        colour: Some(label.colour.clone()),
+                        tournament_id: Some(tournament_id.clone()),
+                    };
+                    squad_teams.push((team, members));
                 }
                 // `seeding` is forced to `"random"` for a teamless
                 // tournament at creation — a squad has no single seed.
-                agon_services_core::tournament::random_seed_order(&synthetic_ids)
+                let ids: Vec<String> = squad_teams.iter().map(|(t, _)| t.id.clone()).collect();
+                agon_services_core::tournament::random_seed_order(&ids)
             }
         };
+
+        // Each squad becomes a tournament team (hidden outside the
+        // tournament; see `Dao::create_tournament_team`). The ids are
+        // deterministic, so a start retried after a partial failure finds the
+        // teams already there and reuses them.
+        for (team, members) in &squad_teams {
+            let now = now_iso();
+            let records: Vec<dao::records::TeamMemberRecord> = members
+                .iter()
+                .map(|user_id| dao::records::TeamMemberRecord {
+                    team_id: team.id.clone(),
+                    membership_id: new_id(),
+                    user_id: Some(user_id.clone()),
+                    display_name: None,
+                    role: "member".into(),
+                    invitation: None,
+                    created_at: now.clone(),
+                })
+                .collect();
+            let created = dao
+                .create_tournament_team(team, &records)
+                .await
+                .map_err(dao_internal)?;
+            if !created {
+                info!("squad team {} already exists; reusing it", team.id);
+            }
+        }
+        let squad_members: HashMap<String, Vec<String>> = squad_teams
+            .into_iter()
+            .map(|(team, members)| (team.id, members))
+            .collect();
 
         let first_round_starts_at = mapping::parse_ts(&tournament.first_round_starts_at);
 
@@ -6751,22 +6828,15 @@ impl Api {
                     (team_side(entrant_id), Vec::new())
                 }
                 dao::records::TournamentEntryAudienceRecord::Players => {
-                    // Every synthetic squad id was labelled above, before
-                    // generation ran.
-                    let (label, colour) = squad_labels
-                        .get(entrant_id)
-                        .cloned()
-                        .expect("every squad entrant is labelled before generation");
+                    // The squad's tournament team. Its name and colour come
+                    // from the team at read time, so renaming the squad
+                    // later updates every match. Team join stays off: the
+                    // roster is the squad's members, added below.
                     let side = dao::records::MatchSideRecord {
                         side_id: new_id(),
-                        // Not a real team — the synthetic squad id, reused
-                        // so `GET /tournaments/{id}/standings` (which keys
-                        // rows by `team_id`) has a stable identity for this
-                        // squad across every one of its matches, the same
-                        // role a real team's id plays for a `Teams` entry.
                         team_id: Some(entrant_id.to_string()),
-                        name: Some(label),
-                        colour: Some(colour),
+                        name: None,
+                        colour: None,
                         max_players: None,
                         team_join_enabled: false,
                         open_join_enabled: false,
@@ -7079,13 +7149,28 @@ impl Api {
             .list_tournament_matches(&tournament_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
+        // Sides refer to teams (and squads to their tournament teams) by id,
+        // so fill in names, logos and colours the same way match views do.
+        let team_ids: Vec<String> = page
+            .items
+            .iter()
+            .flat_map(|m| m.sides.values().filter_map(|s| s.team_id.clone()))
+            .collect();
+        let team_metas = self.batch_team_metas(dao, &team_ids).await?;
+        let items = page
+            .items
+            .iter()
+            .map(|m| {
+                let mut summary = tournament_match_summary_from_record(m);
+                for side in &mut summary.sides {
+                    Self::hydrate_side_team(side, &team_metas);
+                }
+                summary
+            })
+            .collect();
         Ok(ListTournamentMatchesResponse::Matches(Json(
             TournamentMatchPage {
-                items: page
-                    .items
-                    .iter()
-                    .map(tournament_match_summary_from_record)
-                    .collect(),
+                items,
                 next_cursor: page.next_cursor,
             },
         )))
@@ -8409,6 +8494,8 @@ impl Api {
             invite_token: Some(new_id()),
             follower_count: 0,
             created_at: now.clone(),
+            colour: None,
+            tournament_id: None,
         };
         // The creator becomes the first member with the Owner role (already
         // an Agon user, so no invitation to accept) — permanent, since
@@ -8542,6 +8629,9 @@ impl Api {
     ) -> Result<AddTeamMembersResponse> {
         info!("Adding {} members to team {team_id}", input.user_ids.len());
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(AddTeamMembersResponse::Forbidden(PlainText(msg)));
+        }
 
         // Team must exist, and the caller must be its owner or an admin.
         // Keep the meta — adding members doesn't change it, so the same read
@@ -8593,6 +8683,9 @@ impl Api {
         info!("Updating team {team_id}");
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(UpdateTeamResponse::Forbidden(PlainText(msg)));
+        }
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(UpdateTeamResponse::NotFound(PlainText(
@@ -8657,6 +8750,9 @@ impl Api {
     ) -> Result<RemoveTeamMemberResponse> {
         info!("Removing member {member_id} from team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(RemoveTeamMemberResponse::Forbidden(PlainText(msg)));
+        }
 
         // Team must exist, and the caller must be its owner or an admin.
         // Keep the aggregate — removing a member doesn't change the meta, so
@@ -8717,6 +8813,9 @@ impl Api {
     ) -> Result<UpdateTeamMemberRoleResponse> {
         info!("Setting role of member {member_id} on team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(UpdateTeamMemberRoleResponse::Forbidden(PlainText(msg)));
+        }
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(UpdateTeamMemberRoleResponse::NotFound(PlainText(
@@ -8759,6 +8858,9 @@ impl Api {
     ) -> Result<DeleteTeamResponse> {
         info!("Deleting team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(DeleteTeamResponse::Forbidden(PlainText(msg)));
+        }
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(DeleteTeamResponse::NotFound(PlainText(
@@ -8792,6 +8894,9 @@ impl Api {
     ) -> Result<LeaveTeamResponse> {
         info!("Leaving team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(LeaveTeamResponse::ValidationError(PlainText(msg)));
+        }
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(LeaveTeamResponse::NotFound(PlainText(
@@ -8833,6 +8938,9 @@ impl Api {
     ) -> Result<TransferTeamOwnershipResponse> {
         info!("Transferring ownership of team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(TransferTeamOwnershipResponse::Forbidden(PlainText(msg)));
+        }
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(TransferTeamOwnershipResponse::NotFound(PlainText(
@@ -10427,6 +10535,9 @@ impl Api {
     ) -> Result<AddInvitationsResponse> {
         info!("Inviting to team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(AddInvitationsResponse::Forbidden(PlainText(msg)));
+        }
         let agg = match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => agg,
             None => {
@@ -11313,6 +11424,9 @@ impl Api {
         Path(team_id): Path<String>,
     ) -> Result<FollowResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(FollowResponse::NotFound(PlainText(msg)));
+        }
         info!("User {uid} following team {team_id}");
         dao.follow_team(&uid, &team_id, &now_iso())
             .await
@@ -11569,6 +11683,11 @@ impl Api {
             image_url: url.clone(),
             asset_id: None,
         });
+        // A side's own colour wins; otherwise use the team's (squad teams set
+        // one, so a renamed or recoloured squad shows up on every match).
+        if side.colour.is_none() {
+            side.colour = team.and_then(|t| t.colour.clone());
+        }
         side.name = side
             .name
             .take()
@@ -12877,6 +12996,43 @@ fn check_scope(jwt: &JwtClaims, allowed_scope: Option<&str>) -> Result<()> {
 /// type other than `Api` (e.g. `admin::AdminApi`) can resolve a caller's
 /// internal user id without needing an `Api` instance to call a method on —
 /// `Api` is a unit struct, so this never actually depended on `self`.
+/// `Some(reason)` when any of `team_ids` is a tournament's squad team. Used
+/// by match and series creation outside a tournament: a squad's team only
+/// plays in the tournament that made it.
+async fn tournament_team_side_refusal(
+    dao: &dao::Dao,
+    team_ids: impl Iterator<Item = String>,
+) -> Result<Option<String>> {
+    let ids: Vec<String> = team_ids.collect();
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let metas = dao.batch_get_team_metas(&ids).await.map_err(dao_internal)?;
+    Ok(metas.values().find(|t| t.is_tournament_team()).map(|t| {
+        format!(
+            "team `{}` is a tournament squad and can only play in its tournament",
+            t.name
+        )
+    }))
+}
+
+/// `Some(reason)` when `team_id` is a teamless tournament's squad team
+/// (`TeamRecord::tournament_id`). Those exist only inside their tournament,
+/// so the team endpoints (edit, delete, members, invitations, leave,
+/// transfer, follow) refuse them; the organiser renames a squad on the
+/// tournament instead. `None` for an ordinary team or a missing one (each
+/// endpoint reports a missing team itself).
+async fn tournament_team_refusal(dao: &dao::Dao, team_id: &str) -> Result<Option<String>> {
+    Ok(dao
+        .get_team_meta(team_id)
+        .await
+        .map_err(dao_internal)?
+        .filter(|t| t.is_tournament_team())
+        .map(|_| {
+            "this is a tournament squad's team; manage it from its tournament instead".to_string()
+        }))
+}
+
 async fn require_uid(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
     check_scope(jwt, None)?;
     dao.get_user_id_by_sub(&jwt.sub)
@@ -13189,6 +13345,8 @@ fn mock_team(id: String, name: String) -> Team {
         invite_token: Some(String::from("team_invite_abc123")),
         follower_count: 128,
         is_followed_by_me: false,
+        colour: None,
+        tournament_id: None,
     }
 }
 
@@ -13580,7 +13738,12 @@ async fn main() {
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
     let api_service = OpenApiService::new(
-        (Api, admin::AdminApi, youtube::YoutubeApi),
+        (
+            Api,
+            admin::AdminApi,
+            youtube::YoutubeApi,
+            team_stats::TeamStatsApi,
+        ),
         "Agon API",
         "1.0",
     )
@@ -13619,25 +13782,29 @@ async fn main() {
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
             let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
 
-            // OpenSearch — only `GET /admin/stats` reads it so far (the
-            // `users` index; see `admin::get_stats`). `None` when
-            // `OPENSEARCH_URL` is unset, in which case that endpoint reports
-            // 503 rather than failing to start, same convention as
-            // `device_signer`/`youtube_oauth` below.
-            let opensearch = agon_services_core::opensearch::OpenSearchClient::from_env()
-                .unwrap_or_else(|e| {
-                    error!("invalid OpenSearch settings; admin stats will report 503: {e}");
+            // OpenSearch, for the team stats reads (`team_stats`) and the
+            // admin "total users" count (`admin::get_stats`, the `users`
+            // index). Optional: without OPENSEARCH_URL those endpoints
+            // answer 503 and nothing else changes.
+            let stats_store = team_stats::StatsStore(
+                agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
+                    error!("invalid OpenSearch settings; team/admin stats disabled: {e}");
                     None
-                });
+                }),
+            );
 
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
             // browsers reject the preflight), and mixing `*` with specific origins
             // in poem's Cors doesn't act as a catch-all anyway. Local dev is the
-            // Vite server, pinned to 5173; deployed origins match the get-agon.com
-            // regex.
+            // Vite server, pinned to 5173; other stacks' subdomains match the
+            // get-agon.com regex. `prod` serves the UI from the bare domain
+            // itself rather than a subdomain of it, so it needs its own explicit
+            // entry — the regex's `.` only matches a subdomain label, not "no
+            // label at all".
             let cors = Cors::new()
                 .allow_origin("http://localhost:5173")
+                .allow_origin("https://get-agon.com")
                 .allow_origin_regex("https://*.get-agon.com")
                 .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
                 .allow_headers(vec!["content-type", "authorization"])
@@ -13676,7 +13843,7 @@ async fn main() {
                 .around(admin_auth_middleware)
                 .data(dao)
                 .data(search)
-                .data(opensearch)
+                .data(stats_store)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

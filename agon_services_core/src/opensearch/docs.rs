@@ -169,6 +169,12 @@ pub struct MatchDoc {
     pub ranked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tournament_id: Option<String>,
+    /// 0-based round (knockout) or matchday (league) within the tournament.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_round: Option<u32>,
+    /// Bracket position within the round. Knockout only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_slot: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
     pub starts_at: String,
@@ -198,6 +204,9 @@ pub struct PlayerStatDoc {
     pub ranked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tournament_id: Option<String>,
+    /// 0-based round (knockout) or matchday (league) within the tournament.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tournament_round: Option<u32>,
     pub starts_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
@@ -339,6 +348,11 @@ pub fn build_match_docs(
         kind,
         ranked: m.ranked,
         tournament_id: m.tournament_id.clone(),
+        tournament_round: m.tournament_round.map(|r| r.round),
+        tournament_slot: m
+            .tournament_round
+            .filter(|_| kind == MatchKind::Cup)
+            .map(|r| r.slot),
         series_id: m.series_id.clone(),
         starts_at: m.starts_at.clone(),
         year,
@@ -407,6 +421,7 @@ pub fn build_match_docs(
                         sport: m.match_type.clone(),
                         ranked: m.ranked,
                         tournament_id: m.tournament_id.clone(),
+                        tournament_round: m.tournament_round.map(|r| r.round),
                         starts_at: m.starts_at.clone(),
                         year,
                         played: 1,
@@ -546,6 +561,24 @@ mod tests {
         assert_eq!(match_kind(&c, None), MatchKind::Friendly);
         let d = agg(vec![side("a", None), side("b", None)], vec![], None);
         assert_eq!(match_kind(&d, None), MatchKind::Pickup);
+    }
+
+    #[test]
+    fn tournament_round_is_on_both_documents_and_slot_is_knockout_only() {
+        let mut a = agg(
+            vec![side("a", Some("t")), side("b", Some("u"))],
+            vec![player("p1", Some("u1"), "a")],
+            Some((&[("a", 1), ("b", 0)], Some("a"))),
+        );
+        a.match_.tournament_id = Some("tour".into());
+        a.match_.tournament_round =
+            Some(crate::dao::records::TournamentRoundInfo { round: 4, slot: 2 });
+        // No tournament record, so this reads as a league: the slot is meaningless.
+        let docs = build_match_docs(&a, None, "now");
+        assert_eq!(docs.match_doc.kind, MatchKind::League);
+        assert_eq!(docs.match_doc.tournament_round, Some(4));
+        assert_eq!(docs.match_doc.tournament_slot, None);
+        assert_eq!(docs.players[0].tournament_round, Some(4));
     }
 
     #[test]

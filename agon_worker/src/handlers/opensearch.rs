@@ -9,10 +9,10 @@
 //! **Resilience.** A failure here is logged and swallowed rather than failing
 //! the message: an OpenSearch outage must not push stream events into the DLQ
 //! or delay the handlers that matter today. The backfill
-//! (`agon_worker backfill-opensearch`) repairs anything missed. `matches`/
-//! `match_stats` are still shadow-only (nothing reads them on a request path
-//! yet); `users` now backs `GET /admin/stats`, which tolerates the same brief
-//! staleness every other async-indexed read in this app already does.
+//! (`agon_worker backfill-opensearch`) repairs anything missed. `GET
+//! /admin/stats` and the team summary/leaderboard endpoints tolerate the
+//! same brief staleness every other async-indexed read in this app already
+//! does.
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a

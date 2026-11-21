@@ -1,17 +1,18 @@
 # OpenSearch: match, per-player stats and users store
 
-**Status: `matches`/`match_stats` are shadow writes only** — the worker keeps
-them in sync, but no API endpoint reads either yet. `users` is the exception:
-it backs `GET /admin/stats`'s "total users" figure, the first thing that reads
-OpenSearch on a request path. DynamoDB is the source of truth throughout, and
-every index here can be rebuilt from it at any time.
+**Status: synced, with three read endpoints.** The worker keeps OpenSearch in
+sync. `GET /teams/{id}/summary` and `GET /teams/{id}/leaderboard` read the
+match data (see [Reads](#reads)) — the UI doesn't call them yet; switch it
+over once the backfill has run. `GET /admin/stats` reads the `users` index
+directly for its "total users" figure. DynamoDB is the source of truth
+throughout, and every index here can be rebuilt from it at any time.
 
 ## What's stored
 
 | Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists (once reads move over) |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice (once reads move over) |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name, email, creation time, admin flag | the admin panel's total-users count (`GET /admin/stats`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
@@ -52,9 +53,12 @@ user's `users` document (`agon_services_core::opensearch::sync_user`) — just
 an index, no player rows or stale-row cleanup to do.
 
 A failure is logged (`opensearch: match/user sync failed`) and **not
-retried**: an outage mustn't hold up the stream, and `GET /admin/stats`
-tolerates the same brief staleness every other async-indexed read in this app
-already does. Run the backfill to repair.
+retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
+the team summary/leaderboard endpoints tolerate the same brief staleness
+every other async-indexed read in this app already does. Run the backfill to
+repair. **Revisit this before the UI switches to the team-stats read
+endpoints:** a missed write would then show as a stale record until the next
+change to that match.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.
@@ -147,6 +151,22 @@ anything, so check that line when you're not sure which table you're on.
 The aliases only move if every match *and* every user succeeded. Failures are
 logged with their ids; fix the cause and re-run.
 
+## Reads
+
+`agon_services_core::opensearch::team_stats` holds the typed queries. Each is a
+pure query builder plus a pure response parser, unit-tested without a
+cluster, and `tests/opensearch_team_stats.rs` runs them against a real one.
+Callers never build query JSON.
+
+| Endpoint (`agon_service/src/team_stats.rs`) | Index | What it reads |
+|---|---|---|
+| `GET /teams/{id}/summary?sport=&year=` | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
+| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+
+Only confirmed matches count. Squad games are left out of `record`, form and
+last 10, but count on the leaderboard's `all` scope. The API pod gets
+`OPENSEARCH_URL` like the worker; without it both endpoints answer 503.
+
 ## Changing the schema
 
 OpenSearch can't change a field's type in place, so every mapping change is a
@@ -155,8 +175,9 @@ new index version:
 1. Edit the mapping in `schema.rs` and **bump that index's `version`**. Update
    the builder in `docs.rs` to match.
 2. Deploy the worker. On start it creates `<name>_v<new>` and live changes go
-   there. The alias still points at the old version, which is fine while
-   nothing reads it.
+   there. The alias, and so the read endpoints, still point at the old
+   version, which stops getting live changes. Reads are stale until step 3
+   finishes, so run it straight after the deploy.
 3. Run `agon_worker backfill-opensearch --delete-old`. It fills the new
    version, points the alias at it, and deletes the old one.
 

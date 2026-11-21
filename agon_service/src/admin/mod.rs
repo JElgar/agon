@@ -109,9 +109,9 @@ impl AdminApi {
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
-        Data(opensearch): Data<&Option<agon_services_core::opensearch::OpenSearchClient>>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
     ) -> Result<GetStatsResponse> {
-        let Some(os) = opensearch else {
+        let Some(os) = &stats.0 else {
             return Ok(GetStatsResponse::NotConfigured(PlainText(
                 "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
             )));

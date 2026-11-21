@@ -49,3 +49,5 @@ config:
   agon_infra:googleOauthClientId: 169505942692-0m0vfg0ukb4mmcd4k3c51mk6ulsgbmiv.apps.googleusercontent.com
   agon_infra:googleOauthClientSecret:
     secure: AAABAFYDBKQfwM68gNQ4ro6VTvEBoCpew42i1rouXqAVMffxFj71ufvxai+/pnsasBs1u1L/DJ8q55wFQgnyS+Nyag==
+  agon_infra:posthogKey: phc_BapCx4JvUSTkBQPuDzahzoEAZSUex7t2LaqfMWt5GtTp
+  agon_infra:posthogHost: https://eu.i.posthog.com

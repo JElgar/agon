@@ -146,10 +146,16 @@ Callers never build query JSON.
 |---|---|---|
 | `GET /teams/{id}/summary?sport=&year=` | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /users/{id}/summary?sport=&year=` | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match. See [`agon_services_core::opensearch::user_stats`] |
 
-Only confirmed matches count. Squad games are left out of `record`, form and
-last 10, but count on the leaderboard's `all` scope. The API pod gets
-`OPENSEARCH_URL` like the worker; without it both endpoints answer 503.
+Only confirmed matches count. Squad games are left out of a team's `record`,
+form and last 10, but count on the leaderboard's `all` scope. For a player's
+own summary, squad games keep a real W/D/L (they were only ever on one of the
+two sides), but are still kept out of `record`/form/last10, same convention
+as the team version. There's no per-player leaderboard — a leaderboard is
+inherently team-scoped — and no personal goals-for/against or clean sheets,
+since those are side-level, not individually attributable. The API pod gets
+`OPENSEARCH_URL` like the worker; without it these endpoints answer 503.
 
 ## Changing the schema
 

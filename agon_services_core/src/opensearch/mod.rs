@@ -3,18 +3,19 @@
 //! DynamoDB stays the source of truth. OpenSearch holds documents derived from
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
 //! the `agon_worker backfill-opensearch` command. The team summary and
-//! leaderboard endpoints read it through [`team_stats`]. A sync failure never
-//! fails a user-facing write.
+//! leaderboard endpoints read it through [`team_stats`]; a player's own
+//! summary reads it through [`user_stats`]. A sync failure never fails a
+//! user-facing write.
 //!
 //! Two indices (see [`schema`]):
 //!
 //! - **`matches`**: one document per match, with each side nested (team,
-//!   roster, outcome, score, conceded). Team records, form and head-to-head
-//!   come from here.
+//!   roster, outcome, score, conceded). Team records, form, head-to-head and
+//!   next-match lookups come from here.
 //! - **`match_stats`**: one flat row per player per confirmed match, carrying
 //!   everything a leaderboard filters on (team, opponent, kind, tournament,
-//!   year, sport) plus that player's counters. Leaderboards and every
-//!   per-player slice come from here.
+//!   year, sport) plus that player's counters. Leaderboards, a player's own
+//!   record/form, and every other per-player slice come from here.
 //!
 //! Each index is versioned. The worker writes to the physical index for the
 //! version compiled into it (`matches_v1`); readers use the alias (`matches`),
@@ -22,13 +23,15 @@
 //! schema change is: bump the version, deploy, run the backfill, which fills
 //! the new index and swaps the alias.
 //!
-//! Reads go through [`team_stats`], which queries the aliases.
+//! Reads go through [`team_stats`] and [`user_stats`], which query the
+//! aliases.
 
 pub mod client;
 pub mod docs;
 pub mod schema;
 pub mod sync;
 pub mod team_stats;
+pub mod user_stats;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
 pub use docs::{MatchDocs, build_match_docs};

@@ -10,7 +10,8 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { Avatar } from '@/components/agon/Avatar'
-import { memberName, memberAvatarUrl, pendingInvitees, sideDisplayName } from '@/lib/members'
+import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
+import { memberInviteToken, memberName, memberAvatarUrl, pendingInvitees, sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
@@ -97,14 +98,19 @@ export function PendingInvitesDialog({
                     </span>
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={revoke.isPending && revoke.variables === p.member.invitation!.id}
-                  onClick={() => revoke.mutate(p.member.invitation!.id)}
-                >
-                  Revoke
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  {memberInviteToken(p.member) && (
+                    <CopyInviteButton token={memberInviteToken(p.member)!} />
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={revoke.isPending && revoke.variables === p.member.invitation!.id}
+                    onClick={() => revoke.mutate(p.member.invitation!.id)}
+                  >
+                    Revoke
+                  </Button>
+                </div>
               </div>
             ))}
           </div>

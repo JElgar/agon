@@ -1924,9 +1924,9 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 								},
 							},
 							// OpenSearch: `GET /admin/stats` reads the `users` index's
-							// count from here (see the OpenSearch section) — the one
-							// index the service itself needs, unlike the worker's
-							// shadow writes to all of them.
+							// count from here, and team summary/leaderboard reads use it
+							// too (see the OpenSearch section) — the one index the service
+							// itself needs, unlike the worker's shadow writes to all of them.
 							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
@@ -1936,8 +1936,6 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							// after rendering their OG tags server-side. Same var/value as
 							// agon_worker's push-notification deep links below.
 							{ name: "AGON_UI_URL", value: agonUiUrl },
-							// Team summary and leaderboard reads (see the OpenSearch section).
-							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 						]
 					},
 				],

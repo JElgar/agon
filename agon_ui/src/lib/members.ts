@@ -73,6 +73,32 @@ export function joinLink(token: string): string {
 }
 
 /**
+ * Share `url` via the native share sheet where available, else copy it to
+ * the clipboard, else fall back to a `prompt` so the user can copy it by
+ * hand (e.g. clipboard blocked in an insecure context). Returns whether it
+ * ended up on the clipboard — `CopyInviteButton` uses that to show its
+ * transient "Copied!" state; a share-sheet or prompt completion doesn't need
+ * one, since each already confirms itself.
+ */
+export async function shareOrCopyLink(url: string): Promise<boolean> {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Join me on Agon', url })
+      return false
+    } catch {
+      // User dismissed the sheet, or share failed — fall through to copy.
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url)
+    return true
+  } catch {
+    window.prompt('Copy this invite link:', url)
+    return false
+  }
+}
+
+/**
  * The viewer's own pending invitation to a match, if they've been invited (as a
  * known Agon user) and haven't yet responded — else null. Lets match views show
  * the viewer their invite and an accept/decline action, mirroring the inbox.

@@ -51,12 +51,15 @@ import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 import {
+  inviteLink,
   memberAvatarUrl,
+  memberInviteToken,
   memberName,
   myPendingInvitation,
   pendingInvitees,
   playerId,
   sideDisplayName,
+  shareOrCopyLink,
   withInvitationStatus,
 } from '@/lib/members'
 import { PendingInvitesDialog } from '@/components/agon/PendingInvitesDialog'
@@ -419,6 +422,7 @@ export function ScheduledMatchInvite({
                     const isYou = myPlayer && id === playerId(myPlayer)
                     const userId = p.member.type === 'User' ? p.member.user_id : undefined
                     const showAdminActions = canEdit && !isOwnerRow
+                    const inviteToken = memberInviteToken(p.member)
                     // Only a reserve_spot invite is still pending here — goingPlayers already
                     // excludes any pending invite that doesn't hold a spot.
                     const isPendingInvite = p.member.invitation?.status === 'pending'
@@ -438,7 +442,7 @@ export function ScheduledMatchInvite({
                           </span>
                           {subline && <span className="block text-xs text-muted-foreground capitalize">{subline}</span>}
                         </div>
-                        {(userId || showAdminActions) && (
+                        {(userId || showAdminActions || inviteToken) && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -453,6 +457,11 @@ export function ScheduledMatchInvite({
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
                               {userId && <ViewProfileMenuItem userId={userId} />}
+                              {inviteToken && showAdminActions && (
+                                <DropdownMenuItem onSelect={() => shareOrCopyLink(inviteLink(inviteToken))}>
+                                  <Link2 /> Copy invite link
+                                </DropdownMenuItem>
+                              )}
                               {showAdminActions && (
                                 <>
                                   <PlayerRoleMenuItems

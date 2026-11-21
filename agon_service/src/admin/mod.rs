@@ -44,6 +44,17 @@ pub(crate) async fn require_admin(dao: &dao::Dao, jwt: &JwtClaims) -> Result<Str
     Ok(uid)
 }
 
+/// Map one `matches` index row to its admin-panel representation.
+fn admin_match_from_row(row: agon_services_core::opensearch::matches::MatchRow) -> models::Match {
+    models::Match {
+        id: row.match_id,
+        name: row.name,
+        sport: row.sport,
+        status: row.status,
+        starts_at: parse_ts(&row.starts_at),
+    }
+}
+
 /// Map a full `UserRecord` to its admin-panel representation.
 fn admin_user_from_record(record: &dao::records::UserRecord) -> models::User {
     models::User {
@@ -82,6 +93,20 @@ enum ListUsersResponse {
 }
 
 #[derive(ApiResponse)]
+enum ListMatchesResponse {
+    #[oai(status = 200)]
+    Matches(Json<models::MatchPage>),
+
+    /// The `cursor` query parameter isn't a valid offset.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum GetUserResponse {
     #[oai(status = 200)]
     User(Json<models::User>),
@@ -102,13 +127,12 @@ enum UpdateUserResponse {
 #[OpenApi]
 impl AdminApi {
     /// Admin panel: usage aggregates shown at the top of each resource page.
-    /// Reads the `users` OpenSearch index, not Meilisearch: an exact
-    /// document count via OpenSearch's own `_count` endpoint, not coupled to
-    /// Meilisearch's stats response shape (which varies enough across
-    /// versions to break a naive count). The admin panel's whole user
-    /// resource is on this index now — `GET /admin/users` below reads it
-    /// too; the user-facing `GET /users/search` is separate and still on
-    /// Meilisearch.
+    /// Reads the `users`/`matches` OpenSearch indices, not Meilisearch: an
+    /// exact document count via OpenSearch's own `_count` endpoint, not
+    /// coupled to Meilisearch's stats response shape (which varies enough
+    /// across versions to break a naive count). `GET /admin/users` and `GET
+    /// /admin/matches` below read the same indices too; the user-facing
+    /// search endpoints are separate and still on Meilisearch.
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
@@ -123,14 +147,83 @@ impl AdminApi {
             .count(&agon_services_core::opensearch::USERS.alias(os.prefix()))
             .await
             .map_err(opensearch_internal)?;
-        Ok(GetStatsResponse::Stats(Json(models::Stats { total_users })))
+        let total_matches = os
+            .count(&agon_services_core::opensearch::MATCHES.alias(os.prefix()))
+            .await
+            .map_err(opensearch_internal)?;
+        Ok(GetStatsResponse::Stats(Json(models::Stats {
+            total_users,
+            total_matches,
+        })))
+    }
+
+    /// Admin panel: list/search every match (name, sport, status, kick-off).
+    /// Reads the `matches` OpenSearch index
+    /// (`agon_services_core::opensearch::matches`) — the same index the
+    /// team-stats reads use, so no new worker sync is needed. An empty `q`
+    /// browses everyone, newest first; `sport`/`status` are exact filters
+    /// and `from`/`to` bound `starts_at`. Links out to the match's own page
+    /// rather than offering a separate admin detail view.
+    #[oai(path = "/admin/matches", method = "get")]
+    async fn list_matches(
+        &self,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
+        /// Free-text search over the match name. Omit or empty to list everyone.
+        #[oai(name = "q")]
+        Query(query): Query<Option<String>>,
+        Query(sport): Query<Option<crate::MatchType>>,
+        Query(status): Query<Option<crate::MatchStatus>>,
+        /// Only matches starting at or after this time.
+        Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Only matches starting at or before this time.
+        Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListMatchesResponse> {
+        let Some(os) = &stats.0 else {
+            return Ok(ListMatchesResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
+        let offset = match search_offset(cursor.as_deref()) {
+            Ok(o) => o,
+            Err(()) => {
+                return Ok(ListMatchesResponse::ValidationError(PlainText(
+                    "invalid cursor".into(),
+                )));
+            }
+        };
+        let limit = page_limit(limit);
+        let sport = sport.as_ref().map(crate::mapping::match_type_tag);
+        let status = status.as_ref().map(crate::mapping::match_status_str);
+        let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let filters = agon_services_core::opensearch::matches::MatchFilters {
+            q: query.as_deref(),
+            sport,
+            status,
+            from: from.as_deref(),
+            to: to.as_deref(),
+        };
+        let (rows, total) =
+            agon_services_core::opensearch::matches::search_matches(os, filters, offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
+
+        let consumed = offset.saturating_add(rows.len() as u32);
+        let next_offset = ((consumed as u64) < total).then_some(consumed);
+        Ok(ListMatchesResponse::Matches(Json(models::MatchPage {
+            items: rows.into_iter().map(admin_match_from_row).collect(),
+            next_cursor: search_cursor(next_offset),
+        })))
     }
 
     /// Admin panel: list/search every user, full account detail. Reads the
     /// `users` OpenSearch index (`agon_services_core::opensearch::users`),
     /// not Meilisearch — an empty `q` browses everyone, newest first.
-    /// Matches/series/teams get their own `/admin/...` list endpoints as
-    /// those resources are added to the panel.
+    /// Series/teams get their own `/admin/...` list endpoints as those
+    /// resources are added to the panel.
     #[oai(path = "/admin/users", method = "get")]
     async fn list_users(
         &self,

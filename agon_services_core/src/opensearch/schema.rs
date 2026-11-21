@@ -34,8 +34,8 @@ impl IndexDef {
 }
 
 /// Every index the worker keeps in sync, in creation order.
-pub fn all_indices() -> [IndexDef; 2] {
-    [MATCHES, MATCH_STATS]
+pub fn all_indices() -> [IndexDef; 3] {
+    [MATCHES, MATCH_STATS, USERS]
 }
 
 /// Single node: one shard (exact aggregations) and no replicas (there's nowhere
@@ -134,6 +134,35 @@ fn match_stats_body() -> Value {
                 "drawn": { "type": "integer" },
                 "lost": { "type": "integer" },
                 "stats": { "type": "object", "dynamic": true },
+                "indexed_at": { "type": "date" }
+            }
+        }
+    })
+}
+
+/// One document per user. See [`crate::opensearch::docs::UserDoc`]. Backs
+/// the admin panel's "total users" count and its `GET /admin/users`
+/// search/browse (`agon_services_core::opensearch::users`) — the admin
+/// panel reads only this, not Meilisearch. `name`/`email` are analyzed text
+/// (not just keyword) so a `multi_match` can match a search term as a
+/// prefix against either.
+pub const USERS: IndexDef = IndexDef {
+    name: "users",
+    version: 2,
+    body: users_body,
+};
+
+fn users_body() -> Value {
+    json!({
+        "settings": settings(),
+        "mappings": {
+            "dynamic": "strict",
+            "properties": {
+                "user_id": { "type": "keyword" },
+                "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
+                "email": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
+                "created_at": { "type": "date" },
+                "is_admin": { "type": "boolean" },
                 "indexed_at": { "type": "date" }
             }
         }

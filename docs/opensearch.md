@@ -1,11 +1,14 @@
 # OpenSearch: match, per-player stats and users store
 
-**Status: synced, with three read endpoints.** The worker keeps OpenSearch in
+**Status: synced, with four read endpoints.** The worker keeps OpenSearch in
 sync. `GET /teams/{id}/summary` and `GET /teams/{id}/leaderboard` read the
 match data (see [Reads](#reads)) — the UI doesn't call them yet; switch it
-over once the backfill has run. `GET /admin/stats` reads the `users` index
-directly for its "total users" figure. DynamoDB is the source of truth
-throughout, and every index here can be rebuilt from it at any time.
+over once the backfill has run. The whole admin panel's user resource —
+`GET /admin/stats` (total-users count) and `GET /admin/users` (search/browse)
+— reads the `users` index; Meilisearch's `users` index is no longer in the
+admin panel's path (the user-facing `GET /users/search` is separate and still
+on Meilisearch). DynamoDB is the source of truth throughout, and every index
+here can be rebuilt from it at any time.
 
 ## What's stored
 
@@ -13,7 +16,7 @@ throughout, and every index here can be rebuilt from it at any time.
 |---|---|---|
 | `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
-| `users` | user: id, name, email, creation time, admin flag | the admin panel's total-users count (`GET /admin/stats`, `agon_service/src/admin/mod.rs`) |
+| `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
@@ -153,19 +156,21 @@ logged with their ids; fix the cause and re-run.
 
 ## Reads
 
-`agon_services_core::opensearch::team_stats` holds the typed queries. Each is a
-pure query builder plus a pure response parser, unit-tested without a
-cluster, and `tests/opensearch_team_stats.rs` runs them against a real one.
-Callers never build query JSON.
+`agon_services_core::opensearch::team_stats` and `::users` hold the typed
+queries. Each is a pure query builder plus a pure response parser,
+unit-tested without a cluster; `team_stats`'s also run against a real
+cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
-| Endpoint (`agon_service/src/team_stats.rs`) | Index | What it reads |
+| Endpoint | Index | What it reads |
 |---|---|---|
-| `GET /teams/{id}/summary?sport=&year=` | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
-| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
+| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
+| `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 
 Only confirmed matches count. Squad games are left out of `record`, form and
 last 10, but count on the leaderboard's `all` scope. The API pod gets
-`OPENSEARCH_URL` like the worker; without it both endpoints answer 503.
+`OPENSEARCH_URL` like the worker; without it every one of these answers 503.
 
 ## Changing the schema
 

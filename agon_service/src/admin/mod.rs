@@ -19,9 +19,7 @@ use poem_openapi::{ApiResponse, OpenApi};
 
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
-use crate::{
-    opensearch_internal, page_limit, require_uid, search_cursor, search_internal, search_offset,
-};
+use crate::{opensearch_internal, page_limit, require_uid, search_cursor, search_offset};
 
 pub struct AdminApi;
 
@@ -77,6 +75,10 @@ enum ListUsersResponse {
     /// The `cursor` query parameter isn't a valid offset.
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -103,9 +105,10 @@ impl AdminApi {
     /// Reads the `users` OpenSearch index, not Meilisearch: an exact
     /// document count via OpenSearch's own `_count` endpoint, not coupled to
     /// Meilisearch's stats response shape (which varies enough across
-    /// versions to break a naive count — see `agon_services_core::search`'s
-    /// `SearchClient::count`, kept for `GET /admin/users`' search but no
-    /// longer used here).
+    /// versions to break a naive count). The admin panel's whole user
+    /// resource is on this index now — `GET /admin/users` below reads it
+    /// too; the user-facing `GET /users/search` is separate and still on
+    /// Meilisearch.
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
@@ -123,15 +126,16 @@ impl AdminApi {
         Ok(GetStatsResponse::Stats(Json(models::Stats { total_users })))
     }
 
-    /// Admin panel: list/search every user, full account detail. Reuses the
-    /// same `users` Meilisearch index `GET /users/search` queries — an empty
-    /// `q` browses everyone. Matches/series/teams get their own `/admin/...`
-    /// list endpoints as those resources are added to the panel.
+    /// Admin panel: list/search every user, full account detail. Reads the
+    /// `users` OpenSearch index (`agon_services_core::opensearch::users`),
+    /// not Meilisearch — an empty `q` browses everyone, newest first.
+    /// Matches/series/teams get their own `/admin/...` list endpoints as
+    /// those resources are added to the panel.
     #[oai(path = "/admin/users", method = "get")]
     async fn list_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         /// Free-text search over name/email. Omit or empty to list everyone.
         #[oai(name = "q")]
         Query(query): Query<Option<String>>,
@@ -139,6 +143,11 @@ impl AdminApi {
         Query(cursor): Query<Option<String>>,
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListUsersResponse> {
+        let Some(os) = &stats.0 else {
+            return Ok(ListUsersResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
@@ -147,28 +156,24 @@ impl AdminApi {
                 )));
             }
         };
-        let q = agon_services_core::search::SearchQuery {
-            q: query.unwrap_or_default(),
-            offset,
-            limit: page_limit(limit),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_services_core::search::Index::Users, &q)
-            .await
-            .map_err(search_internal)?;
+        let limit = page_limit(limit);
+        let (ids, total) =
+            agon_services_core::opensearch::search_users(os, query.as_deref(), offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
 
-        let records = dao.batch_get_users(&hits.ids).await.map_err(dao_internal)?;
-        let items = hits
-            .ids
+        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+        let items = ids
             .iter()
             .filter_map(|id| records.get(id))
             .map(admin_user_from_record)
             .collect();
 
+        let consumed = offset.saturating_add(ids.len() as u32);
+        let next_offset = ((consumed as u64) < total).then_some(consumed);
         Ok(ListUsersResponse::Users(Json(models::UserPage {
             items,
-            next_cursor: search_cursor(hits.next_offset),
+            next_cursor: search_cursor(next_offset),
         })))
     }
 

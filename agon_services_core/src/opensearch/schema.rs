@@ -140,16 +140,15 @@ fn match_stats_body() -> Value {
     })
 }
 
-/// One document per user. See [`crate::opensearch::docs::UserDoc`]. It
-/// exists to back the admin panel's "total users" count (the first thing to
-/// read from OpenSearch on a request path), not a user search index; `GET
-/// /admin/users` still searches Meilisearch. Carries enough of the account
-/// record (name, email) to be useful standalone when looking at the index
-/// directly (e.g. in OpenSearch Dashboards), without becoming a second
-/// search index to keep in sync with Meilisearch's.
+/// One document per user. See [`crate::opensearch::docs::UserDoc`]. Backs
+/// the admin panel's "total users" count and its `GET /admin/users`
+/// search/browse (`agon_services_core::opensearch::users`) — the admin
+/// panel reads only this, not Meilisearch. `name`/`email` are analyzed text
+/// (not just keyword) so a `multi_match` can match a search term as a
+/// prefix against either.
 pub const USERS: IndexDef = IndexDef {
     name: "users",
-    version: 1,
+    version: 2,
     body: users_body,
 };
 
@@ -161,7 +160,7 @@ fn users_body() -> Value {
             "properties": {
                 "user_id": { "type": "keyword" },
                 "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
-                "email": { "type": "keyword" },
+                "email": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
                 "created_at": { "type": "date" },
                 "is_admin": { "type": "boolean" },
                 "indexed_at": { "type": "date" }

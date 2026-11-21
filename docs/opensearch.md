@@ -1,11 +1,14 @@
-# OpenSearch: match and per-player stats store
+# OpenSearch: match, per-player stats and users store
 
-**Status: synced, with two read endpoints and no UI on them yet.** The worker
-keeps OpenSearch in sync, and `GET /teams/{id}/summary` and
-`GET /teams/{id}/leaderboard` read from it (see [Reads](#reads)). The UI
-doesn't call them yet; switch it over once the backfill has run. DynamoDB is
-the source of truth, and everything in OpenSearch can be rebuilt from it at any
-time.
+**Status: synced, with four read endpoints.** The worker keeps OpenSearch in
+sync. `GET /teams/{id}/summary` and `GET /teams/{id}/leaderboard` read the
+match data (see [Reads](#reads)) — the UI doesn't call them yet; switch it
+over once the backfill has run. The whole admin panel's user resource —
+`GET /admin/stats` (total-users count) and `GET /admin/users` (search/browse)
+— reads the `users` index; Meilisearch's `users` index is no longer in the
+admin panel's path (the user-facing `GET /users/search` is separate and still
+on Meilisearch). DynamoDB is the source of truth throughout, and every index
+here can be rebuilt from it at any time.
 
 ## What's stored
 
@@ -13,6 +16,7 @@ time.
 |---|---|---|
 | `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
+| `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
@@ -47,13 +51,24 @@ every roster (`PLAYER#`) write. It rebuilds that match's documents from DynamoDB
 Likes and comments rewrite `#META` too. When the only change is to those
 counters, the handler skips the match without reading anything.
 
-A failure is logged (`opensearch: sync failed`) and **not retried**, so an
-OpenSearch outage can't hold up the stream. Run the backfill to repair.
-**Revisit this before the UI switches to the read endpoints:** a missed write
-would then show as a stale record until the next change to that match.
+The same handler also runs on every user `#PROFILE` write, rebuilding that
+user's `users` document (`agon_services_core::opensearch::sync_user`) — just
+an index, no player rows or stale-row cleanup to do.
+
+A failure is logged (`opensearch: match/user sync failed`) and **not
+retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
+the team summary/leaderboard endpoints tolerate the same brief staleness
+every other async-indexed read in this app already does. Run the backfill to
+repair. **Revisit this before the UI switches to the team-stats read
+endpoints:** a missed write would then show as a stale record until the next
+change to that match.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.
+`agon_service` needs this too now (not just `agon_worker`), since `GET
+/admin/stats` reads the `users` index directly — it reports 503 while
+`OPENSEARCH_URL` is unset, same convention as the other optional integrations
+(device pairing, YouTube).
 
 ## Running it
 
@@ -95,8 +110,9 @@ thing on the node.
 
 ## Backfill
 
-`agon_worker backfill-opensearch` rebuilds every match's documents from
-DynamoDB. It's idempotent, so it's safe to re-run at any time.
+`agon_worker backfill-opensearch` rebuilds every match's and user's documents
+from DynamoDB, in the same run. It's idempotent, so it's safe to re-run at any
+time.
 
 ```bash
 agon_worker backfill-opensearch                  # everything, then point the aliases at this version
@@ -107,14 +123,17 @@ agon_worker backfill-opensearch --match m_123 --match m_456   # repair specific 
 ```
 
 ```bash
-agon_worker backfill-opensearch --resume <cursor>   # continue from a logged cursor
+agon_worker backfill-opensearch --resume <cursor> --resume-users <cursor>   # continue from logged cursors
 ```
 
 Other flags:
-- `--concurrency N`: matches synced in parallel. Default 8.
-- `--page-size N`: match ids per page read from the entity index. Default 500.
-- `--no-swap`: fill the index without moving the aliases.
+- `--concurrency N`: matches and users synced in parallel (each has its own pool). Default 8.
+- `--page-size N`: ids per page read from the entity index. Default 500.
+- `--no-swap`: fill the indices without moving the aliases.
 - `--delete-old`: after the swap, delete the superseded index versions.
+
+`--match` targets specific matches only — there's no analogous per-user flag
+yet, since nothing has needed to repair one user's document in isolation.
 
 It needs only `AGON_TABLE_NAME`, AWS credentials and the `OPENSEARCH_*`
 variables, not the worker's SQS, Meilisearch or Temporal settings.
@@ -124,29 +143,31 @@ variables, not the worker's SQS, Meilisearch or Temporal settings.
   `cargo run -p agon_worker -- backfill-opensearch` reads whatever DynamoDB the
   `AWS_*` settings point at.
 
-It lists matches from the entity index (GSI4), not a table scan. On a table
-that predates the index, run the entity-index migration first
-(`claude/entity-index-migration`), or matches without index keys are skipped.
+It lists matches and users from the entity index (GSI4), not a table scan. On
+a table that predates the index, run the entity-index migration first
+(`claude/entity-index-migration`), or items without index keys are skipped.
 `--match` reads matches directly and doesn't need the index.
 
 It logs `reading dynamodb` with the table and endpoint before it does
 anything, so check that line when you're not sure which table you're on.
 
-The aliases only move if every match succeeded. Failed matches are logged with
-their ids; fix the cause and re-run.
+The aliases only move if every match *and* every user succeeded. Failures are
+logged with their ids; fix the cause and re-run.
 
 ## Reads
 
-`agon_services_core::opensearch::team_stats` holds the typed queries. Each is a
-pure query builder plus a pure response parser, unit-tested without a
-cluster, and `tests/opensearch_team_stats.rs` runs them against a real one.
-Callers never build query JSON.
+`agon_services_core::opensearch::team_stats`, `::user_stats` and `::users`
+hold the typed queries. Each is a pure query builder plus a pure response
+parser, unit-tested without a cluster; `team_stats`'s also run against a real
+cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
-| Endpoint (`agon_service/src/team_stats.rs`) | Index | What it reads |
+| Endpoint | Index | What it reads |
 |---|---|---|
-| `GET /teams/{id}/summary?sport=&year=` | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
-| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
-| `GET /users/{id}/summary?sport=&year=` | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match. See [`agon_services_core::opensearch::user_stats`] |
+| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
+| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
+| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
+| `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 
 Only confirmed matches count. Squad games are left out of a team's `record`,
 form and last 10, but count on the leaderboard's `all` scope. For a player's
@@ -155,7 +176,7 @@ two sides), but are still kept out of `record`/form/last10, same convention
 as the team version. There's no per-player leaderboard — a leaderboard is
 inherently team-scoped — and no personal goals-for/against or clean sheets,
 since those are side-level, not individually attributable. The API pod gets
-`OPENSEARCH_URL` like the worker; without it these endpoints answer 503.
+`OPENSEARCH_URL` like the worker; without it every one of these answers 503.
 
 ## Changing the schema
 

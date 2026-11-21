@@ -1,22 +1,29 @@
-//! Inline handler: shadow-write match changes to OpenSearch.
+//! Inline handler: shadow-write match and user changes to OpenSearch.
 //!
 //! On any write to a match's `#META` (score, sides, status, date, ...) or to its
 //! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
 //! documents from DynamoDB with [`agon_services_core::opensearch::sync_match`].
+//! On any write to a user's `#PROFILE`, rebuild their `users` document with
+//! [`agon_services_core::opensearch::sync_user`].
 //!
-//! **Shadow mode.** No screen reads OpenSearch yet, so a
-//! failure here is logged and swallowed rather than failing the message: an
-//! OpenSearch outage must not push stream events into the DLQ or delay the
-//! handlers that matter today. The backfill (`agon_worker backfill-opensearch`)
-//! repairs anything missed. Revisit this once reads move over.
+//! **Resilience.** A failure here is logged and swallowed rather than failing
+//! the message: an OpenSearch outage must not push stream events into the DLQ
+//! or delay the handlers that matter today. The backfill
+//! (`agon_worker backfill-opensearch`) repairs anything missed. `GET
+//! /admin/stats` and the team summary/leaderboard endpoints tolerate the
+//! same brief staleness every other async-indexed read in this app already
+//! does.
 //!
-//! **Noise filter.** Every like and comment rewrites `#META` (it bumps a
-//! counter). Those changes don't affect any OpenSearch document, so a `#META`
-//! modify whose images differ only in those counters is skipped without a read.
+//! **Noise filter.** Every like and comment rewrites a match's `#META` (it
+//! bumps a counter). Those changes don't affect any OpenSearch document, so a
+//! `#META` modify whose images differ only in those counters is skipped
+//! without a read.
 
 use agon_services_core::dao::Dao;
 use agon_services_core::dao::keys::{Pk, Sk};
-use agon_services_core::opensearch::{OpenSearchClient, SyncOutcome, sync_match};
+use agon_services_core::opensearch::{
+    OpenSearchClient, SyncOutcome, UserSyncOutcome, sync_match, sync_user,
+};
 
 use crate::error::WorkerResult;
 use crate::event::{ChangeEvent, ChangeKind, Image};
@@ -33,9 +40,20 @@ pub async fn handle(
     let Some(os) = os else {
         return Ok(());
     };
-    let Pk::Match(match_id) = &ev.pk else {
-        return Ok(());
-    };
+    match &ev.pk {
+        Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
+        Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,
+        _ => Ok(()),
+    }
+}
+
+async fn handle_match(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    match_id: &str,
+    ev: &ChangeEvent,
+    now: &str,
+) -> WorkerResult<()> {
     match &ev.sk {
         Sk::Meta => {
             if ev.kind == ChangeKind::Modify && only_noise_changed(&ev.old_image, &ev.new_image) {
@@ -57,7 +75,36 @@ pub async fn handle(
             tracing::warn!(
                 match_id = %match_id,
                 error = %e,
-                "opensearch: sync failed (shadow mode, not retried; the backfill repairs it)"
+                "opensearch: match sync failed (not retried; the backfill repairs it)"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_user(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    user_id: &str,
+    ev: &ChangeEvent,
+    now: &str,
+) -> WorkerResult<()> {
+    if ev.sk != Sk::Profile {
+        return Ok(());
+    }
+
+    match sync_user(os, dao, user_id, now, true).await {
+        Ok(UserSyncOutcome::Indexed) => {
+            tracing::debug!(user_id = %user_id, "opensearch: user synced");
+        }
+        Ok(UserSyncOutcome::Removed) => {
+            tracing::debug!(user_id = %user_id, "opensearch: user removed");
+        }
+        Err(e) => {
+            tracing::warn!(
+                user_id = %user_id,
+                error = %e,
+                "opensearch: user sync failed (not retried; the backfill repairs it)"
             );
         }
     }

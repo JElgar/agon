@@ -22,7 +22,7 @@ use opensearch::indices::{
     IndicesGetMappingParts, IndicesRefreshParts,
 };
 use opensearch::params::Refresh;
-use opensearch::{BulkParts, OpenSearch, SearchParts};
+use opensearch::{BulkParts, CountParts, OpenSearch, SearchParts};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -374,6 +374,23 @@ impl OpenSearchClient {
         let (status, body) = Self::read(resp).await?;
         Self::check(status, &body)?;
         Ok(body)
+    }
+
+    /// Exact document count in an index or alias, via OpenSearch's own
+    /// `_count` endpoint — e.g. the admin panel's "total users" figure.
+    /// Cheaper than `search` with `size: 0`: no hits or scoring, just a tally.
+    pub async fn count(&self, index: &str) -> OpenSearchResult<u64> {
+        let resp = self
+            .client
+            .count(CountParts::Index(&[index]))
+            .send()
+            .await?;
+        let (status, body) = Self::read(resp).await?;
+        if status == 404 {
+            return Ok(0);
+        }
+        Self::check(status, &body)?;
+        Ok(body["count"].as_u64().unwrap_or(0))
     }
 
     /// Make recent writes visible to search (tests and the backfill's final

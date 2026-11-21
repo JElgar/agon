@@ -13503,6 +13503,12 @@ fn search_internal(err: agon_services_core::error::SearchError) -> poem::Error {
     poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+/// Map an OpenSearch error to a 500, same rationale as `search_internal`.
+fn opensearch_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
+    error!("opensearch error: {err}");
+    poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "git")]
 #[command(about = "Agon Service CLI", long_about = None)]
@@ -13781,12 +13787,13 @@ async fn main() {
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
             let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
 
-            // OpenSearch, for the team stats reads (`team_stats`). Optional:
-            // without OPENSEARCH_URL those endpoints answer 503 and nothing
-            // else changes.
+            // OpenSearch, for the team stats reads (`team_stats`) and the
+            // admin "total users" count (`admin::get_stats`, the `users`
+            // index). Optional: without OPENSEARCH_URL those endpoints
+            // answer 503 and nothing else changes.
             let stats_store = team_stats::StatsStore(
                 agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
-                    error!("invalid OpenSearch settings; team stats disabled: {e}");
+                    error!("invalid OpenSearch settings; team/admin stats disabled: {e}");
                     None
                 }),
             );

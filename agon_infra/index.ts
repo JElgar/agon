@@ -1923,6 +1923,11 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 									}
 								},
 							},
+							// OpenSearch: `GET /admin/stats` reads the `users` index's
+							// count from here (see the OpenSearch section) — the one
+							// index the service itself needs, unlike the worker's
+							// shadow writes to all of them.
+							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },

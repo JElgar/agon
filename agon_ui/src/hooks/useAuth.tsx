@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { resetPosthogUser } from '@/lib/posthog'
 import type { Session, User } from '@supabase/supabase-js'
 
 interface AuthContextType {
@@ -46,6 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut()
+    resetPosthogUser()
   }
 
   // TODO Do we want ! here?

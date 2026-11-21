@@ -2063,6 +2063,27 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 								name: "VITE_GOOGLE_MAPS_API_KEY",
 								value: googleMapsApiKey.keyString,
 							},
+							// PostHog (EU Cloud) usage analytics — see
+							// agon_ui/src/lib/posthog.ts. Public/client-safe project API
+							// key, same as the Firebase/Maps keys above. Not automatable
+							// (no infra-provisioned PostHog project); set via
+							// `pulumi config set posthogKey`/`posthogHost`. Unset leaves
+							// analytics disabled client-side.
+							{
+								name: "VITE_POSTHOG_KEY",
+								value: config.get("posthogKey"),
+							},
+							{
+								name: "VITE_POSTHOG_HOST",
+								value: config.get("posthogHost"),
+							},
+							// One PostHog project is shared across stacks — tag every
+							// event with the stack name so staging/prod can be told
+							// apart (see agon_ui/src/lib/posthog.ts).
+							{
+								name: "VITE_POSTHOG_ENVIRONMENT",
+								value: pulumi.getStack(),
+							},
 						],
 					},
 				],

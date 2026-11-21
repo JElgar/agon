@@ -15,7 +15,7 @@ here can be rebuilt from it at any time.
 | Index (read alias) | One document per | Used for |
 |---|---|---|
 | `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
@@ -184,7 +184,15 @@ OpenSearch can't change a field's type in place, so every mapping change is a
 new index version:
 
 1. Edit the mapping in `schema.rs` and **bump that index's `version`**. Update
-   the builder in `docs.rs` to match.
+   the builder in `docs.rs` to match. Bump it even for a field that's "new,
+   nothing's deployed yet" — that's only true for a fresh environment. On
+   staging, `tournament_round`/`tournament_slot` were added to `matches`'
+   mapping without a version bump; `matches_v1` already existed there from
+   before, `ensure_index` never updates an existing index's mapping, and the
+   next tournament match indexed hit `strict_dynamic_mapping_exception`.
+   `matches` is now v2 (with `tournament_round`/`tournament_slot` mapped from
+   creation) and `match_stats` is v2 (adding `series_id`, the per-player
+   analogue of `tournament_id`, for a future series-scoped slice).
 2. Deploy the worker. On start it creates `<name>_v<new>` and live changes go
    there. The alias, and so the read endpoints, still point at the old
    version, which stops getting live changes. Reads are stale until step 3

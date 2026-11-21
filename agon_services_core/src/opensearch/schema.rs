@@ -49,9 +49,20 @@ fn settings() -> Value {
 }
 
 /// One document per match. See [`crate::opensearch::docs::MatchDoc`].
+///
+/// v2: `tournament_round`/`tournament_slot` were added to the mapping without
+/// bumping the version (the matches-read PR reasoned "nothing has been
+/// deployed or backfilled yet", true for a fresh environment but not for one
+/// where `matches_v1` already existed before those fields were added).
+/// `ensure_index` only creates an index that doesn't exist yet — it never
+/// updates an existing one's mapping — so on a table with real history,
+/// `matches_v1`'s `dynamic: strict` mapping had no `tournament_round` field,
+/// and a bulk index of any tournament match failed outright
+/// (`strict_dynamic_mapping_exception`). Bumping to v2 so a fresh index is
+/// created with both fields mapped from the start.
 pub const MATCHES: IndexDef = IndexDef {
     name: "matches",
-    version: 1,
+    version: 2,
     body: matches_body,
 };
 
@@ -99,9 +110,15 @@ fn matches_body() -> Value {
 
 /// One flat row per player per confirmed match. See
 /// [`crate::opensearch::docs::PlayerStatDoc`].
+///
+/// v2: adds `series_id`, so a future series-scoped slice (the per-player
+/// analogue of `tournament_id`'s `LeaderboardScope::Tournament`) can filter
+/// on it. New field on an already-deployed strict mapping, so — same lesson
+/// as `MATCHES`'s v2 — this needs the version bump even though nothing else
+/// about the shape changed.
 pub const MATCH_STATS: IndexDef = IndexDef {
     name: "match_stats",
-    version: 1,
+    version: 2,
     body: match_stats_body,
 };
 
@@ -127,6 +144,7 @@ fn match_stats_body() -> Value {
                 "ranked": { "type": "boolean" },
                 "tournament_id": { "type": "keyword" },
                 "tournament_round": { "type": "integer" },
+                "series_id": { "type": "keyword" },
                 "starts_at": { "type": "date" },
                 "year": { "type": "integer" },
                 "played": { "type": "integer" },
@@ -175,9 +193,9 @@ mod tests {
 
     #[test]
     fn physical_and_alias_names_include_prefix_and_version() {
-        assert_eq!(MATCHES.physical(""), "matches_v1");
+        assert_eq!(MATCHES.physical(""), "matches_v2");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
-        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v1");
+        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v2");
     }
 
     #[test]

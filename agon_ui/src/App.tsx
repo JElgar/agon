@@ -46,6 +46,7 @@ import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
 import { AdminLayout } from '@/pages/admin/AdminLayout'
 import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
+import { AdminMatchesPage } from '@/pages/admin/AdminMatchesPage'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
@@ -192,6 +193,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           >
             <Route index element={<Navigate to="/admin/users" replace />} />
             <Route path="users" element={<AdminUsersPage />} />
+            <Route path="matches" element={<AdminMatchesPage />} />
           </Route>
           <Route path="*" element={<HomeRedirect />} />
           </Routes>

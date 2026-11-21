@@ -10,12 +10,20 @@ import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
-const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// `prod` owns the bare domain; every other stack (staging, dev, ...) gets its
+// own `<stack>.get-agon.com` subdomain, so they can never collide with it.
+const baseDomain = subdomainPrefix === "prod" ? "get-agon.com" : `${subdomainPrefix}.get-agon.com`;
+// The hostname the UI/API are actually served on. Every other stack gets an
+// `agon.` subdomain of its own base domain (e.g. `agon.staging.get-agon.com`);
+// `prod` serves straight off the bare domain itself (`get-agon.com`, no
+// `agon.` prefix) per James's call — that's the production website's domain,
+// not a subdomain of it.
+const uiHostname = subdomainPrefix === "prod" ? baseDomain : `agon.${baseDomain}`;
 // The UI's public URL — same host as `fullDomain` further down (kept as a
 // separate constant: that one's a bare hostname for the Ingress `host`
 // field, this is a full URL the worker uses to build push-notification deep
 // links, needed up here since it's declared well before `fullDomain` is).
-const agonUiUrl = `https://agon.${baseDomain}`;
+const agonUiUrl = `https://${uiHostname}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -52,6 +60,21 @@ const dnsRecord = new cloudflare.DnsRecord('record', {
 	ttl: 300,
 	proxied: false,
 });
+
+// A DNS wildcard (`*.<base>`) never covers the zone's own apex, so `prod`
+// (served at the bare `get-agon.com`, not an `agon.` subdomain of it) needs
+// its own apex record alongside the wildcard above — the wildcard still
+// covers prod's other subdomains (grafana., temporal.).
+const apexDnsRecord = subdomainPrefix === "prod"
+	? new cloudflare.DnsRecord('record-apex', {
+		zoneId: cloudflareZoneId,
+		name: baseDomain,
+		type: 'A',
+		content: nodeIpv4,
+		ttl: 300,
+		proxied: false,
+	})
+	: undefined;
 
 const connection = {
 	host: nodeIpv4,
@@ -474,7 +497,9 @@ new aws.s3.BucketCorsConfigurationV2("agon-assets", {
 	corsRules: [
 		{
 			allowedMethods: ["PUT", "GET", "HEAD"],
-			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com"],
+			// The `*.get-agon.com` wildcard only matches a subdomain, not the bare
+			// apex `prod` serves the UI from, so that one's listed explicitly too.
+			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com", "https://get-agon.com"],
 			allowedHeaders: ["*"],
 			exposeHeaders: ["ETag"],
 			maxAgeSeconds: 3000,
@@ -1101,21 +1126,23 @@ const opensearchUrl = opensearchService.metadata.name.apply(name => `http://${na
 //
 // Reuses the single "agon" GCP project already created manually (the same one
 // Supabase's Google Auth uses) — Pulumi does NOT create or own the project
-// itself here. Shared across all stages for now, deliberately: a proper
+// itself here. All stacks share this one GCP project, deliberately: a proper
 // per-stage split (separate GCP projects, a GCP Organization so it can be
 // fully IaC, Pulumi-managed Supabase projects) was scoped out as a follow-up,
 // not because it isn't worth doing — see git history on this file for that
-// design discussion. Keeping this shared for now means:
-//   - Apply this section from ONE stack only. Every resource below is scoped
-//     to the single shared project, so running `pulumi up` from a second
-//     stack would fight the first over ownership of the same physical
-//     resources (Firebase attachment, the API-enablement toggles). Pick
-//     whichever stack you actually deploy from (e.g. `staging`, since that's
-//     what CI drives) and only ever apply from there until the per-stage
-//     migration happens.
-//   - The FCM sender service account + key below are likewise shared, not
-//     per-environment — every stage's worker would authenticate as the same
-//     identity. Fine for now; revisit alongside the project split.
+// design discussion. Within the shared project:
+//   - The API-enablement toggles (`fcm-api`, `firebase-api`, `maps-backend-api`,
+//     `places-api`, `apikeys-api`) are idempotent project-level flags — any
+//     stack can apply them, enabling an already-enabled API is a no-op.
+//   - `firebaseProject` (the Firebase-on-project attachment) is a true
+//     one-time singleton: a project can only be "attached" to Firebase once.
+//     The first stack to apply creates it; every other stack must
+//     `pulumi import gcp:firebase/project:Project agon-firebase <gcpProjectId>`
+//     instead of trying to create it again.
+//   - Everything else below (the FCM sender service account + key, the
+//     Firebase Web App, the Maps API key) is named per-stack (suffixed with
+//     `subdomainPrefix`), so each stage gets its own identity/app/key inside
+//     the shared project and stacks don't fight each other over ownership.
 //
 //   pulumi config set gcp:project agon   # defaults to "agon" if unset
 //
@@ -1145,19 +1172,23 @@ const firebaseApi = new gcp.projects.Service("firebase-api", {
 	disableOnDestroy: false,
 });
 
-// Attaches Firebase to the project. If "agon" already has Firebase attached
-// (e.g. from prior manual clicking-around), this create may fail with
-// "already exists" — `pulumi import` it instead in that case, one-time.
+// Attaches Firebase to the project. True one-time singleton — if another
+// stack already created this (or "agon" already has Firebase attached from
+// prior manual clicking-around), this create fails with "already exists";
+// `pulumi import gcp:firebase/project:Project agon-firebase <gcpProjectId>`
+// instead, one-time per stack.
 const firebaseProject = new gcp.firebase.Project("agon-firebase", {
 	project: gcpProjectId,
 }, { dependsOn: [firebaseApi] });
 
 // Registers the PWA as a Firebase Web App, which is what the client SDK needs
-// to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
-// those clients exist — same project, no changes needed here.
-const firebaseWebApp = new gcp.firebase.WebApp("agon-pwa", {
+// to request an FCM token. Per-stack: each stage gets its own Web App (and
+// so its own FCM sender ID) within the shared project. Future:
+// gcp.firebase.AndroidApp / AppleApp once those clients exist — same
+// project, no changes needed here.
+const firebaseWebApp = new gcp.firebase.WebApp(`agon-pwa-${subdomainPrefix}`, {
 	project: gcpProjectId,
-	displayName: "agon-pwa",
+	displayName: `agon-pwa-${subdomainPrefix}`,
 }, { dependsOn: [firebaseProject] });
 
 // The Firebase JS SDK's init config (apiKey, authDomain, messagingSenderId,
@@ -1204,9 +1235,9 @@ const apiKeysApi = new gcp.projects.Service("apikeys-api", {
 	disableOnDestroy: false,
 });
 
-const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
+const googleMapsApiKey = new gcp.projects.ApiKey(`agon-ui-maps-key-${subdomainPrefix}`, {
 	project: gcpProjectId,
-	displayName: "agon-ui-maps",
+	displayName: `agon-ui-maps-${subdomainPrefix}`,
 	restrictions: {
 		apiTargets: [
 			{ service: "maps-backend.googleapis.com" },
@@ -1239,12 +1270,13 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 
 // The service account the worker authenticates as (FCM HTTP v1's OAuth2
 // service-account flow). Scoped to exactly one role — sending messages — not
-// general Firebase admin. Shared across stages for now (see the section
-// comment above) — every stage's worker authenticates as this same identity.
-const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
+// general Firebase admin. Per-stack: each stage's worker gets its own
+// identity (and its own FCM-sent-as-this-app notifications), named so a
+// second stack's `pulumi up` doesn't collide with the first's.
+const fcmServiceAccount = new gcp.serviceaccount.Account(`agon-fcm-sender-${subdomainPrefix}`, {
 	project: gcpProjectId,
-	accountId: "agon-fcm-sender",
-	displayName: "agon FCM sender",
+	accountId: `agon-fcm-sender-${subdomainPrefix}`,
+	displayName: `agon FCM sender (${subdomainPrefix})`,
 }, { dependsOn: [firebaseApi] });
 
 new gcp.projects.IAMMember("agon-fcm-sender-role", {
@@ -2087,7 +2119,7 @@ const uiService = new k8s.core.v1.Service("agon-ui-service", {
 	},
 }, { provider: k8sProvider });
 
-const fullDomain = `agon.${baseDomain}`;
+const fullDomain = uiHostname;
 
 const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
 	apiVersion: "cert-manager.io/v1",

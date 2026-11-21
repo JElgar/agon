@@ -90,3 +90,21 @@ jobs:
       stack-name: staging
     secrets:
       pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+  # Deploys the same images to the `prod` Pulumi stack once staging is up and
+  # its tests pass. Gated on the `prod` GitHub Environment: deploy.yml sets
+  # `environment: name: ${{ inputs.stack-name }}`, so this pauses for manual
+  # approval if/when `prod` has required reviewers configured (Settings →
+  # Environments → prod) — nothing here enforces that on its own. No e2e
+  # suite runs against prod: unlike staging, it holds real user data, and the
+  # e2e bot account / test fixtures aren't something we want created there.
+  deploy-prod:
+    needs: [changes, publish-service, publish-worker, publish-ui, test, test-ui-e2e]
+    if: always() && needs.test.result == 'success' && needs.test-ui-e2e.result == 'success'
+    uses: JElgar/agon/.github/workflows/deploy.yml@main
+    secrets: inherit
+    with:
+      agon-service-image: ${{ needs.publish-service.outputs.image }}
+      agon-worker-image: ${{ needs.publish-worker.outputs.image }}
+      agon-ui-image: ${{ needs.publish-ui.outputs.image }}
+      stack-name: prod

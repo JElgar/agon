@@ -51,7 +51,7 @@ fn settings() -> Value {
 /// One document per match. See [`crate::opensearch::docs::MatchDoc`].
 pub const MATCHES: IndexDef = IndexDef {
     name: "matches",
-    version: 1,
+    version: 2,
     body: matches_body,
 };
 
@@ -60,6 +60,11 @@ fn matches_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
+            // A side's sport counters (goals, assists, runs, wickets, ...)
+            // vary by sport, same reasoning as `match_stats.stats` below.
+            "dynamic_templates": [
+                { "side_stat_counters": { "path_match": "sides.stats.*", "mapping": { "type": "long" } } }
+            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
@@ -88,7 +93,8 @@ fn matches_body() -> Value {
                         "conceded": { "type": "integer" },
                         "clean_sheet": { "type": "boolean" },
                         "player_ids": { "type": "keyword" },
-                        "player_count": { "type": "integer" }
+                        "player_count": { "type": "integer" },
+                        "stats": { "type": "object", "dynamic": true }
                     }
                 },
                 "indexed_at": { "type": "date" }
@@ -175,7 +181,7 @@ mod tests {
 
     #[test]
     fn physical_and_alias_names_include_prefix_and_version() {
-        assert_eq!(MATCHES.physical(""), "matches_v1");
+        assert_eq!(MATCHES.physical(""), "matches_v2");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
         assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v1");
     }

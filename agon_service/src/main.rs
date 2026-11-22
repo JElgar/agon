@@ -1248,6 +1248,12 @@ struct MatchSeries {
     weekday: u8,
     ends: CreateMatchSeriesEndInput,
     sides: Vec<MatchSeriesSide>,
+    /// User ids holding `Admin` authority over the series (see
+    /// `SetSeriesUserRoleInput`) — alongside `created_by_user_id`, who is
+    /// always the owner and never listed here. Each is copied onto every
+    /// occurrence generated from this point on, as that match's own
+    /// `Admin`.
+    admin_user_ids: Vec<String>,
     status: MatchSeriesStatus,
     /// How many occurrences have been created so far (including the first,
     /// created synchronously). For a bounded series (`ends: OnDate`/
@@ -2158,7 +2164,36 @@ enum UpdateMatchSeriesResponse {
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
-    /// Only the series' creator may pause/resume/end it.
+    /// Only the series' owner or an admin may pause/resume/end it.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// `POST /match-series/:series_id/users/:user_id/role`'s input: grants or
+/// revokes a series admin. Only `Admin`/`Player` are accepted — mirrors
+/// `SetMatchPlayerRoleInput`.
+#[derive(Object)]
+struct SetSeriesUserRoleInput {
+    role: MatchPlayerRole,
+}
+
+#[derive(ApiResponse)]
+enum SetSeriesUserRoleResponse {
+    /// The role was changed; `GET /match-series/:id`'s `admin_user_ids`
+    /// already reflects it on the next read.
+    #[oai(status = 204)]
+    Ok,
+
+    /// Tried to set the `Owner`/`SideAdmin` role — a series has neither:
+    /// `created_by_user_id` is the permanent owner, and there's nothing for
+    /// `SideAdmin` to apply to.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the series' owner or an admin.
     #[oai(status = 403)]
     Forbidden(PlainText<String>),
 
@@ -5831,6 +5866,9 @@ impl Api {
                     max_players: s.max_players,
                 })
                 .collect(),
+            // No admins at creation — granted afterwards via `POST
+            // /match-series/:series_id/users/:user_id/role`.
+            authority: std::collections::HashMap::new(),
             // The first occurrence is created synchronously right below, so
             // it already counts as generated.
             status: "generating".to_string(),
@@ -6067,9 +6105,9 @@ impl Api {
                 )));
             }
         };
-        if series.created_by_user_id != uid {
+        if !caller_is_series_admin(&series, &uid) {
             return Ok(UpdateMatchSeriesResponse::Forbidden(PlainText(
-                "only the series' creator can pause, resume, or end it".into(),
+                "only the series' owner or an admin can pause, resume, or end it".into(),
             )));
         }
 
@@ -6149,6 +6187,60 @@ impl Api {
         Ok(UpdateMatchSeriesResponse::Series(Json(
             match_series_from_record(&updated),
         )))
+    }
+
+    /// Promote a user to series admin, or demote one back to an ordinary
+    /// (non-admin) user.
+    ///
+    /// Series-admin only (see `caller_is_series_admin`). `user_id` need not
+    /// be a player on any occurrence — a series admin doesn't have to play
+    /// in the series, same as the series' own creator. Can't be used to set
+    /// the `Owner` or `SideAdmin` roles: a series has exactly one permanent
+    /// owner (`created_by_user_id`, no transfer) and no sides of its own.
+    #[oai(path = "/match-series/:series_id/users/:user_id/role", method = "post")]
+    async fn set_series_user_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+        Path(user_id): Path<String>,
+        input: Json<SetSeriesUserRoleInput>,
+    ) -> Result<SetSeriesUserRoleResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let role = input.0.role;
+
+        let series = match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(s) => s,
+            None => {
+                return Ok(SetSeriesUserRoleResponse::NotFound(PlainText(
+                    "series not found".into(),
+                )));
+            }
+        };
+        if !caller_is_series_admin(&series, &uid) {
+            return Ok(SetSeriesUserRoleResponse::Forbidden(PlainText(
+                "only the series' owner or an admin can change a user's role".into(),
+            )));
+        }
+        if role != MatchPlayerRole::Admin && role != MatchPlayerRole::Player {
+            return Ok(SetSeriesUserRoleResponse::ValidationError(PlainText(
+                "a series only supports the admin and player roles".into(),
+            )));
+        }
+        if series.created_by_user_id == user_id {
+            return Ok(SetSeriesUserRoleResponse::ValidationError(PlainText(
+                "the series' creator is always its owner".into(),
+            )));
+        }
+
+        let new_role = match role {
+            MatchPlayerRole::Admin => Some(dao::records::MatchPlayerRole::Admin),
+            _ => None,
+        };
+        dao.set_series_user_role(&series_id, &user_id, new_role)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSeriesUserRoleResponse::Ok)
     }
 
     /// Create a tournament. Entries are added afterwards (`POST
@@ -12093,6 +12185,28 @@ fn caller_tournament_authority_role(
 fn caller_is_tournament_admin(tournament: &dao::records::TournamentRecord, uid: &str) -> bool {
     matches!(
         caller_tournament_authority_role(tournament, uid),
+        Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
+    )
+}
+
+/// The caller's authority on a series — same lookup-with-creator-fallback
+/// shape as `caller_tournament_authority_role`, over `SeriesRecord::authority`.
+fn caller_series_authority_role(
+    series: &dao::records::SeriesRecord,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    series.authority.get(uid).copied().or_else(|| {
+        (series.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+    })
+}
+
+/// Whether the caller may manage the series (pause/resume/end it, grant or
+/// revoke another admin): `Owner`/`Admin` authority, same narrower rule as
+/// `caller_is_tournament_admin` — a series has no sides of its own to
+/// delegate through either.
+fn caller_is_series_admin(series: &dao::records::SeriesRecord, uid: &str) -> bool {
+    matches!(
+        caller_series_authority_role(series, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     )
 }

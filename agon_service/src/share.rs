@@ -30,7 +30,9 @@
 //! token/id in the URL is the only credential a visitor (human or crawler)
 //! has before signing in, same as the acceptance flow itself.
 
-use agon_core::dao::{self, match_ops::effective_max_players, records::InvitationContextRecord};
+use agon_services_core::dao::{
+    self, match_ops::effective_max_players, records::InvitationContextRecord,
+};
 use poem::{
     IntoResponse, Route, get, handler,
     web::{Data, Html, Path},

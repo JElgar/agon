@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agon_core = { path = "../agon_core" }
+agon_services_core = { path = "../agon_services_core" }
+agon_core = { path = "../agon_core", features = ["openapi"] }
 poem = "3"
 poem-openapi = { version = "5", features = ["scalar", "chrono"] }
 # CloudFront signed-URL generation (RSA-SHA1 over the canned policy) uses openssl.
 openssl = { version = "0.10" }
 # S3 presigned PUT for asset uploads. `aws-config` loads the ambient credentials
-# (same as agon_core's DAO); `aws-sdk-s3` builds the presigned request.
+# (same as agon_services_core's DAO); `aws-sdk-s3` builds the presigned request.
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -20,7 +21,7 @@ serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.140"
 base64 = "0.22.1"
 tracing = "0.1.41"
-# Subscriber setup + OTLP export is centralised in agon_core::telemetry.
+# Subscriber setup + OTLP export is centralised in agon_services_core::telemetry.
 # The request metrics middleware records instruments on the global meter.
 opentelemetry = "0.32"
 chrono = { version = "0.4.41", features = ["serde"] }
@@ -34,3 +35,6 @@ cron = "0.15.0"
 # to fetch and decode.
 qrcode = { version = "0.14", default-features = false, features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Building the Google OAuth consent URL (youtube.rs) with properly
+# percent-encoded query params.
+url = "2"

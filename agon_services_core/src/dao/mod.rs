@@ -1,0 +1,94 @@
+//! Data access layer for the DynamoDB single-table design.
+//!
+//! Not yet wired into the API — this is being built out independently. See
+//! `docs/dynamodb-design.md` for the table/key/access-pattern design.
+//!
+//! Layout:
+//! - `keys`    — typed PK/SK enums (format/parse).
+//! - `error`   — `DaoError` / `DaoResult`.
+//! - `item`    — struct ↔ DynamoDB item map bridging (+ GSI stamping).
+//! - `page`    — cursor pagination over Query.
+//! - `records` — the persisted record structs (DAO-owned, distinct from API).
+//! - `client`  — the `Dao` handle wrapping the SDK client.
+//! - `batch`   — shared `BatchGetItem` retry + backoff plumbing.
+//! - `user`, `follow`, … — per-entity operations (impl blocks on `Dao`).
+
+pub mod client;
+pub mod error;
+pub mod item;
+pub mod keys;
+pub mod page;
+pub mod records;
+
+pub mod accept;
+pub mod asset;
+pub mod audience;
+pub mod batch;
+pub mod device;
+pub mod device_pairing;
+pub mod entity_index;
+pub mod feed;
+pub mod follow;
+pub mod invitation;
+pub mod join_link;
+pub mod live_score_ops;
+pub mod match_ops;
+pub mod match_social;
+pub mod notification;
+pub mod open_join;
+pub mod paired_device;
+pub mod rating;
+pub mod series_ops;
+pub mod stats;
+pub mod team;
+pub mod tournament_ops;
+pub mod user;
+pub mod waitlist;
+pub mod youtube;
+
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
+
+/// True if a `TransactWriteItems` failure was caused by a condition check (one
+/// of our `attribute_(not_)exists` guards) rather than a transient error.
+/// Shared by every op that runs a guarded transaction.
+pub(crate) fn is_transaction_conditional_failure(err: &SdkError<TransactWriteItemsError>) -> bool {
+    match err {
+        SdkError::ServiceError(se) => match se.err() {
+            TransactWriteItemsError::TransactionCanceledException(e) => e
+                .cancellation_reasons()
+                .iter()
+                .any(|r| r.code() == Some("ConditionalCheckFailed")),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// True if a plain (non-transactional) `UpdateItem` failed its
+/// `ConditionExpression`. Distinguishing that from a real error is what lets
+/// a guarded update mean "not found" (`attribute_exists(PK)`), "somebody else
+/// got there first" (an optimistic lock), or "this match didn't beat the
+/// record" (`update_best_figures`) rather than a 500.
+///
+/// Lives here, beside [`is_transaction_conditional_failure`], because it is
+/// the same question asked of the other write API. It was previously a
+/// byte-identical private copy in eight separate modules, and `rating` would
+/// have made a ninth — well past where duplication stops being cheaper than
+/// a shared function.
+pub(crate) fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
+}
+
+// Re-exported for the API layer once wired in; unused within the crate for now.
+#[allow(unused_imports)]
+pub use client::Dao;
+#[allow(unused_imports)]
+pub use error::{DaoError, DaoResult};
+#[allow(unused_imports)]
+pub use page::Page;

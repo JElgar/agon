@@ -11,17 +11,19 @@
 
 pub mod index;
 pub mod notify;
+pub mod opensearch;
 pub mod push;
 pub mod rating;
 pub mod stats;
 pub mod tournament;
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
+use agon_services_core::opensearch::OpenSearchClient;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
-use agon_core::push::PushClient;
-use agon_core::search::SearchClient;
+use agon_services_core::push::PushClient;
+use agon_services_core::search::SearchClient;
 
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.
@@ -43,6 +45,7 @@ pub async fn route(
     dao: &Dao,
     search: &SearchClient,
     push: Option<&PushClient>,
+    opensearch: Option<&OpenSearchClient>,
     ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,
@@ -53,5 +56,7 @@ pub async fn route(
     stats::handle(dao, ev).await?;
     tournament::handle(dao, ev).await?;
     rating::handle(dao, ev, now).await?;
+    // Shadow write: never fails the message (see the handler's docs).
+    opensearch::handle(dao, opensearch, ev, now).await?;
     Ok(())
 }

@@ -1,4 +1,4 @@
-import { Users } from 'lucide-react'
+import { Trophy, Users } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   Sidebar,
@@ -15,9 +15,12 @@ import {
 } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 
-/** Resources the admin panel covers. Just users for now — matches/series/
- *  teams get their own entries here as those pages are built. */
-const RESOURCES = [{ to: '/admin/users', label: 'Users', icon: Users }]
+/** Resources the admin panel covers. Series/teams get their own entries
+ *  here as those pages are built. */
+const RESOURCES = [
+  { to: '/admin/users', label: 'Users', icon: Users },
+  { to: '/admin/matches', label: 'Matches', icon: Trophy },
+]
 
 /**
  * Shell for every `/admin/...` page: a resource sidebar on the left, the

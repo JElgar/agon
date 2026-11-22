@@ -9,7 +9,7 @@
 
 pub mod models;
 
-use agon_core::dao;
+use agon_services_core::dao;
 use poem::http::StatusCode;
 use poem::web::Data;
 use poem::{Error, Result};
@@ -19,7 +19,7 @@ use poem_openapi::{ApiResponse, OpenApi};
 
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
-use crate::{page_limit, require_uid, search_cursor, search_internal, search_offset};
+use crate::{opensearch_internal, page_limit, require_uid, search_cursor, search_offset};
 
 pub struct AdminApi;
 
@@ -44,6 +44,17 @@ pub(crate) async fn require_admin(dao: &dao::Dao, jwt: &JwtClaims) -> Result<Str
     Ok(uid)
 }
 
+/// Map one `matches` index row to its admin-panel representation.
+fn admin_match_from_row(row: agon_services_core::opensearch::matches::MatchRow) -> models::Match {
+    models::Match {
+        id: row.match_id,
+        name: row.name,
+        sport: row.sport,
+        status: row.status,
+        starts_at: parse_ts(&row.starts_at),
+    }
+}
+
 /// Map a full `UserRecord` to its admin-panel representation.
 fn admin_user_from_record(record: &dao::records::UserRecord) -> models::User {
     models::User {
@@ -58,6 +69,16 @@ fn admin_user_from_record(record: &dao::records::UserRecord) -> models::User {
 }
 
 #[derive(ApiResponse)]
+enum GetStatsResponse {
+    #[oai(status = 200)]
+    Stats(Json<models::Stats>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum ListUsersResponse {
     #[oai(status = 200)]
     Users(Json<models::UserPage>),
@@ -65,6 +86,24 @@ enum ListUsersResponse {
     /// The `cursor` query parameter isn't a valid offset.
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListMatchesResponse {
+    #[oai(status = 200)]
+    Matches(Json<models::MatchPage>),
+
+    /// The `cursor` query parameter isn't a valid offset.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -88,27 +127,108 @@ enum UpdateUserResponse {
 #[OpenApi]
 impl AdminApi {
     /// Admin panel: usage aggregates shown at the top of each resource page.
+    /// Reads the `users`/`matches` OpenSearch indices, not Meilisearch: an
+    /// exact document count via OpenSearch's own `_count` endpoint, not
+    /// coupled to Meilisearch's stats response shape (which varies enough
+    /// across versions to break a naive count). `GET /admin/users` and `GET
+    /// /admin/matches` below read the same indices too; the user-facing
+    /// search endpoints are separate and still on Meilisearch.
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
-        Data(search): Data<&agon_core::search::SearchClient>,
-    ) -> Result<Json<models::Stats>> {
-        let total_users = search
-            .count(agon_core::search::Index::Users)
+        Data(stats): Data<&crate::team_stats::StatsStore>,
+    ) -> Result<GetStatsResponse> {
+        let Some(os) = &stats.0 else {
+            return Ok(GetStatsResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
+        let total_users = os
+            .count(&agon_services_core::opensearch::USERS.alias(os.prefix()))
             .await
-            .map_err(search_internal)?;
-        Ok(Json(models::Stats { total_users }))
+            .map_err(opensearch_internal)?;
+        let total_matches = os
+            .count(&agon_services_core::opensearch::MATCHES.alias(os.prefix()))
+            .await
+            .map_err(opensearch_internal)?;
+        Ok(GetStatsResponse::Stats(Json(models::Stats {
+            total_users,
+            total_matches,
+        })))
     }
 
-    /// Admin panel: list/search every user, full account detail. Reuses the
-    /// same `users` Meilisearch index `GET /users/search` queries — an empty
-    /// `q` browses everyone. Matches/series/teams get their own `/admin/...`
-    /// list endpoints as those resources are added to the panel.
+    /// Admin panel: list/search every match (name, sport, status, kick-off).
+    /// Reads the `matches` OpenSearch index
+    /// (`agon_services_core::opensearch::matches`) — the same index the
+    /// team-stats reads use, so no new worker sync is needed. An empty `q`
+    /// browses everyone, newest first; `sport`/`status` are exact filters
+    /// and `from`/`to` bound `starts_at`. Links out to the match's own page
+    /// rather than offering a separate admin detail view.
+    #[oai(path = "/admin/matches", method = "get")]
+    async fn list_matches(
+        &self,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
+        /// Free-text search over the match name. Omit or empty to list everyone.
+        #[oai(name = "q")]
+        Query(query): Query<Option<String>>,
+        Query(sport): Query<Option<crate::MatchType>>,
+        Query(status): Query<Option<crate::MatchStatus>>,
+        /// Only matches starting at or after this time.
+        Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Only matches starting at or before this time.
+        Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListMatchesResponse> {
+        let Some(os) = &stats.0 else {
+            return Ok(ListMatchesResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
+        let offset = match search_offset(cursor.as_deref()) {
+            Ok(o) => o,
+            Err(()) => {
+                return Ok(ListMatchesResponse::ValidationError(PlainText(
+                    "invalid cursor".into(),
+                )));
+            }
+        };
+        let limit = page_limit(limit);
+        let sport = sport.as_ref().map(crate::mapping::match_type_tag);
+        let status = status.as_ref().map(crate::mapping::match_status_str);
+        let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let filters = agon_services_core::opensearch::matches::MatchFilters {
+            q: query.as_deref(),
+            sport,
+            status,
+            from: from.as_deref(),
+            to: to.as_deref(),
+        };
+        let (rows, total) =
+            agon_services_core::opensearch::matches::search_matches(os, filters, offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
+
+        let consumed = offset.saturating_add(rows.len() as u32);
+        let next_offset = ((consumed as u64) < total).then_some(consumed);
+        Ok(ListMatchesResponse::Matches(Json(models::MatchPage {
+            items: rows.into_iter().map(admin_match_from_row).collect(),
+            next_cursor: search_cursor(next_offset),
+        })))
+    }
+
+    /// Admin panel: list/search every user, full account detail. Reads the
+    /// `users` OpenSearch index (`agon_services_core::opensearch::users`),
+    /// not Meilisearch — an empty `q` browses everyone, newest first.
+    /// Series/teams get their own `/admin/...` list endpoints as those
+    /// resources are added to the panel.
     #[oai(path = "/admin/users", method = "get")]
     async fn list_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         /// Free-text search over name/email. Omit or empty to list everyone.
         #[oai(name = "q")]
         Query(query): Query<Option<String>>,
@@ -116,6 +236,11 @@ impl AdminApi {
         Query(cursor): Query<Option<String>>,
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListUsersResponse> {
+        let Some(os) = &stats.0 else {
+            return Ok(ListUsersResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
@@ -124,28 +249,24 @@ impl AdminApi {
                 )));
             }
         };
-        let q = agon_core::search::SearchQuery {
-            q: query.unwrap_or_default(),
-            offset,
-            limit: page_limit(limit),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_core::search::Index::Users, &q)
-            .await
-            .map_err(search_internal)?;
+        let limit = page_limit(limit);
+        let (ids, total) =
+            agon_services_core::opensearch::search_users(os, query.as_deref(), offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
 
-        let records = dao.batch_get_users(&hits.ids).await.map_err(dao_internal)?;
-        let items = hits
-            .ids
+        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+        let items = ids
             .iter()
             .filter_map(|id| records.get(id))
             .map(admin_user_from_record)
             .collect();
 
+        let consumed = offset.saturating_add(ids.len() as u32);
+        let next_offset = ((consumed as u64) < total).then_some(consumed);
         Ok(ListUsersResponse::Users(Json(models::UserPage {
             items,
-            next_cursor: search_cursor(hits.next_offset),
+            next_cursor: search_cursor(next_offset),
         })))
     }
 

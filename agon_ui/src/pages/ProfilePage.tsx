@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Info, LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
+import { Info, LogOut, Search, Settings, Share2, Users, Watch, Youtube } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
@@ -127,6 +127,11 @@ function SettingsSheet() {
         <Button variant="outline" className="w-full justify-start gap-2" asChild>
           <Link to="/devices">
             <Watch className="size-4" /> Paired devices
+          </Link>
+        </Button>
+        <Button variant="outline" className="w-full justify-start gap-2" asChild>
+          <Link to="/settings/youtube">
+            <Youtube className="size-4" /> YouTube
           </Link>
         </Button>
         <Button variant="outline" className="w-full gap-2" onClick={signOut}>

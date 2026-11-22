@@ -1,0 +1,60 @@
+on:
+  workflow_call:
+
+env:
+  # The Garmin EULA's hash changes whenever the EULA text does, and
+  # `agreement accept` needs the current one or it's rejected. Obtain it by
+  # running `connect-iq-sdk-manager agreement view` locally and store the
+  # printed hash in the GARMIN_CONNECTIQ_AGREEMENT_HASH repo secret.
+  CONNECTIQ_SDK_MANAGER_VERSION: v1.3.0
+  # Exact version, not a range, so a CI run today and in six months compile
+  # against the same SDK. Bump by hand when the watch app needs a newer one.
+  CONNECTIQ_SDK_VERSION: 9.2.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install connect-iq-sdk-manager
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/lindell/connect-iq-sdk-manager-cli/master/install.sh \
+            | sh -s -- -d "$CONNECTIQ_SDK_MANAGER_VERSION"
+
+      - name: Accept Connect IQ SDK license agreement
+        run: connect-iq-sdk-manager agreement accept --agreement-hash="${{ secrets.GARMIN_CONNECTIQ_AGREEMENT_HASH }}"
+
+      - name: Log in to Garmin
+        env:
+          GARMIN_USERNAME: ${{ secrets.GARMIN_USERNAME }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+        run: connect-iq-sdk-manager login
+
+      - name: Install Connect IQ SDK
+        run: |
+          connect-iq-sdk-manager sdk set "$CONNECTIQ_SDK_VERSION"
+          echo "$(connect-iq-sdk-manager sdk current-path --bin)" >> "$GITHUB_PATH"
+
+      # Device definitions for every product listed in manifest.xml, needed
+      # for monkeyc to build the multi-device .iq below.
+      - name: Download device definitions
+        run: connect-iq-sdk-manager device download --manifest=agon_garmin_app/manifest.xml
+
+      # The signing key is generated once, locally (Garmin's developer key
+      # isn't something you download from them), then its base64 kept as a
+      # secret so the real .der is never committed — it's gitignored
+      # (agon_garmin_app/.gitignore: *.der).
+      - name: Write developer key
+        run: echo "${{ secrets.GARMIN_CONNECTIQ_DEVELOPER_KEY_B64 }}" | base64 -d > developer_key.der
+
+      - name: Build
+        run: |
+          monkeyc -f agon_garmin_app/monkey.jungle -w -e \
+            -y developer_key.der \
+            -o agon-garmin-app.iq
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agon-garmin-app
+          path: agon-garmin-app.iq

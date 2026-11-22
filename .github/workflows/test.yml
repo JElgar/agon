@@ -37,6 +37,10 @@ jobs:
         uses: actions/setup-node@v4
       - run: pnpm install
         working-directory: agon_infra
+      - name: Install Pulumi CLI
+        run: |
+          curl -fsSL https://get.pulumi.com | sh
+          echo "$HOME/.pulumi/bin" >> "$GITHUB_PATH"
       - name: Read test signing key from Pulumi
         id: signing-key
         working-directory: agon_infra

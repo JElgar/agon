@@ -1,6 +1,6 @@
 //! The API side of a modeled sport: the [`Sport`] trait, implemented for the
-//! sport's marker type from `agon_core::sports::<sport>`. See
-//! `agon_core::sports` for the full list of steps to add a sport and the
+//! sport's marker type from `agon_services_core::sports::<sport>`. See
+//! `agon_services_core::sports` for the full list of steps to add a sport and the
 //! registry every sport-shaped API type is generated from (`MatchType`,
 //! `Score`, `MatchFormat`, `LiveEventInput`, `UserStats` and the dispatch in
 //! `mapping.rs`).
@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use agon_core::sports::SportRecord;
+use agon_services_core::sports::SportRecord;
 use chrono::{DateTime, Utc};
 use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
 

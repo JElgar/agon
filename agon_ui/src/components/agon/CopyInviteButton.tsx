@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { inviteLink, joinLink } from '@/lib/members'
+import { inviteLink, joinLink, shareOrCopyLink } from '@/lib/members'
 import { cn } from '@/lib/utils'
 
 /**
@@ -31,23 +31,7 @@ export function CopyInviteButton({
 
   const share = async () => {
     const url = kind === 'join' ? joinLink(token) : inviteLink(token)
-    // Prefer the native share sheet on mobile; fall back to clipboard copy.
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: 'Join me on Agon', url })
-        return
-      } catch {
-        // User dismissed the sheet, or share failed — fall through to copy.
-      }
-    }
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-    } catch {
-      // Clipboard blocked (e.g. insecure context) — surface the link so the
-      // user can copy it manually rather than failing silently.
-      window.prompt('Copy this invite link:', url)
-    }
+    if (await shareOrCopyLink(url)) setCopied(true)
   }
 
   return (

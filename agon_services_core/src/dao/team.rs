@@ -1,0 +1,694 @@
+//! Team operations: create, get (meta + members aggregate), update, member
+//! add/remove, and "my teams".
+
+use std::collections::HashMap;
+
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
+use aws_sdk_dynamodb::types::AttributeValue;
+
+use super::client::Dao;
+use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_sk, s, to_item};
+use super::keys::{Pk, Sk};
+use super::page::Page;
+use super::records::{TeamMemberRecord, TeamRecord};
+
+pub const TYPE_TEAM: &str = "team";
+pub const TYPE_TEAM_MEMBER: &str = "team_member";
+
+/// A team plus its members, assembled from one item-collection query.
+#[derive(Debug)]
+pub struct TeamAggregate {
+    pub team: TeamRecord,
+    pub members: Vec<TeamMemberRecord>,
+}
+
+impl Dao {
+    /// Create a team, its creator's membership, and the creator's follow of
+    /// their own team (membership implies following — see
+    /// `Dao::follow_team_items`'s doc comment), all in one transaction. The
+    /// creator becomes the `owner` member. `Conflict` if the team id already
+    /// exists. Unlike `Dao::add_team_member`, this never needs to check
+    /// whether the creator already follows first — the team doesn't exist
+    /// yet, so there's no edge to collide with.
+    #[tracing::instrument(skip(self, team, creator), fields(team_id = %team.id))]
+    pub async fn create_team(
+        &self,
+        team: &TeamRecord,
+        creator: &TeamMemberRecord,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+
+        // The owner auto-follows, so the meta item is written with its
+        // `follower_count` already seeded rather than bumped by an `ADD` in
+        // this same transaction: DynamoDB refuses two operations on one item
+        // ("Transaction request cannot include multiple operations on one
+        // item"), and that is exactly what the bump was — an update of the
+        // item being put beside it, which made every `POST /teams` a 500
+        // (#250). A creator with no account can't follow, so there is nothing
+        // to seed for them.
+        let owner_follows = creator.user_id.is_some();
+        let seeded = TeamRecord {
+            follower_count: if owner_follows {
+                1
+            } else {
+                team.follower_count
+            },
+            ..team.clone()
+        };
+        let meta_item = ItemBuilder::new(to_item(
+            &Pk::Team(team.id.clone()),
+            &Sk::Meta,
+            TYPE_TEAM,
+            &seeded,
+        )?)
+        .entity(
+            super::entity_index::EntityKind::Team,
+            &seeded.created_at,
+            &seeded.id,
+        )
+        .build();
+        let member_item = self.team_member_item(&team.id, creator)?;
+
+        let put_meta = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(meta_item))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let put_member = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(member_item))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut items = vec![
+            TransactWriteItem::builder().put(put_meta).build(),
+            TransactWriteItem::builder().put(put_member).build(),
+        ];
+        if let Some(owner_id) = &creator.user_id {
+            // Edge only — the count is seeded above.
+            items.push(self.follow_team_edge_item(owner_id, &team.id, &creator.created_at)?);
+        }
+
+        let result = self
+            .client
+            .transact_write_items()
+            .set_transact_items(Some(items))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                format!("team {} already exists", team.id),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Create a teamless tournament's squad team with all of its members, in
+    /// one transaction. Returns `false` (and writes nothing) if the team
+    /// already exists, so a retried tournament start reuses it.
+    ///
+    /// Unlike [`Self::create_team`], this is built so the team can't leak
+    /// out of its tournament:
+    /// - no entity-index keys, so team enumeration (admin, backfills) skips it;
+    /// - members get no `UTEAMS#` projection, so it's never in anyone's
+    ///   "my teams";
+    /// - nobody follows it, so it's never in "followed teams" and adds no
+    ///   follower fan-out (the players are on every match's roster anyway).
+    ///
+    /// `team.tournament_id` must be set. A transaction holds at most 100
+    /// items, so a squad can have at most 99 members, far above any real
+    /// squad size.
+    #[tracing::instrument(skip(self, team, members), fields(team_id = %team.id))]
+    pub async fn create_tournament_team(
+        &self,
+        team: &TeamRecord,
+        members: &[TeamMemberRecord],
+    ) -> DaoResult<bool> {
+        use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+
+        if team.tournament_id.is_none() {
+            return Err(DaoError::Dynamo(format!(
+                "create_tournament_team: team {} has no tournament_id",
+                team.id
+            )));
+        }
+        if members.len() > 99 {
+            return Err(DaoError::Dynamo(format!(
+                "create_tournament_team: {} members is more than one transaction holds",
+                members.len()
+            )));
+        }
+        let meta = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(to_item(
+                &Pk::Team(team.id.clone()),
+                &Sk::Meta,
+                TYPE_TEAM,
+                team,
+            )?))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let mut items = vec![TransactWriteItem::builder().put(meta).build()];
+        for m in members {
+            let put = Put::builder()
+                .table_name(self.table())
+                .set_item(Some(to_item(
+                    &Pk::Team(team.id.clone()),
+                    &Sk::Member(m.membership_id.clone()),
+                    TYPE_TEAM_MEMBER,
+                    m,
+                )?))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().put(put).build());
+        }
+        match self
+            .client
+            .transact_write_items()
+            .set_transact_items(Some(items))
+            .send()
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Ok(false),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set a tournament team's name and colour (a squad renamed after the
+    /// tournament started). `NotFound` if the team doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_team_label(
+        &self,
+        team_id: &str,
+        name: &str,
+        colour: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET #name = :name, colour = :colour")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#name", "name")
+            .expression_attribute_values(":name", s(name))
+            .expression_attribute_values(":colour", s(colour))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("team {team_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Fetch a team's meta only (no members).
+    #[tracing::instrument(skip(self))]
+    pub async fn get_team_meta(&self, team_id: &str) -> DaoResult<Option<TeamRecord>> {
+        let out = self
+            .client
+            .get_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Meta.to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        match out.item {
+            Some(item) => Ok(Some(from_item(item)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch multiple teams' meta (no members) in one batch read, keyed by
+    /// team id. An id with no team simply has no entry in the result — mirrors
+    /// `batch_get_users`. Used to resolve match-side team names for a whole
+    /// feed/list page in one round trip instead of one `get_team_meta` per
+    /// side.
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_team_metas(
+        &self,
+        team_ids: &[String],
+    ) -> DaoResult<HashMap<String, TeamRecord>> {
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = team_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                HashMap::from([
+                    (ATTR_PK.to_string(), s(Pk::Team(id.clone()).to_string())),
+                    (ATTR_SK.to_string(), s(Sk::Meta.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let record: TeamRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
+    }
+
+    /// Fetch the full team aggregate (meta + all members) in a single query on
+    /// the `TEAM#<id>` partition, splitting the collection by SK prefix.
+    /// `None` if the team's meta item is absent.
+    #[tracing::instrument(skip(self))]
+    pub async fn get_team(&self, team_id: &str) -> DaoResult<Option<TeamAggregate>> {
+        let out = self
+            .client
+            .query()
+            .table_name(self.table())
+            .key_condition_expression("#pk = :pk")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":pk", s(Pk::Team(team_id.into()).to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut team: Option<TeamRecord> = None;
+        let mut members: Vec<TeamMemberRecord> = Vec::new();
+
+        for item in out.items.unwrap_or_default() {
+            match item_sk(&item)? {
+                Sk::Meta => team = Some(from_item(item)?),
+                Sk::Member(_) => members.push(from_item(item)?),
+                // Follower edges also live here; ignore for the aggregate.
+                _ => {}
+            }
+        }
+
+        Ok(team.map(|team| TeamAggregate { team, members }))
+    }
+
+    /// Update a team's mutable fields — `name` and/or `logo_url`.
+    /// Both optional and independent, like `Dao::update_user_profile`:
+    /// `logo_url` is a double `Option` — outer `None` leaves the logo
+    /// untouched, `Some(None)` clears it, `Some(Some(url))` sets it.
+    /// A no-op call (both `None`) skips the write entirely. `NotFound` if the
+    /// team doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn update_team(
+        &self,
+        team_id: &str,
+        name: Option<&str>,
+        logo_url: Option<Option<&str>>,
+    ) -> DaoResult<()> {
+        let mut set_parts: Vec<String> = Vec::new();
+        let mut remove_parts: Vec<String> = Vec::new();
+        let mut names: std::collections::HashMap<String, String> = Default::default();
+        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
+
+        if let Some(name) = name {
+            set_parts.push("#name = :name".into());
+            names.insert("#name".into(), "name".into());
+            values.insert(":name".into(), s(name));
+        }
+        if let Some(logo) = logo_url {
+            match logo {
+                Some(url) => {
+                    set_parts.push("#logo = :logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
+                    values.insert(":logo".into(), s(url));
+                }
+                // Explicit clear.
+                None => {
+                    remove_parts.push("#logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
+                }
+            }
+        }
+
+        if set_parts.is_empty() && remove_parts.is_empty() {
+            return Ok(()); // nothing to change
+        }
+
+        let mut expr = String::new();
+        if !set_parts.is_empty() {
+            expr.push_str("SET ");
+            expr.push_str(&set_parts.join(", "));
+        }
+        if !remove_parts.is_empty() {
+            if !expr.is_empty() {
+                expr.push(' ');
+            }
+            expr.push_str("REMOVE ");
+            expr.push_str(&remove_parts.join(", "));
+        }
+
+        // Guard existence via the PK, which every team meta item has.
+        names.insert("#pk".into(), ATTR_PK.into());
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Meta.to_string()))
+            .update_expression(expr)
+            .condition_expression("attribute_exists(#pk)")
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(if values.is_empty() {
+                None
+            } else {
+                Some(values)
+            })
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("team {team_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Permanently delete a team: its meta item and every item in its
+    /// partition — every member, every follower. The only full-partition
+    /// cascade delete in the DAO (contrast `remove_match_players`, which
+    /// batch-deletes a known set of keys, not a whole queried partition).
+    /// Authorization (owner-only) is the caller's responsibility, same as
+    /// every other team mutation here. Idempotent: deleting an already-gone
+    /// (or never existed) team is a no-op, not an error — the caller has
+    /// already done its own existence check to authorize the delete, so
+    /// there's nothing useful a `NotFound` here would add.
+    #[tracing::instrument(skip(self))]
+    pub async fn delete_team(&self, team_id: &str) -> DaoResult<()> {
+        let pk = Pk::Team(team_id.into()).to_string();
+        let mut start_key = None;
+        let mut requests = Vec::new();
+
+        loop {
+            let out = self
+                .client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_names("#sk", ATTR_SK)
+                .expression_attribute_values(":pk", s(pk.clone()))
+                .projection_expression("#pk, #sk")
+                .set_exclusive_start_key(start_key)
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+            for key in out.items.unwrap_or_default() {
+                let delete = aws_sdk_dynamodb::types::DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(delete)
+                        .build(),
+                );
+            }
+
+            match out.last_evaluated_key {
+                Some(k) => start_key = Some(k),
+                None => break,
+            }
+        }
+
+        for chunk in requests.chunks(super::batch::BATCH_WRITE_MAX) {
+            self.flush_batch_write(chunk.to_vec()).await?;
+        }
+        Ok(())
+    }
+
+    /// Add (or overwrite) a single team member. Used for both single adds and
+    /// the fan-out of a bulk invite (call per member) — i.e. for a *pending*
+    /// invite's placeholder entry, which doesn't follow until it's accepted.
+    /// For an already-accepted direct add, use `Dao::add_team_member`
+    /// instead, which also folds in the follow that membership implies.
+    #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
+    pub async fn put_team_member(&self, team_id: &str, member: &TeamMemberRecord) -> DaoResult<()> {
+        let item = self.team_member_item(team_id, member)?;
+        self.client
+            .put_item()
+            .table_name(self.table())
+            .set_item(Some(item))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Add an already-accepted (real-user) team member and the follow edge
+    /// membership implies (see `Dao::follow_team_items`'s doc comment), as
+    /// one transaction — so a direct add's "join the team" and "follow the
+    /// team" land together, not as a separate best-effort call after the
+    /// fact. Checks `is_following_team` first and omits the follow items
+    /// entirely when they're already a follower (e.g. they followed
+    /// explicitly before being added) — including them anyway would trip
+    /// the edge-put's condition and cancel the whole transaction, including
+    /// the membership write.
+    #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
+    pub async fn add_team_member(
+        &self,
+        team_id: &str,
+        member: &TeamMemberRecord,
+        now: &str,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+
+        let put_member = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.team_member_item(team_id, member)?))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut items = vec![TransactWriteItem::builder().put(put_member).build()];
+        if let Some(user_id) = &member.user_id
+            && !self.is_following_team(user_id, team_id).await?
+        {
+            items.extend(self.follow_team_items(user_id, team_id, now)?);
+        }
+
+        self.client
+            .transact_write_items()
+            .set_transact_items(Some(items))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove a member from a team by membership id. Delete-by-id, not a
+    /// toggle, so errors with `DaoError::NotFound` if the membership doesn't
+    /// exist rather than silently succeeding.
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_team_member(&self, team_id: &str, membership_id: &str) -> DaoResult<()> {
+        let result = self
+            .client
+            .delete_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Member(membership_id.into()).to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_delete_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "membership {membership_id} on team {team_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Change a member's `role` (`"admin"` / `"member"` — never `"owner"`,
+    /// there being no ownership-transfer flow yet; the caller validates that
+    /// before calling this). `NotFound` if the membership doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn update_team_member_role(
+        &self,
+        team_id: &str,
+        membership_id: &str,
+        role: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Member(membership_id.into()).to_string()))
+            .update_expression("SET #role = :role")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":role", s(role))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "membership {membership_id} on team {team_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Move the `owner` role from one membership to another, in one
+    /// transaction — the new owner's `role` and the old owner's `role` both
+    /// change, or neither does, so the team is never briefly ownerless or
+    /// briefly double-owned if this fails partway. `NotFound` if either
+    /// membership doesn't exist. The caller is responsible for every
+    /// business-rule check (caller is the current owner, `to` is an accepted
+    /// member, `to` isn't already the owner) — this just moves the role.
+    #[tracing::instrument(skip(self))]
+    pub async fn transfer_team_ownership(
+        &self,
+        team_id: &str,
+        from_membership_id: &str,
+        to_membership_id: &str,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{TransactWriteItem, Update};
+
+        let promote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Member(to_membership_id.into()).to_string()))
+            .update_expression("SET #role = :owner")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":owner", s("owner"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let demote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(
+                ATTR_SK,
+                s(Sk::Member(from_membership_id.into()).to_string()),
+            )
+            .update_expression("SET #role = :admin")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":admin", s("admin"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(promote).build())
+            .transact_items(TransactWriteItem::builder().update(demote).build())
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("membership on team {team_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// List the teams a user is a member of, via GSI1 (`UTEAMS#<userId>`).
+    #[tracing::instrument(skip(self))]
+    pub async fn list_user_teams(
+        &self,
+        user_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<TeamMemberRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .index_name("GSI1")
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_GSI1PK)
+                .expression_attribute_values(":pk", s(format!("UTEAMS#{user_id}"))),
+            cursor,
+            limit,
+        )
+        .await
+    }
+
+    /// List a team's members, paginated, via `begins_with(SK, "MEMBER#")` on
+    /// its own partition — the `GET /teams/:team_id/members` endpoint. Order
+    /// is whatever DynamoDB returns for the `MEMBER#<membershipId>` range
+    /// (membership id, not join order or role) — good enough for a squad-sized
+    /// list; nothing here promises a particular order.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_team_members(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<TeamMemberRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_values(":pk", s(Pk::Team(team_id.into()).to_string()))
+                .expression_attribute_values(":sk", s(Sk::member_prefix())),
+            cursor,
+            limit,
+        )
+        .await
+    }
+
+    /// Build a team-member item, projecting members with a linked user into GSI1
+    /// (`UTEAMS#<userId>`) so the user can list their teams. External-only
+    /// members (no `user_id`) are not projected — they don't have a "my teams".
+    pub(super) fn team_member_item(
+        &self,
+        team_id: &str,
+        member: &TeamMemberRecord,
+    ) -> DaoResult<std::collections::HashMap<String, AttributeValue>> {
+        let base = to_item(
+            &Pk::Team(team_id.into()),
+            &Sk::Member(member.membership_id.clone()),
+            TYPE_TEAM_MEMBER,
+            member,
+        )?;
+        let item = match &member.user_id {
+            Some(uid) => ItemBuilder::new(base)
+                .gsi1(
+                    format!("UTEAMS#{uid}"),
+                    Pk::Team(team_id.into()).to_string(),
+                )
+                .build(),
+            None => base,
+        };
+        Ok(item)
+    }
+}
+
+fn is_delete_conditional_failure(err: &SdkError<DeleteItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), DeleteItemError::ConditionalCheckFailedException(_))
+    )
+}

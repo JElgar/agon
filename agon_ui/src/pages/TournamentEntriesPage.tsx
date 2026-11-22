@@ -13,7 +13,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import { ChevronLeft, GripVertical, Plus, X } from 'lucide-react'
+import { ChevronLeft, GripVertical, Plus, Shuffle, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -27,6 +27,7 @@ import {
   ComboboxList,
 } from '@/components/ui/combobox'
 import { Avatar } from '@/components/agon/Avatar'
+import { AutoAssignSheet } from '@/components/agon/AutoAssignSheet'
 import { TeamPicker } from '@/components/agon/TeamPicker'
 import { CARD, ColourSwatches, FormSection } from '@/components/agon/logmatch/parts'
 import { tournamentEntryAudienceLabel } from '@/lib/tournaments'
@@ -88,6 +89,22 @@ export function useEntrantDisplays(
 }
 
 const SEARCH_DEBOUNCE_MS = 300
+
+/** Every accepted entrant's current squad, read fresh from the API — what
+ *  auto-assign checks against right before applying a previewed split. */
+async function loadAcceptedSquads(tournamentId: string): Promise<Map<string, number | null>> {
+  const squads = new Map<string, number | null>()
+  let cursor: string | undefined
+  do {
+    const { data, error } = await fetchClient.GET('/tournaments/{tournament_id}/entries', {
+      params: { path: { tournament_id: tournamentId }, query: { cursor, limit: 50 } },
+    })
+    if (error || !data) throw new Error('Could not re-check the entries')
+    for (const e of data.items) if (e.status === 'accepted') squads.set(e.entrant_id, e.squad ?? null)
+    cursor = data.next_cursor
+  } while (cursor)
+  return squads
+}
 
 /**
  * Manage a tournament's entries (`GET`/`POST`/`DELETE
@@ -247,6 +264,8 @@ export function TournamentEntriesPage() {
 
           {tournament.entry_audience === 'players' ? (
             <SquadBoard
+              tournament={tournament}
+              onChanged={invalidate}
               entries={entries}
               entrantDisplays={entrantDisplays}
               squadLabels={tournament.squad_labels}
@@ -380,6 +399,8 @@ const measuring = { droppable: { strategy: MeasuringStrategy.BeforeDragging } }
  * squads only start existing on the server once an entrant lands in one.
  */
 function SquadBoard({
+  tournament,
+  onChanged,
   entries,
   entrantDisplays,
   squadLabels,
@@ -387,6 +408,8 @@ function SquadBoard({
   onRemove,
   onSetSquadLabel,
 }: {
+  tournament: Tournament
+  onChanged: () => void
   entries: TournamentEntry[]
   entrantDisplays: Map<string, EntrantDisplay>
   squadLabels: Record<string, SquadLabel>
@@ -430,8 +453,41 @@ function SquadBoard({
 
   const activeEntry = activeId ? entriesById.get(activeId) : undefined
 
+  const [autoAssignOpen, setAutoAssignOpen] = useState(false)
+  const accepted = entries.filter((e) => e.status === 'accepted')
+  const canAutoAssign = tournament.status === 'open' && accepted.length >= 2
+
   return (
     <FormSection title="Squads">
+      {canAutoAssign && (
+        <>
+          <Button className="h-11" onClick={() => setAutoAssignOpen(true)}>
+            <Shuffle className="size-4" />
+            Auto-assign
+          </Button>
+          <AutoAssignSheet
+            open={autoAssignOpen}
+            onOpenChange={setAutoAssignOpen}
+            target={{
+              kind: 'tournament',
+              tournamentId: tournament.id,
+              sport: tournament.match_type,
+              squadSize: tournament.squad_size ?? 2,
+              squadLabels,
+              subtitle: tournament.name,
+              members: accepted.map((e) => ({
+                id: e.entrant_id,
+                userId: e.entrant_id,
+                name: entrantDisplays.get(e.entrant_id)?.name ?? 'Player',
+                imageUrl: entrantDisplays.get(e.entrant_id)?.imageUrl,
+                currentSide: e.squad ?? null,
+              })),
+              loadRoster: () => loadAcceptedSquads(tournament.id),
+              onApplied: onChanged,
+            }}
+          />
+        </>
+      )}
       <p className="px-1 text-xs text-muted-foreground">
         Every player needs a squad before the tournament can start — squad-mates play as one
         team. Drag a player into a squad, or add another squad if you need more.

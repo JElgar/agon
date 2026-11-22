@@ -9,8 +9,8 @@
 //! already-propagated match, is a harmless no-op. League tournaments have
 //! no bracket edges at all, so this is a no-op for them too.
 
-use agon_core::dao::Dao;
-use agon_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::keys::{Pk, Sk};
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -68,42 +68,23 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
         return Ok(());
     };
 
-    if tournament.entry_audience == agon_core::dao::records::TournamentEntryAudienceRecord::Players
+    if tournament.entry_audience
+        == agon_services_core::dao::records::TournamentEntryAudienceRecord::Players
     {
-        // `winner_team_id` is a synthetic squad id here, not a real team —
-        // there's no team membership to self-join from, so the squad's
-        // actual roster (whoever played this match for the winning side)
-        // has to be copied across explicitly.
-        // A squad side always carries its squad's name/colour — both
-        // `start_tournament` and a manually added match copy them from
-        // `TournamentRecord::squad_label` — so there's nothing to fall back
-        // to here; a side without them is a bug upstream, not a default.
-        let (Some(squad_name), Some(squad_colour)) =
-            (winner_side.name.clone(), winner_side.colour.clone())
-        else {
-            tracing::error!(
-                match_id = %into_match_id,
-                squad_id = %winner_team_id,
-                "squad side has no name/colour; not filling the next bracket slot"
-            );
-            return Ok(());
-        };
+        // `winner_team_id` is the winning squad's tournament team. Its roster
+        // is fixed rather than self-joined (team join stays off for squads),
+        // so whoever played this match for the winning side is copied across
+        // explicitly.
         let filled = dao
-            .fill_tournament_bracket_squad_side(
-                into_match_id,
-                into_side_id,
-                &winner_team_id,
-                &squad_name,
-                &squad_colour,
-            )
+            .fill_tournament_bracket_squad_side(into_match_id, into_side_id, &winner_team_id)
             .await?;
         if filled {
             for player in &agg.players {
                 if player.side_id.as_deref() != Some(winner_side_id.as_str()) {
                     continue;
                 }
-                let copied = agon_core::dao::records::MatchPlayerRecord {
-                    player_id: agon_core::id::new_id(),
+                let copied = agon_services_core::dao::records::MatchPlayerRecord {
+                    player_id: agon_services_core::id::new_id(),
                     user_id: player.user_id.clone(),
                     display_name: player.display_name.clone(),
                     side_id: Some(into_side_id.clone()),

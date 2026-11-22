@@ -41,10 +41,12 @@ import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import { JoinMatchPage } from '@/pages/JoinMatchPage'
 import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
+import { YoutubeConnectionPage } from '@/pages/YoutubeConnectionPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
 import { AdminLayout } from '@/pages/admin/AdminLayout'
 import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
+import { AdminMatchesPage } from '@/pages/admin/AdminMatchesPage'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
@@ -57,6 +59,7 @@ import {
 } from '@/lib/pendingInvite'
 import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { identifyPosthogUser } from '@/lib/posthog'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -168,6 +171,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/devices" element={<PairedDevicesPage />} />
+          <Route path="/settings/youtube" element={<YoutubeConnectionPage />} />
           <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
           <Route path="/users/:userId" element={<ProfilePage />} />
           <Route path="/users/:userId/stats/:sport" element={<SportStatsPage />} />
@@ -189,6 +193,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           >
             <Route index element={<Navigate to="/admin/users" replace />} />
             <Route path="users" element={<AdminUsersPage />} />
+            <Route path="matches" element={<AdminMatchesPage />} />
           </Route>
           <Route path="*" element={<HomeRedirect />} />
           </Routes>
@@ -291,6 +296,7 @@ function AuthenticatedApp() {
         const { data, response } = await fetchClient.GET('/users/me')
         if (data) {
           setHasProfileCache(true)
+          identifyPosthogUser(data.profile.id)
           return 'has-profile'
         }
         if (response.status === 404) {

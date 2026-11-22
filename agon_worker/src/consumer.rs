@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sqs::types::Message;
 use chrono::Utc;
@@ -23,8 +23,8 @@ use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Envelope};
 use crate::handlers;
-use agon_core::push::PushClient;
-use agon_core::search::SearchClient;
+use agon_services_core::push::PushClient;
+use agon_services_core::search::SearchClient;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
 #[derive(Clone)]
@@ -35,6 +35,8 @@ pub struct Consumer {
     /// `None` when push isn't configured (e.g. local dev) — handled the same
     /// way as the Temporal client's absence in tests: handlers no-op.
     push: Option<PushClient>,
+    /// `None` when `OPENSEARCH_URL` is unset: the OpenSearch shadow write is off.
+    opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -55,9 +57,19 @@ impl Consumer {
             dao,
             search,
             push,
+            opensearch: None,
             config: Arc::new(config),
             temporal: None,
         }
+    }
+
+    /// Turn on the OpenSearch shadow write.
+    pub fn with_opensearch(
+        mut self,
+        client: agon_services_core::opensearch::OpenSearchClient,
+    ) -> Self {
+        self.opensearch = Some(client);
+        self
     }
 
     /// Attach a Temporal client so multi-step events start workflows.
@@ -162,6 +174,7 @@ impl Consumer {
             &self.dao,
             &self.search,
             self.push.as_ref(),
+            self.opensearch.as_ref(),
             self.config.ui_base_url.as_deref(),
             &event,
             &now,
@@ -262,8 +275,10 @@ enum WorkflowStart {
 /// record with no extra DynamoDB read. Firing on the *transition* means we start
 /// once, not on every subsequent modify of an already-accepted invitation.
 fn workflow_for(event: &ChangeEvent) -> Vec<WorkflowStart> {
-    use agon_core::dao::keys::{Pk, Sk};
-    use agon_core::dao::records::{InvitationContextRecord, InvitationRecord, MatchRecord};
+    use agon_services_core::dao::keys::{Pk, Sk};
+    use agon_services_core::dao::records::{
+        InvitationContextRecord, InvitationRecord, MatchRecord,
+    };
 
     if event.kind.is_remove() {
         return Vec::new();
@@ -356,7 +371,7 @@ fn workflow_for(event: &ChangeEvent) -> Vec<WorkflowStart> {
 mod tests {
     use super::*;
     use crate::event::{ChangeKind, Image};
-    use agon_core::dao::records::{
+    use agon_services_core::dao::records::{
         InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     };
 
@@ -411,8 +426,8 @@ mod tests {
         }
     }
 
-    fn match_record(starts_at: &str) -> agon_core::dao::records::MatchRecord {
-        agon_core::dao::records::MatchRecord {
+    fn match_record(starts_at: &str) -> agon_services_core::dao::records::MatchRecord {
+        agon_services_core::dao::records::MatchRecord {
             id: "m1".into(),
             created_by_user_id: "u_host".into(),
             name: "Tennis".into(),
@@ -448,10 +463,10 @@ mod tests {
     /// attribute-value (de)serialization the stream uses.
     fn match_event(
         kind: ChangeKind,
-        old: Option<&agon_core::dao::records::MatchRecord>,
-        new: Option<&agon_core::dao::records::MatchRecord>,
+        old: Option<&agon_services_core::dao::records::MatchRecord>,
+        new: Option<&agon_services_core::dao::records::MatchRecord>,
     ) -> ChangeEvent {
-        let to_image = |r: &agon_core::dao::records::MatchRecord| -> Image {
+        let to_image = |r: &agon_services_core::dao::records::MatchRecord| -> Image {
             serde_dynamo::to_item(r).unwrap()
         };
         ChangeEvent::from_envelope(&Envelope {

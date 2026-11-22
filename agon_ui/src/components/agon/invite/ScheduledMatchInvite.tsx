@@ -51,25 +51,33 @@ import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 import {
+  inviteLink,
   memberAvatarUrl,
+  memberInviteToken,
   memberName,
   myPendingInvitation,
+  pendingInvitees,
   playerId,
   sideDisplayName,
+  shareOrCopyLink,
   withInvitationStatus,
 } from '@/lib/members'
+import { PendingInvitesDialog } from '@/components/agon/PendingInvitesDialog'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 
-/** Players who've actually said yes (or never needed to — added ad-hoc, no
- *  invitation at all) — a pending or declined invitee doesn't belong in the
- *  "going" grid. Mirrors `isParticipant`'s own per-player check. */
+/** Everyone who currently holds a roster spot: added ad-hoc (no invitation),
+ *  accepted, or still-pending with `reserve_spot` on — mirrors the server's
+ *  `MatchPlayerRecord::occupies_slot`, the same rule behind the feed's
+ *  `total_player_count`/`viewer_is_going`. A declined invitee, or an
+ *  ordinary (non-reserving) pending one, doesn't belong in the "going" grid —
+ *  they haven't taken a spot. */
 function goingPlayers(match: Match) {
   return match.players.filter((p) => {
     const invitation = p.member.invitation
-    return !invitation || invitation.status === 'accepted'
+    return !invitation || invitation.status === 'accepted' || (invitation.status === 'pending' && invitation.reserve_spot)
   })
 }
 
@@ -189,6 +197,8 @@ export function ScheduledMatchInvite({
   const cap = overallCap(match)
   const spotsLeft = cap != null ? Math.max(cap - going.length, 0) : undefined
   const pct = cap ? Math.min(100, Math.round((going.length / cap) * 100)) : 0
+  const pendingCount = pendingInvitees(match).length
+  const [pendingInvitesOpen, setPendingInvitesOpen] = useState(false)
   const organiser = match.players.find((p) => p.role === 'owner')
   const metaTeamSide = match.sides.find((s) => s.team_name)
   const viewerGoing = going.some((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
@@ -412,6 +422,13 @@ export function ScheduledMatchInvite({
                     const isYou = myPlayer && id === playerId(myPlayer)
                     const userId = p.member.type === 'User' ? p.member.user_id : undefined
                     const showAdminActions = canEdit && !isOwnerRow
+                    const inviteToken = memberInviteToken(p.member)
+                    // Only a reserve_spot invite is still pending here — goingPlayers already
+                    // excludes any pending invite that doesn't hold a spot.
+                    const isPendingInvite = p.member.invitation?.status === 'pending'
+                    const subline = [isPendingInvite ? 'Invited' : null, p.role !== 'player' ? p.role : null]
+                      .filter(Boolean)
+                      .join(' · ')
                     return (
                       <div
                         key={id}
@@ -423,11 +440,9 @@ export function ScheduledMatchInvite({
                             {memberName(p.member)}
                             {isYou && ' (you)'}
                           </span>
-                          {p.role !== 'player' && (
-                            <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
-                          )}
+                          {subline && <span className="block text-xs text-muted-foreground capitalize">{subline}</span>}
                         </div>
-                        {(userId || showAdminActions) && (
+                        {(userId || showAdminActions || inviteToken) && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -442,6 +457,11 @@ export function ScheduledMatchInvite({
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
                               {userId && <ViewProfileMenuItem userId={userId} />}
+                              {inviteToken && showAdminActions && (
+                                <DropdownMenuItem onSelect={() => shareOrCopyLink(inviteLink(inviteToken))}>
+                                  <Link2 /> Copy invite link
+                                </DropdownMenuItem>
+                              )}
                               {showAdminActions && (
                                 <>
                                   <PlayerRoleMenuItems
@@ -481,6 +501,16 @@ export function ScheduledMatchInvite({
                     )
                   })}
                 </Card>
+              )}
+
+              {canEdit && pendingCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setPendingInvitesOpen(true)}
+                  className="flex h-11 items-center justify-center rounded-2xl border border-border/60 bg-card text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {pendingCount} pending {pendingCount === 1 ? 'invite' : 'invites'}
+                </button>
               )}
 
               <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
@@ -683,6 +713,8 @@ export function ScheduledMatchInvite({
           <p className="px-1 text-xs text-destructive">{teamJoinConflict.message}</p>
         )}
       </PinnedActionBar>
+
+      <PendingInvitesDialog open={pendingInvitesOpen} onOpenChange={setPendingInvitesOpen} match={match} />
 
       <InvitationResponseDialog
         open={action !== null}

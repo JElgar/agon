@@ -21,7 +21,7 @@
 
 use poem_openapi::Union;
 
-/// Builds `MatchFormat` from the sport registry (`agon_core::for_each_sport!`).
+/// Builds `MatchFormat` from the sport registry (`agon_services_core::for_each_sport!`).
 macro_rules! define_match_format {
     (
         modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
@@ -30,8 +30,8 @@ macro_rules! define_match_format {
         #[derive(Union, Clone)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum MatchFormat {
-            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::Format), )+
+            $( $variant(<agon_services_core::sports::$key::$variant as crate::sports::Sport>::Format), )+
         }
     };
 }
-agon_core::for_each_sport!(define_match_format);
+agon_services_core::for_each_sport!(define_match_format);

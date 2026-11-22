@@ -12,7 +12,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import { GripVertical, X } from 'lucide-react'
+import { GripVertical, Shuffle, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
 import { memberAvatarUrl, memberName, playerId, sideDisplayName } from '@/lib/members'
+import { resolveSideColour } from '@/lib/sideColours'
+import { AutoAssignSheet } from './AutoAssignSheet'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -177,11 +179,81 @@ export function MatchRosterEditor({
 
   const activePlayer = activeId ? playersById.get(activeId) : undefined
 
+  // Auto-assign works on the saved roster, so it's offered only while there
+  // are no unsaved drags/removals to lose. Pending or declined invitees hold
+  // no spot, so they aren't in the pool.
+  const [autoAssignOpen, setAutoAssignOpen] = useState(false)
+  const pool = match.players.filter((p) => !p.member.invitation || p.member.invitation.status === 'accepted')
+  const canAutoAssign = match.status === 'scheduled' && match.sides.length >= 2 && pool.length >= 2
+  const sideIndex = (sideId: string | undefined | null) => {
+    const i = match.sides.findIndex((s) => s.id === sideId)
+    return i >= 0 ? i : null
+  }
+
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
       <p className="text-xs text-muted-foreground">
         Drag a player to move them to another side, or remove them from the match.
       </p>
+
+      {canAutoAssign && (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            className="self-start"
+            disabled={dirty}
+            title={dirty ? 'Save or cancel your changes first' : undefined}
+            onClick={() => setAutoAssignOpen(true)}
+          >
+            <Shuffle className="size-4" />
+            Auto-assign sides
+          </Button>
+          <AutoAssignSheet
+            open={autoAssignOpen}
+            onOpenChange={setAutoAssignOpen}
+            target={{
+              kind: 'match',
+              matchId: match.id,
+              sport: match.match_type,
+              sides: match.sides.map((side) => ({
+                id: side.id,
+                name: sideDisplayName(side) ?? 'Side',
+                colour: resolveSideColour(side),
+                maxPlayers: side.max_players ?? undefined,
+              })),
+              subtitle: match.name,
+              members: pool.map((p) => ({
+                id: playerId(p),
+                userId: 'user_id' in p.member ? p.member.user_id : undefined,
+                name: memberName(p.member),
+                imageUrl: memberAvatarUrl(p.member),
+                currentSide: sideIndex(p.side_id),
+              })),
+              loadRoster: async () => {
+                const { data, error } = await fetchClient.GET('/matches/{match_id}', {
+                  params: { path: { match_id: match.id } },
+                })
+                if (error || !data) throw new Error('Could not re-check the roster')
+                const sides = data.sides.map((s) => s.id)
+                return new Map(
+                  data.players
+                    .filter((p) => !p.member.invitation || p.member.invitation.status === 'accepted')
+                    .map((p) => {
+                      const i = sides.indexOf(p.side_id ?? '')
+                      return [playerId(p), i >= 0 ? i : null] as const
+                    }),
+                )
+              },
+              onApplied: () => {
+                queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+                queryClient.invalidateQueries({ queryKey: ['feed'] })
+                onDone()
+              },
+            }}
+          />
+        </>
+      )}
 
       <DndContext
         sensors={sensors}

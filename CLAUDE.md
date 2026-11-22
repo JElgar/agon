@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Agon is a Rust-based team management API service built with the Poem web framework and poem-openapi. The project uses a workspace structure:
 
-- **agon_core**: Shared library — the DAO (DynamoDB single-table access), search client, telemetry, and record types. Used by both binaries.
+- **agon_services_core**: Shared library — the DAO (DynamoDB single-table access), search client, telemetry, and record types. Used by both binaries.
+- **agon_core**: Logic shared by every target, not just the backend: sport scoring (folding live events into a score) and the auto team builder (`team_builder`). Dependency-light (no AWS SDK, no web framework) so it also builds for `wasm32-unknown-unknown` and can be bound into mobile via UniFFI. `agon_service` maps its OpenAPI wire types onto this crate's plain types to use it.
+- **agon_core_wasm**: Thin wasm-bindgen shim over `agon_core` for the browser. Its TypeScript types are generated from `agon_core`'s structs (the `wasm` feature derives them with `tsify`), never hand-written. `npm run build:wasm` in `agon_ui` builds it into `agon_ui/src/wasm/agon_core` (gitignored); needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the version `agon_core_wasm` pins.
 - **agon_service**: Main API service using Poem framework with OpenAPI documentation
 - **agon_worker**: Async worker that consumes the DynamoDB stream (indexing to search, feed fan-out)
 - **agon_tests**: Integration tests that use the generated OpenAPI client
@@ -15,24 +17,32 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 
 ### Core Technologies
 - **Web Framework**: Poem with poem-openapi for automatic OpenAPI generation
-- **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_core` DAO. See `docs/dynamodb-design.md`.
+- **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_services_core` DAO. See `docs/dynamodb-design.md`.
 - **Search**: Meilisearch powers the discovery/search endpoints (users, teams, matches), kept in sync by `agon_worker`.
+- **Stats store**: OpenSearch holds match documents, per-player match rows (team stats and leaderboards) and a `users` index. `agon_worker` keeps it in sync; `GET /teams/{id}/summary` and `/leaderboard` read the match data (`agon_service/src/team_stats.rs`, though the UI doesn't use them yet). The whole admin panel's user resource reads `users` (`GET /admin/stats`'s total-users count and `GET /admin/users`'s search/browse) — the admin panel no longer touches Meilisearch. See `docs/opensearch.md`.
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
 - **Observability**: OTLP export (logs/traces/metrics) from both binaries via
-  `agon_core::telemetry`, to a self-hosted Grafana + Loki/Tempo/Prometheus
+  `agon_services_core::telemetry`, to a self-hosted Grafana + Loki/Tempo/Prometheus
   stack. See `docs/observability.md`. Export is off unless
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so local runs log JSON to stdout only.
 
 ### Data Model
 All entities live in one DynamoDB table addressed by typed `Pk` + `Sk` keys (see
-`agon_core/src/dao/keys.rs`), e.g. a user profile is `USER#<id>` / `#PROFILE`.
+`agon_services_core/src/dao/keys.rs`), e.g. a user profile is `USER#<id>` / `#PROFILE`.
 Users, teams, matches, memberships, follows, likes, comments, notifications and
 feed entries are all item collections in this table; relationships are modeled
 as edge items and GSI projections rather than SQL joins. Identity: the JWT `sub`
 is mapped to a stable internal user id via an `AUTH#<sub>` guard item — the
 internal id (not the `sub`) is what every other key references, so the auth
 provider can change without rewriting user-keyed data.
+
+**Tournament teams.** A teamless tournament's squads become real teams when it
+starts (`TeamRecord.tournament_id` set, id `<tournamentId>.squad<n>` from
+`squad_team_id`). They exist only inside that tournament: not searchable,
+followable or in anyone's "my teams", not manageable through the team
+endpoints, and refused as a side outside the tournament. Any new team listing
+must skip teams with `tournament_id` set.
 
 ## Development Commands
 
@@ -81,7 +91,7 @@ make generate-schema  # Generates schema.json and rebuilds openapi_client
 - All API endpoints (except `/ping`) require bearer token authentication
 
 ### Service Architecture
-- **DAO Layer**: `agon_core/src/dao/` handles all DynamoDB operations (keys in `keys.rs`, record shapes in `records.rs`, per-entity ops in the sibling modules)
+- **DAO Layer**: `agon_services_core/src/dao/` handles all DynamoDB operations (keys in `keys.rs`, record shapes in `records.rs`, per-entity ops in the sibling modules)
 - **API Layer**: `agon_service/src/main.rs` defines OpenAPI endpoints and request/response types
 - **Async Worker**: `agon_worker` consumes the DynamoDB stream for search indexing and feed fan-out
 - **Auto-generated Client**: Tests use the generated client in `openapi_client/`
@@ -98,3 +108,4 @@ Required environment variables (see `.env.example`):
 - Single-table DynamoDB access via `aws_sdk_dynamodb`; typed `Pk`/`Sk` keys, never hand-written key strings
 - Uniqueness guards enforced with conditional puts (`EMAIL#<email>`, `AUTH#<sub>`); multi-item writes use `TransactWriteItems` (e.g. user + email-guard + auth-guard on signup)
 - Custom ID generation using base64url-encoded random bytes (`new_id`)
+- Entity index (GSI4, keys only): every match, user, team and tournament is listed under `ENTITY#<type>` / `<created_at>#<id>`, set on create only (`ItemBuilder::entity`). Use `Dao::list_entity_ids` to enumerate a type instead of scanning. Any new create path for those types must call `.entity(...)`. Items from before the index existed get their keys from a one-off migration script kept on the `claude/entity-index-migration` branch (run once per environment). See `agon_services_core/src/dao/entity_index.rs`.

@@ -6,15 +6,24 @@ import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 import * as aws from "@pulumi/aws";
 import * as gcp from "@pulumi/gcp";
 import * as tls from "@pulumi/tls";
+import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
-const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// `prod` owns the bare domain; every other stack (staging, dev, ...) gets its
+// own `<stack>.get-agon.com` subdomain, so they can never collide with it.
+const baseDomain = subdomainPrefix === "prod" ? "get-agon.com" : `${subdomainPrefix}.get-agon.com`;
+// The hostname the UI/API are actually served on. Every other stack gets an
+// `agon.` subdomain of its own base domain (e.g. `agon.staging.get-agon.com`);
+// `prod` serves straight off the bare domain itself (`get-agon.com`, no
+// `agon.` prefix) per James's call — that's the production website's domain,
+// not a subdomain of it.
+const uiHostname = subdomainPrefix === "prod" ? baseDomain : `agon.${baseDomain}`;
 // The UI's public URL — same host as `fullDomain` further down (kept as a
 // separate constant: that one's a bare hostname for the Ingress `host`
 // field, this is a full URL the worker uses to build push-notification deep
 // links, needed up here since it's declared well before `fullDomain` is).
-const agonUiUrl = `https://agon.${baseDomain}`;
+const agonUiUrl = `https://${uiHostname}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -52,6 +61,21 @@ const dnsRecord = new cloudflare.DnsRecord('record', {
 	proxied: false,
 });
 
+// A DNS wildcard (`*.<base>`) never covers the zone's own apex, so `prod`
+// (served at the bare `get-agon.com`, not an `agon.` subdomain of it) needs
+// its own apex record alongside the wildcard above — the wildcard still
+// covers prod's other subdomains (grafana., temporal.).
+const apexDnsRecord = subdomainPrefix === "prod"
+	? new cloudflare.DnsRecord('record-apex', {
+		zoneId: cloudflareZoneId,
+		name: baseDomain,
+		type: 'A',
+		content: nodeIpv4,
+		ttl: 300,
+		proxied: false,
+	})
+	: undefined;
+
 const connection = {
 	host: nodeIpv4,
 	user: 'root',
@@ -62,6 +86,13 @@ const installK3s = new command.remote.Command('install-k3s', {
 	connection,
 	create: 'curl -sfL https://get.k3s.io | sh -s - --disable=traefik',
 })
+
+// OpenSearch refuses to start unless the host allows enough memory-mapped
+// areas. Set it now and persist it across reboots. Idempotent.
+const opensearchSysctl = new command.remote.Command('opensearch-vm-max-map-count', {
+	connection,
+	create: "sysctl -w vm.max_map_count=262144 && echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-opensearch.conf",
+}, { dependsOn: [installK3s] })
 
 const getKubeconfig = new command.remote.Command('get-kubeconfig', {
 	connection,
@@ -365,11 +396,20 @@ const dynamoTable = new aws.dynamodb.Table("agon", {
 		{ name: "GSI2SK", type: "S" },
 		{ name: "GSI3PK", type: "S" },
 		{ name: "GSI3SK", type: "S" },
+		{ name: "GSI4PK", type: "S" },
+		{ name: "GSI4SK", type: "S" },
 	],
 	globalSecondaryIndexes: [
 		{ name: "GSI1", hashKey: "GSI1PK", rangeKey: "GSI1SK", projectionType: "ALL" },
 		{ name: "GSI2", hashKey: "GSI2PK", rangeKey: "GSI2SK", projectionType: "ALL" },
 		{ name: "GSI3", hashKey: "GSI3PK", rangeKey: "GSI3SK", projectionType: "ALL" },
+		// Entity index: every match / user / team / tournament, newest first by
+		// type (`ENTITY#<type>` / `<created_at>#<id>`). KEYS_ONLY on purpose:
+		// DynamoDB only writes to it when an item is created, deleted or has
+		// its keys changed, so likes, comments and edits never cost an index
+		// write. Readers get ids and fetch items themselves.
+		// See agon_core/src/dao/entity_index.rs.
+		{ name: "GSI4", hashKey: "GSI4PK", rangeKey: "GSI4SK", projectionType: "KEYS_ONLY" },
 	],
 	// Streams feed the async fan-out / search-indexing pipeline.
 	streamEnabled: true,
@@ -457,7 +497,9 @@ new aws.s3.BucketCorsConfigurationV2("agon-assets", {
 	corsRules: [
 		{
 			allowedMethods: ["PUT", "GET", "HEAD"],
-			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com"],
+			// The `*.get-agon.com` wildcard only matches a subdomain, not the bare
+			// apex `prod` serves the UI from, so that one's listed explicitly too.
+			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com", "https://get-agon.com"],
 			allowedHeaders: ["*"],
 			exposeHeaders: ["ETag"],
 			maxAgeSeconds: 3000,
@@ -865,6 +907,30 @@ export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey
 //   pulumi config set --secret agonDeviceJwtPrivateKey "$(cat device_ec_pkcs8.pem)"
 export const agonDeviceJwtPrivateKey = config.requireSecret("agonDeviceJwtPrivateKey");
 
+// "Connect YouTube" (agon_service/src/youtube.rs) — a Google OAuth2 client
+// (Web application type) plus the AES-256-GCM key that encrypts stored
+// refresh tokens at rest. The OAuth client secret uses `requireSecret`/
+// `require` (not the `get*` variants), same reasoning as the device-pairing
+// keypair above: the *service* still treats an unset env var as "feature
+// unavailable" rather than an error (`GoogleOAuthConfig::from_env`), but
+// once a stack means to offer this, a half-configured deployment should
+// fail `pulumi up`, not silently ship broken. The redirect URI isn't its
+// own config value — it's always `${agonUiUrl}/settings/youtube` (the
+// `agon_ui` page that exchanges Google's redirect, see youtube.rs's module
+// doc comment), so there's nothing to keep in sync by hand.
+//   pulumi config set googleOauthClientId <client id>
+//   pulumi config set --secret googleOauthClientSecret <client secret>
+//
+// The encryption key, unlike the OAuth client, has no reason to exist
+// outside Pulumi state — nothing external needs a copy, same reasoning as
+// `assetSigningKey` below. Generated in-stack instead of by hand.
+const youtubeTokenKey = new random.RandomBytes("agon-youtube-token-key", {
+	length: 32,
+});
+export const googleOauthClientId = config.require("googleOauthClientId");
+export const googleOauthClientSecret = config.requireSecret("googleOauthClientSecret");
+export const agonYoutubeTokenKey = youtubeTokenKey.base64;
+
 // ── UI e2e test account ──────────────────────────────────────────────────────
 // The fixed Supabase user the UI e2e suite (agon_ui/e2e) logs in as through the
 // real login form — a real Supabase account, not a locally-trusted key, so it
@@ -978,32 +1044,105 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 
 
 // ───────────────────────────────────────────────────────────────────────────
+// OpenSearch: match + per-player stats store
+// Single node, in-cluster only (no ingress, like Meilisearch), so the security
+// plugin is off. The worker shadow-writes to it off the DynamoDB stream; nothing
+// reads it on a request path yet. DynamoDB stays the source of truth, so the
+// index can always be rebuilt with `agon_worker backfill-opensearch`
+// (see docs/opensearch.md).
+//
+// Always deployed. Memory: ~1 GB heap, ~2 GB resident.
+// ───────────────────────────────────────────────────────────────────────────
+const opensearchPvc = new k8s.core.v1.PersistentVolumeClaim("opensearch-data", {
+	metadata: { name: "opensearch-data", namespace: "default" },
+	spec: {
+		accessModes: ["ReadWriteOnce"],
+		resources: { requests: { storage: config.get("opensearchStorage") ?? "10Gi" } },
+	},
+}, { provider: k8sProvider });
+
+const opensearchLabels = { app: "opensearch" };
+new k8s.apps.v1.Deployment("opensearch-deployment", {
+	metadata: { name: "opensearch" },
+	spec: {
+		selector: { matchLabels: opensearchLabels },
+		replicas: 1,
+		// One RWO volume: never run two pods against it.
+		strategy: { type: "Recreate" },
+		template: {
+			metadata: { labels: opensearchLabels },
+			spec: {
+				// The image runs as uid/gid 1000; let it own the volume.
+				securityContext: { fsGroup: 1000 },
+				containers: [
+					{
+						name: "opensearch",
+						image: "opensearchproject/opensearch:2.18.0",
+						ports: [{ containerPort: 9200 }],
+						env: [
+							{ name: "discovery.type", value: "single-node" },
+							{ name: "DISABLE_SECURITY_PLUGIN", value: "true" },
+							{ name: "DISABLE_INSTALL_DEMO_CONFIG", value: "true" },
+							{ name: "OPENSEARCH_JAVA_OPTS", value: config.get("opensearchJavaOpts") ?? "-Xms1g -Xmx1g" },
+						],
+						resources: {
+							requests: { memory: "1536Mi", cpu: "250m" },
+							limits: { memory: "2560Mi" },
+						},
+						volumeMounts: [{ name: "data", mountPath: "/usr/share/opensearch/data" }],
+						readinessProbe: {
+							httpGet: { path: "/_cluster/health?local=true", port: 9200 },
+							initialDelaySeconds: 20,
+							periodSeconds: 10,
+						},
+						livenessProbe: {
+							tcpSocket: { port: 9200 },
+							initialDelaySeconds: 60,
+							periodSeconds: 20,
+						},
+					},
+				],
+				volumes: [
+					{ name: "data", persistentVolumeClaim: { claimName: opensearchPvc.metadata.name } },
+				],
+			},
+		},
+	},
+}, { provider: k8sProvider, dependsOn: [opensearchSysctl] });
+
+const opensearchService = new k8s.core.v1.Service("opensearch-service", {
+	metadata: { name: "opensearch" },
+	spec: {
+		selector: opensearchLabels,
+		ports: [{ name: "http", port: 9200, targetPort: 9200 }],
+	},
+}, { provider: k8sProvider });
+
+const opensearchUrl = opensearchService.metadata.name.apply(name => `http://${name}:9200`);
+
+
+// ───────────────────────────────────────────────────────────────────────────
 // GCP: Firebase Cloud Messaging (push notifications)
 //
-// Reuses the single "agon" GCP project already created manually (the same one
-// Supabase's Google Auth uses) — Pulumi does NOT create or own the project
-// itself here. Shared across all stages for now, deliberately: a proper
-// per-stage split (separate GCP projects, a GCP Organization so it can be
-// fully IaC, Pulumi-managed Supabase projects) was scoped out as a follow-up,
-// not because it isn't worth doing — see git history on this file for that
-// design discussion. Keeping this shared for now means:
-//   - Apply this section from ONE stack only. Every resource below is scoped
-//     to the single shared project, so running `pulumi up` from a second
-//     stack would fight the first over ownership of the same physical
-//     resources (Firebase attachment, the API-enablement toggles). Pick
-//     whichever stack you actually deploy from (e.g. `staging`, since that's
-//     what CI drives) and only ever apply from there until the per-stage
-//     migration happens.
-//   - The FCM sender service account + key below are likewise shared, not
-//     per-environment — every stage's worker would authenticate as the same
-//     identity. Fine for now; revisit alongside the project split.
+// Reuses a GCP project already created manually — Pulumi does NOT create or
+// own the project itself here, only resources inside it. Scoped per Pulumi
+// stack via the `gcp:project` config below, so each stage can point at its
+// own GCP project (keeping FCM/Firebase/Maps resources fully isolated, same
+// as every other per-stage resource in this file) or, if you'd rather share
+// one project across stages, at the same project id as another stack. There
+// is no code-level assumption either way — but sharing a project means every
+// resource below (fixed, non-stack-qualified names) is a singleton across
+// whichever stacks point at it, so only apply this section from one of them;
+// a second stack's `pulumi up` would fight the first over ownership of the
+// same physical resources (Firebase attachment, the FCM service account,
+// the Web App, the Maps key).
 //
 //   pulumi config set gcp:project agon   # defaults to "agon" if unset
 //
 // Needs ambient GCP credentials (e.g. `gcloud auth application-default
-// login`) with edit access on the existing "agon" project — no
-// project-creator/org/billing permissions required, since nothing here
-// creates a project.
+// login`, or `gcp:credentials` set to a service account key) with edit
+// access on the target project — no project-creator/org/billing permissions
+// required, since nothing here creates a project.
 //
 // The worker (agon_worker) is the only FCM consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
@@ -1752,6 +1891,25 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 								name: "AGON_DEVICE_JWKS",
 								value: config.get("agonDeviceJwks"),
 							},
+							// "Connect YouTube" — see the googleOauthClientId/
+							// googleOauthClientSecret/agonYoutubeTokenKey config
+							// declarations above.
+							{
+								name: "GOOGLE_OAUTH_CLIENT_ID",
+								value: googleOauthClientId,
+							},
+							{
+								name: "GOOGLE_OAUTH_CLIENT_SECRET",
+								value: googleOauthClientSecret,
+							},
+							{
+								name: "GOOGLE_OAUTH_REDIRECT_URI",
+								value: `${agonUiUrl}/settings/youtube`,
+							},
+							{
+								name: "AGON_YOUTUBE_TOKEN_KEY",
+								value: agonYoutubeTokenKey,
+							},
 							{
 								name: "MEILI_URL",
 								value: meiliUrl,
@@ -1765,6 +1923,11 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 									}
 								},
 							},
+							// OpenSearch: `GET /admin/stats` reads the `users` index's
+							// count from here, and team summary/leaderboard reads use it
+							// too (see the OpenSearch section) — the one index the service
+							// itself needs, unlike the worker's shadow writes to all of them.
+							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },
@@ -1846,6 +2009,8 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-worker" },
+							// OpenSearch shadow write (see the OpenSearch section).
+							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 						],
 					},
 				],
@@ -1923,6 +2088,27 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 								name: "VITE_GOOGLE_MAPS_API_KEY",
 								value: googleMapsApiKey.keyString,
 							},
+							// PostHog (EU Cloud) usage analytics — see
+							// agon_ui/src/lib/posthog.ts. Public/client-safe project API
+							// key, same as the Firebase/Maps keys above. Not automatable
+							// (no infra-provisioned PostHog project); set via
+							// `pulumi config set posthogKey`/`posthogHost`. Unset leaves
+							// analytics disabled client-side.
+							{
+								name: "VITE_POSTHOG_KEY",
+								value: config.get("posthogKey"),
+							},
+							{
+								name: "VITE_POSTHOG_HOST",
+								value: config.get("posthogHost"),
+							},
+							// One PostHog project is shared across stacks — tag every
+							// event with the stack name so staging/prod can be told
+							// apart (see agon_ui/src/lib/posthog.ts).
+							{
+								name: "VITE_POSTHOG_ENVIRONMENT",
+								value: pulumi.getStack(),
+							},
 						],
 					},
 				],
@@ -1947,7 +2133,7 @@ const uiService = new k8s.core.v1.Service("agon-ui-service", {
 	},
 }, { provider: k8sProvider });
 
-const fullDomain = `agon.${baseDomain}`;
+const fullDomain = uiHostname;
 
 const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
 	apiVersion: "cert-manager.io/v1",
@@ -1999,7 +2185,15 @@ new k8s.networking.v1.Ingress("agon-api-ingress", {
 		namespace: "default",
 		annotations: {
 			"kubernetes.io/ingress.class": "nginx",
-			"cert-manager.io/cluster-issuer": issuer.metadata.name,
+			// No cluster-issuer annotation here: this ingress shares its TLS
+			// secret (`agon-cert`) with `agon-ingress`, which already carries
+			// the annotation. Annotating both triggers cert-manager's
+			// ingress-shim controller to separately reconcile the *same*
+			// Certificate object from two different Ingresses, which races
+			// with the explicit `certificate` CustomResource above over
+			// ownership of `.spec.dnsNames` (Server-Side Apply field
+			// conflict) — most visible on a brand-new cluster's first apply,
+			// before ownership has settled.
 			"nginx.ingress.kubernetes.io/rewrite-target": "/$2",
 			"nginx.ingress.kubernetes.io/use-regex": "true",
 		},

@@ -4,79 +4,61 @@
 //! module is the single place that translates between the two, so handlers stay
 //! thin and the coupling lives in one file.
 
+use std::collections::HashMap;
+
 use poem::error::InternalServerError;
 use tracing::error;
 
-use crate::detailed_score::cricket::{
-    CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
-    CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
-    CricketFallOfWicket, NextBallContext, Overs, balls_to_overs,
-};
-use crate::detailed_score::football::{
-    FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
-    FootballPeriod, FootballSubstitutionEvent,
-};
-use crate::detailed_score::netball::{
-    NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
-};
-use crate::live_score::{
-    LiveEvent, LiveEventInput, NewLiveEventInput,
-    cricket::{
-        CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
-        InningsEndReason,
-    },
-    football::{FootballLiveEvent, FootballPeriodEvent},
-    netball::{NetballLiveEvent, NetballPeriodEvent},
-};
-use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, NetballFormat};
+use crate::live_score::{LiveEvent, LiveEventInput, NewLiveEventInput};
+use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
-    TokenInvitation, UserInvitation, UserMember,
+    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, JoinRequest,
+    JoinRequestStatus, MatchPlayerRole, Member, OpenJoinAudience, OpenJoinPolicy, OpenJoinScope,
+    OpenJoinScopeKind, SideOpenJoinPolicy, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
-    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
-    TeamMatchJoinableNotification,
+    MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
+    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    TeamInvitationNotification, TeamMatchJoinableNotification,
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
+    BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
     CreateMatchSeriesEndInput, CreateMatchSeriesEndNeverInput, CreateMatchSeriesEndOnDateInput,
-    CricketPlayerStats, CricketScore, CricketScoreInnings, DevicePlatform, FeedMatch,
-    FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match, MatchOutcome,
-    MatchPlayer, MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide,
-    MatchSocial, MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer,
-    Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    DevicePlatform, FeedMatch, GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer,
+    MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
+    MatchStatus, MatchTournamentInfo, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score,
+    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, SquadLabel, Tournament,
+    TournamentEntry, TournamentEntryAudience, TournamentFormat, TournamentGenerationInput,
+    TournamentGenerationManualInput, TournamentGenerationRoundRobinInput, TournamentMatchSummary,
+    TournamentSeeding, UserProfile, UserStats,
 };
-use agon_core::dao::error::DaoError;
-use agon_core::dao::live_score_ops::NewLiveEvent;
-use agon_core::dao::records::{
-    BestBowlingFiguresRecord, BestFigureRecord, CommentRecord, ConfirmedScoreRecord,
-    CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
-    CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
-    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
-    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
-    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
-    CricketStatsRecord, DevicePlatform as DevicePlatformRecord, EmbeddedInvitationRecord,
-    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
-    FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
+use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
+use agon_services_core::dao::error::DaoError;
+use agon_services_core::sports::SportRecord;
+
+use crate::sports::Sport;
+use agon_services_core::dao::live_score_ops::NewLiveEvent;
+use agon_services_core::dao::records::{
+    BestFigureRecord, CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
+    EligibilityRuleRecord, EmbeddedInvitationRecord, GenericSportStatsRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
     JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
-    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchFormatRecord, MatchJoinRequestRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
-    NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
-    NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    NotificationKindRecord, NotificationRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
+    OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
+    SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord,
+    TournamentGenerationRecord, TournamentRecord, TournamentRoundInfo, TournamentSeedingRecord,
+    TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
 };
-use agon_core::rating::ladder_for_tag;
+use agon_services_core::rating::ladder_for_tag;
+use agon_services_core::rating::{PLACEMENT_MATCHES, display, published};
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
 /// defaulting to the epoch on a malformed value (reads never fail on bad data).
@@ -100,32 +82,453 @@ pub fn dao_internal(err: DaoError) -> poem::Error {
     InternalServerError(err)
 }
 
-/// Parse a stored sport tag into the API enum, defaulting unknown values rather
-/// than failing a read.
-pub fn match_type_from_tag(tag: &str) -> MatchType {
-    match tag {
-        "tennis" => MatchType::Tennis,
-        "badminton" => MatchType::Badminton,
-        "squash" => MatchType::Squash,
-        "table_tennis" => MatchType::TableTennis,
-        "football" => MatchType::Football,
-        "cricket" => MatchType::Cricket,
-        "netball" => MatchType::Netball,
-        _ => MatchType::Other,
+/// Every `MatchType`/`Score`/`MatchFormat`/`LiveEventInput` conversion and
+/// per-sport dispatch the boundary layer needs, generated from the sport
+/// registry (`agon_services_core::for_each_sport!`). Each modeled sport's arm calls
+/// its `Sport` impl.
+macro_rules! define_sport_dispatch {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// Parse a stored sport tag into the API enum, defaulting unknown values
+        /// rather than failing a read.
+        pub fn match_type_from_tag(tag: &str) -> MatchType {
+            match tag {
+                $( $gtag => MatchType::$gvariant, )*
+                $( $tag => MatchType::$variant, )+
+                _ => MatchType::Other,
+            }
+        }
+
+        /// The stored string tag for an API sport enum.
+        pub fn match_type_tag(mt: &MatchType) -> &'static str {
+            match mt {
+                $( MatchType::$gvariant => $gtag, )*
+                $( MatchType::$variant => $tag, )+
+                MatchType::Other => "other",
+            }
+        }
+
+        /// How a sport is named to people (e.g. share-card headings).
+        pub fn match_type_label(mt: &MatchType) -> &'static str {
+            match mt {
+                $( MatchType::$gvariant => $glabel, )*
+                $( MatchType::$variant => <agon_services_core::sports::$key::$variant as SportRecord>::LABEL, )+
+                MatchType::Other => "Match",
+            }
+        }
+
+        /// Whether a stored sport tag is one of the modeled sports — the ones
+        /// with a live event log and a persisted live score record.
+        pub fn is_live_scored_sport(tag: &str) -> bool {
+            matches!(tag, $( $tag )|+)
+        }
+
+        pub fn score_from_record(rec: &ScoreRecord) -> Score {
+            match rec {
+                ScoreRecord::Simple { entries } => Score::Simple(SimpleScore {
+                    entries: entries.clone(),
+                }),
+                ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
+                    entries: entries.clone(),
+                }),
+                $( ScoreRecord::$variant(r) => Score::$variant(<agon_services_core::sports::$key::$variant as Sport>::score_from_record(r)), )+
+            }
+        }
+
+        pub fn score_to_record(score: &Score) -> ScoreRecord {
+            match score {
+                Score::Simple(s) => ScoreRecord::Simple {
+                    entries: s.entries.clone(),
+                },
+                Score::Sets(s) => ScoreRecord::Sets {
+                    entries: s.entries.clone(),
+                },
+                $( Score::$variant(s) => ScoreRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::score_to_record(s)), )+
+            }
+        }
+
+        /// Wrap a `Score` into the `(sport, score)` record shape. The sport tag
+        /// mirrors the union variant so a read can pick the right variant.
+        pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScoreRecord {
+            let sport = match score {
+                Score::Simple(_) => "simple",
+                Score::Sets(_) => "sets",
+                $( Score::$variant(_) => $tag, )+
+            }
+            .to_string();
+            MatchScoreRecord {
+                sport,
+                score: score_to_record(score),
+                last_seq,
+            }
+        }
+
+        pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
+            score_from_record(&rec.score)
+        }
+
+        pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
+            match fmt {
+                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::format_to_record(f)), )+
+            }
+        }
+
+        /// Build the API `MatchFormat` from a stored record.
+        pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
+            match rec {
+                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(<agon_services_core::sports::$key::$variant as Sport>::format_from_record(f)), )+
+            }
+        }
+
+        /// The sport tag a `MatchFormat` is for — used to reject a format that
+        /// doesn't match the match's own sport.
+        pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
+            match fmt {
+                $( MatchFormat::$variant(_) => $tag, )+
+            }
+        }
+
+        /// The stored sport tag for a live event, mirroring the union variant so a
+        /// read can pick the right variant back out.
+        pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
+            match event {
+                $( LiveEventInput::$variant(_) => $tag, )+
+            }
+        }
+
+        pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
+            match event {
+                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::live_event_to_record(e)), )+
+            }
+        }
+
+        pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
+            match rec {
+                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(<agon_services_core::sports::$key::$variant as Sport>::live_event_from_record(e)), )+
+            }
+        }
+
+        /// Folds a match's live event log into its full detail. `None` if
+        /// `match_type` isn't a modeled sport.
+        ///
+        /// `records` is whatever the DAO currently has on record, in seq order — a
+        /// deleted event is already absent from it and an amended one already shows
+        /// its corrected content, so there's no filtering pass needed here.
+        pub fn derive_live_score(
+            match_type: &str,
+            records: &[LiveEventRecord],
+            format: Option<&MatchFormatRecord>,
+        ) -> Option<Score> {
+            match match_type {
+                $(
+                    $tag => {
+                        type S = agon_services_core::sports::$key::$variant;
+                        let events: Vec<_> = records
+                            .iter()
+                            .filter_map(|r| match &r.payload {
+                                LiveEventPayloadRecord::$variant(e) => Some((
+                                    parse_ts(&r.occurred_at),
+                                    <S as Sport>::live_event_from_record(e),
+                                )),
+                                #[allow(unreachable_patterns)]
+                                _ => None,
+                            })
+                            .collect();
+                        #[allow(unreachable_patterns)]
+                        let format = match format {
+                            Some(MatchFormatRecord::$variant(f)) => Some(<S as Sport>::format_from_record(f)),
+                            _ => None,
+                        };
+                        Some(Score::$variant(<S as Sport>::from_events(&events, format.as_ref())))
+                    }
+                )+
+                _ => None,
+            }
+        }
+
+        /// Map the stored, one-field-per-sport `UserStatsRecord` to the public
+        /// `UserStats` — `None` for any sport with no stored entry, same as the
+        /// DAO side.
+        pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
+            UserStats {
+                $( $key: stats.$key.as_ref().map(<agon_services_core::sports::$key::$variant as Sport>::stats_from_record), )+
+                $( $gkey: stats.$gkey.as_ref().map(generic_stats_from_record), )*
+                other: stats.other.as_ref().map(generic_stats_from_record),
+            }
+        }
+
+        /// Every side id a score references — what a submitted score is
+        /// validated against (each must be one of the match's own sides).
+        pub fn score_side_ids(score: &Score) -> Vec<&str> {
+            match score {
+                Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
+                Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::side_ids(s), )+
+            }
+        }
+
+        /// Re-point a `Score`'s request-scoped client ids to the real side/player
+        /// ids assigned at creation — side ids via `CreateMatchSideInput.client_id`,
+        /// player ids via a real user's own id or a guest's
+        /// `CreateMatchExternalInviteInput.client_id` (see `create_match`).
+        /// Returns `None` if any referenced side or player is unknown.
+        pub fn resolve_score_ids(
+            score: &Score,
+            side_ids: &HashMap<String, String>,
+            player_ids: &HashMap<String, String>,
+        ) -> Option<Score> {
+            let map = |client_id: &str| side_ids.get(client_id).cloned();
+            match score {
+                Score::Simple(s) => {
+                    let mut entries = HashMap::with_capacity(s.entries.len());
+                    for (side_id, points) in &s.entries {
+                        entries.insert(map(side_id)?, *points);
+                    }
+                    Some(Score::Simple(SimpleScore { entries }))
+                }
+                Score::Sets(s) => {
+                    let mut entries = HashMap::with_capacity(s.entries.len());
+                    for (side_id, sets) in &s.entries {
+                        entries.insert(map(side_id)?, sets.clone());
+                    }
+                    Some(Score::Sets(SetsScore { entries }))
+                }
+                $(
+                    Score::$variant(s) => Some(Score::$variant(
+                        <agon_services_core::sports::$key::$variant as Sport>::resolve_ids(s, side_ids, player_ids)?,
+                    )),
+                )+
+            }
+        }
+
+        /// Set a score's resolved-players map, whichever variant it is. No-op
+        /// for `Score::Simple`/`Score::Sets`, which have no such field.
+        pub fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
+            match score {
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::set_players(s, resolved), )+
+                Score::Simple(_) | Score::Sets(_) => {}
+            }
+        }
+
+        /// Every player id referenced anywhere in a score — the set
+        /// `Api::hydrate_score_players` resolves names for. Empty for
+        /// `Score::Simple`/`Score::Sets`, which don't reference players.
+        pub fn score_player_ids(score: &Score) -> Vec<String> {
+            match score {
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::player_ids(s), )+
+                Score::Simple(_) | Score::Sets(_) => Vec::new(),
+            }
+        }
+
+        /// Derives the winner (when decidable) from a live-scored match's
+        /// persisted score — used by `update_match` to finish a live-scored
+        /// match without the client resubmitting a result the server can work
+        /// out. `side_ids` is the match's own two side ids. `None` for
+        /// `Score::Simple`/`Score::Sets`, where the client always supplies
+        /// `winner_side_id` itself.
+        pub fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
+            match score {
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::winner(s, side_ids), )+
+                Score::Simple(_) | Score::Sets(_) => None,
+            }
+        }
+
+        /// The incremental live-scoring fast path: folds `new_events` into
+        /// `score` in place. `false` if they couldn't be applied — an event for
+        /// a different sport than `score`'s (already rejected earlier in
+        /// `append_live_events`), or a `Simple`/`Sets` score (live scoring
+        /// never creates one).
+        pub fn apply_new_live_events(
+            score: &mut Score,
+            new_events: &[NewLiveEventInput],
+            format: Option<&MatchFormatRecord>,
+        ) -> bool {
+            match score {
+                $(
+                    Score::$variant(s) => {
+                        type S = agon_services_core::sports::$key::$variant;
+                        #[allow(unreachable_patterns)]
+                        let format = match format {
+                            Some(MatchFormatRecord::$variant(f)) => Some(<S as Sport>::format_from_record(f)),
+                            _ => None,
+                        };
+                        for e in new_events {
+                            #[allow(unreachable_patterns)]
+                            let LiveEventInput::$variant(event) = &e.event else {
+                                return false;
+                            };
+                            <S as Sport>::apply_event(s, e.occurred_at, event, format.as_ref());
+                        }
+                        true
+                    }
+                )+
+                Score::Simple(_) | Score::Sets(_) => false,
+            }
+        }
+    };
+}
+agon_services_core::for_each_sport!(define_sport_dispatch);
+
+/// How many matches `stats` records played in `sport_tag` (`match_type_tag`'s
+/// output) — the figure an `EligibilityRuleRecord::MinMatchesPlayed` rule
+/// judges a candidate against. `0` for a sport with no stored entry at all
+/// (nothing played, same as every sparse per-sport counter) and for `"other"`
+/// (no dedicated stats record for it — see `UserStatsRecord::other`, which
+/// *is* a `GenericSportStatsRecord`, but open-join eligibility on an
+/// uncategorized sport has nothing meaningful to compare, so it's always
+/// unmet rather than silently falling back to a wrong count).
+pub fn matches_played_for_sport(stats: &UserStatsRecord, sport_tag: &str) -> u64 {
+    match sport_tag {
+        "cricket" => stats
+            .cricket
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "football" => stats
+            .football
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "tennis" => stats.tennis.as_ref().map_or(0, |s| s.matches_played),
+        "badminton" => stats.badminton.as_ref().map_or(0, |s| s.matches_played),
+        "squash" => stats.squash.as_ref().map_or(0, |s| s.matches_played),
+        "table_tennis" => stats.table_tennis.as_ref().map_or(0, |s| s.matches_played),
+        "netball" => stats
+            .netball
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        _ => 0,
     }
 }
 
-/// The stored string tag for an API sport enum.
-pub fn match_type_tag(mt: &MatchType) -> &'static str {
-    match mt {
-        MatchType::Tennis => "tennis",
-        MatchType::Badminton => "badminton",
-        MatchType::Squash => "squash",
-        MatchType::TableTennis => "table_tennis",
-        MatchType::Football => "football",
-        MatchType::Cricket => "cricket",
-        MatchType::Netball => "netball",
-        MatchType::Other => "other",
+pub fn open_join_audience_from_record(rec: OpenJoinAudienceRecord) -> OpenJoinAudience {
+    match rec {
+        OpenJoinAudienceRecord::Individuals => OpenJoinAudience::Individuals,
+        OpenJoinAudienceRecord::Teams => OpenJoinAudience::Teams,
+        OpenJoinAudienceRecord::Both => OpenJoinAudience::Both,
+    }
+}
+
+pub fn open_join_audience_to_record(audience: OpenJoinAudience) -> OpenJoinAudienceRecord {
+    match audience {
+        OpenJoinAudience::Individuals => OpenJoinAudienceRecord::Individuals,
+        OpenJoinAudience::Teams => OpenJoinAudienceRecord::Teams,
+        OpenJoinAudience::Both => OpenJoinAudienceRecord::Both,
+    }
+}
+
+/// Build the API `OpenJoinPolicy` from the stored record, flattening
+/// `rules` back into `min_matches_played` — the inverse of
+/// `open_join_policy_to_record`. A stored `MinRating` rule (not settable
+/// through this API today, only ever written directly) is silently dropped
+/// rather than surfaced, same as any other field this read side doesn't
+/// have a slot for.
+pub fn open_join_policy_from_record(rec: &OpenJoinPolicyRecord) -> OpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    OpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+        max_open_spots: rec.max_open_spots,
+    }
+}
+
+/// Build the stored record from the API input — the inverse of
+/// `open_join_policy_from_record`.
+pub fn open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> OpenJoinPolicyRecord {
+    OpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+        max_open_spots: input.max_open_spots,
+    }
+}
+
+/// Flatten an `OpenJoinPolicyInput`'s named eligibility fields into
+/// `EligibilityRuleRecord`s — shared by `open_join_policy_to_record` (match-
+/// wide) and `side_open_join_policy_to_record` (per-side), which differ only
+/// in what they do with `max_open_spots`.
+fn open_join_rules_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> Vec<EligibilityRuleRecord> {
+    let mut rules = Vec::new();
+    if let Some(min) = input.min_matches_played {
+        rules.push(EligibilityRuleRecord::MinMatchesPlayed { min });
+    }
+    rules
+}
+
+/// Build the API `OpenJoinScope` from the stored record — the inverse of
+/// how `set_open_join_policy` builds an `OpenJoinScopeRecord` from
+/// `OpenJoinScopeInput`.
+pub fn open_join_scope_from_record(rec: &OpenJoinScopeRecord) -> OpenJoinScope {
+    match rec {
+        OpenJoinScopeRecord::MatchWide(policy) => OpenJoinScope {
+            mode: OpenJoinScopeKind::MatchWide,
+            policy: Some(open_join_policy_from_record(policy)),
+        },
+        OpenJoinScopeRecord::PerSide => OpenJoinScope {
+            mode: OpenJoinScopeKind::PerSide,
+            policy: None,
+        },
+    }
+}
+
+/// Build a side's own stored policy from the API input — the `per_side`-
+/// scope analogue of `open_join_policy_to_record`. The match-wide
+/// `max_open_spots` field has no side-level meaning here (a side caps
+/// itself via `MatchSideRecord::max_open_spots` instead), so it's dropped
+/// rather than surfaced on `OpenJoinPolicyInput`'s reused shape.
+pub fn side_open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> SideOpenJoinPolicyRecord {
+    SideOpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+    }
+}
+
+/// Build the API `SideOpenJoinPolicy` from a side's stored policy — the
+/// inverse of `side_open_join_policy_to_record`.
+pub fn side_open_join_policy_from_record(rec: &SideOpenJoinPolicyRecord) -> SideOpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    SideOpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+    }
+}
+
+/// Build the API `JoinRequest` for one request, hydrating name/avatar from
+/// an already fetched `users` batch — same pattern as
+/// `waitlist_entry_response`.
+pub fn join_request_response(
+    rec: &MatchJoinRequestRecord,
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> JoinRequest {
+    let record = users.get(&rec.user_id);
+    let status = match rec.status.as_str() {
+        "approved" => JoinRequestStatus::Approved,
+        "declined" => JoinRequestStatus::Declined,
+        _ => JoinRequestStatus::Pending,
+    };
+    JoinRequest {
+        user_id: rec.user_id.clone(),
+        name: record.map(|u| u.name.clone()).unwrap_or_default(),
+        avatar_url: record.and_then(|u| u.profile_image_url.clone()),
+        side_id: rec.side_id.clone(),
+        requested_at: parse_ts(&rec.requested_at),
+        status,
+        decided_at: rec.decided_at.as_deref().map(parse_ts),
     }
 }
 
@@ -180,28 +583,102 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
+        ratings: published_ratings_from_record(user),
     }
 }
 
-/// Map the stored, one-field-per-sport `UserStatsRecord` to the public
-/// `UserStats` — `None` for any sport with no stored entry, same as the DAO
-/// side.
-pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
-    UserStats {
-        cricket: stats.cricket.as_ref().map(cricket_stats_from_record),
-        football: stats.football.as_ref().map(football_stats_from_record),
-        tennis: stats.tennis.as_ref().map(generic_stats_from_record),
-        badminton: stats.badminton.as_ref().map(generic_stats_from_record),
-        squash: stats.squash.as_ref().map(generic_stats_from_record),
-        table_tennis: stats.table_tennis.as_ref().map(generic_stats_from_record),
-        netball: stats.netball.as_ref().map(generic_stats_from_record),
-        other: stats.other.as_ref().map(generic_stats_from_record),
+/// A user's published ratings, ordered by ladder, for any profile view.
+///
+/// The filter is the whole point: a stored rating exists for every ladder the
+/// user has played a ranked match on, and only the ones past placements may
+/// be shown. The rest are dropped here, at the one boundary where a rating
+/// becomes something anyone can read — rather than left to each caller to
+/// remember, which is how an unplaced number eventually reaches a response.
+///
+/// Used for the caller's own profile as well as everybody else's. A rating
+/// mid-placements is withheld from the player it belongs to too, so there is
+/// no second, more generous version of this function to keep in step.
+///
+/// Ordered by ladder for the reason [`rating_opt_ins_from_record`] is: the
+/// record is a map, and a list that reshuffles between two reads of an
+/// unchanged profile makes a client diff it for nothing.
+pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
+    let mut ratings: Vec<LadderRating> = user
+        .ratings
+        .iter()
+        .filter(|(_, rating)| published(rating.matches_rated))
+        .map(|(ladder, rating)| {
+            let display = display(rating.mu, rating.sigma);
+            LadderRating {
+                ladder: ladder.clone(),
+                rating: display.rating,
+                confidence: display.confidence,
+                floor: display.floor,
+                matches_rated: rating.matches_rated as u32,
+            }
+        })
+        .collect();
+    ratings.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    ratings
+}
+
+/// A user's in-progress placements, ordered by ladder, for their own
+/// `/users/me`.
+///
+/// Complements [`published_ratings_from_record`] exactly: every ladder with a
+/// stored rating is in one list or the other, never both and never neither.
+/// Together they are the answer to "where do I stand", which is why this one
+/// is only ever sent to the player themselves — "two more games" is progress
+/// they are owed, and a stranger's placement progress is a hint about a
+/// number deliberately withheld.
+///
+/// A ladder with no rating stored is simply absent. There is no act that
+/// starts placements early any more: the counter and the rating are written
+/// by the same match, so nought played and no rating are the same state.
+/// One stored rating movement as a chart point.
+///
+/// `rating`, `confidence`, `floor` and `rating_before` are all *displayed*
+/// numbers, computed through `rating::scale` here like every other rating the
+/// API returns, so retuning the scale moves every chart at once rather than
+/// needing a backfill. `delta` is the deliberate exception: it is read
+/// straight off the record because it is a log of what the player was told on
+/// the day, and recomputing it would quietly rewrite that.
+#[must_use]
+pub fn rating_history_point_from_record(
+    rec: &agon_services_core::dao::records::RatingHistoryRecord,
+) -> RatingHistoryPoint {
+    let after = display(rec.movement.mu_after, rec.movement.sigma_after);
+    RatingHistoryPoint {
+        match_id: rec.match_id.clone(),
+        played_at: parse_ts(&rec.played_at),
+        rating: after.rating,
+        confidence: after.confidence,
+        floor: after.floor,
+        rating_before: display(rec.movement.mu_before, rec.movement.sigma_before).rating,
+        delta: rec.movement.display_delta,
     }
+}
+
+pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
+    let mut placements: Vec<LadderPlacement> = user
+        .ratings
+        .iter()
+        .filter(|(_, rating)| !published(rating.matches_rated))
+        .map(|(ladder, rating)| LadderPlacement {
+            ladder: ladder.clone(),
+            played: rating.matches_rated as u32,
+            required: PLACEMENT_MATCHES as u32,
+        })
+        .collect();
+    placements.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    placements
 }
 
 /// Map the counters common to every sport, deriving win % from matches
-/// played. Shared by every per-sport mapping function below.
-fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStats {
+/// played. Shared by every sport's own `stats_from_record`
+/// (`crate::sports::<sport>`) and the generic sports' entries in
+/// `user_stats_from_record`.
+pub(crate) fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStats {
     let win_percentage = if rec.matches_played == 0 {
         None
     } else {
@@ -216,63 +693,10 @@ fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStat
     }
 }
 
-fn cricket_stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
-    let strike_rate =
-        (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
-    let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
-    let economy =
-        (rec.balls_bowled > 0).then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
-    CricketPlayerStats {
-        common: generic_stats_from_record(&rec.common),
-        runs: rec.runs as i32,
-        wickets: rec.wickets as i32,
-        fours: rec.fours as i32,
-        sixes: rec.sixes as i32,
-        balls_faced: rec.balls_faced as i32,
-        dismissals: rec.dismissals as i32,
-        catches: rec.catches as i32,
-        runs_conceded: rec.runs_conceded as i32,
-        overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
-        strike_rate,
-        batting_average,
-        economy,
-        best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
-        best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
-    }
-}
-
-fn football_stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats {
-    FootballPlayerStats {
-        common: generic_stats_from_record(&rec.common),
-        goals: rec.goals as i32,
-        assists: rec.assists as i32,
-        best_goals: rec.best_goals.as_ref().map(best_figure_from_record),
-        best_goal_contributions: rec
-            .best_goal_contributions
-            .as_ref()
-            .map(best_figure_from_record),
-    }
-}
-
 /// Map a stored personal-best entry to the API model.
-fn best_figure_from_record(b: &BestFigureRecord) -> BestFigure {
+pub(crate) fn best_figure_from_record(b: &BestFigureRecord) -> BestFigure {
     BestFigure {
         value: b.value as i32,
-        match_id: b.match_id.clone(),
-    }
-}
-
-/// Map a stored best-bowling-spell entry to the API model.
-fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures {
-    BestBowlingFigures {
-        wickets: b.wickets as i32,
-        runs_conceded: b.runs_conceded as i32,
-        // The exact figure from that one match — no conversion/assumption
-        // needed, unlike `overs_bowled` below (a cross-match total).
-        overs: Overs {
-            overs: b.overs.overs,
-            balls: b.overs.balls,
-        },
         match_id: b.match_id.clone(),
     }
 }
@@ -395,364 +819,163 @@ pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> Matc
     }
 }
 
+/// Collapses `TournamentRecord::team_formation` (`None` for every
+/// tournament except a teamless one) into the two plain strings the API
+/// exposes, same spirit as `format`/`seeding`'s own open-string fields.
+pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
+    let (team_formation, team_formation_auto_by) = match &rec.team_formation {
+        None => (None, None),
+        Some(TournamentTeamFormationRecord::Manual) => (Some("manual".to_string()), None),
+        Some(TournamentTeamFormationRecord::Auto { by }) => {
+            (Some("auto".to_string()), Some(by.clone()))
+        }
+    };
+    Tournament {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        format: tournament_format_from_record(rec.format),
+        match_format: rec.match_format.as_ref().map(match_format_from_record),
+        status: rec.status.clone(),
+        entry_audience: tournament_entry_audience_from_record(rec.entry_audience),
+        team_formation,
+        team_formation_auto_by,
+        squad_size: rec.squad_size,
+        min_teams: rec.min_teams,
+        max_teams: rec.max_teams,
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        first_round_starts_at: parse_ts(&rec.first_round_starts_at),
+        timezone: rec.timezone.clone(),
+        points_win: rec.points_win,
+        points_draw: rec.points_draw,
+        points_loss: rec.points_loss,
+        seeding: tournament_seeding_from_record(rec.seeding),
+        generation: match rec.format {
+            TournamentFormatRecord::Knockout => None,
+            TournamentFormatRecord::League => {
+                Some(tournament_generation_from_record(rec.generation))
+            }
+        },
+        entry_count: rec.entry_count,
+        squad_labels: rec
+            .squad_labels
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    SquadLabel {
+                        name: v.name.clone(),
+                        colour: v.colour.clone(),
+                    },
+                )
+            })
+            .collect(),
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_generation_from_record(
+    rec: TournamentGenerationRecord,
+) -> TournamentGenerationInput {
+    match rec {
+        TournamentGenerationRecord::Manual => {
+            TournamentGenerationInput::Manual(TournamentGenerationManualInput {})
+        }
+        TournamentGenerationRecord::RoundRobin { times } => {
+            TournamentGenerationInput::RoundRobin(TournamentGenerationRoundRobinInput { times })
+        }
+    }
+}
+
+pub fn tournament_format_from_record(rec: TournamentFormatRecord) -> TournamentFormat {
+    match rec {
+        TournamentFormatRecord::Knockout => TournamentFormat::Knockout,
+        TournamentFormatRecord::League => TournamentFormat::League,
+    }
+}
+
+pub fn tournament_entry_audience_from_record(
+    rec: TournamentEntryAudienceRecord,
+) -> TournamentEntryAudience {
+    match rec {
+        TournamentEntryAudienceRecord::Teams => TournamentEntryAudience::Teams,
+        TournamentEntryAudienceRecord::Players => TournamentEntryAudience::Players,
+    }
+}
+
+pub fn tournament_seeding_from_record(rec: TournamentSeedingRecord) -> TournamentSeeding {
+    match rec {
+        TournamentSeedingRecord::Random => TournamentSeeding::Random,
+        TournamentSeedingRecord::Manual => TournamentSeeding::Manual,
+    }
+}
+
+/// A match's `MatchTournamentInfo`, if it was generated by a tournament —
+/// shared by `match_from_records`, `feed_match_from_records` and
+/// `search_match_from_records` so a client can link back to the tournament
+/// from any of the three without a second lookup. `tournaments` is a
+/// pre-fetched batch (see `Dao::batch_get_tournaments`), keyed by tournament
+/// id — `None` if the match's tournament isn't in it (shouldn't happen for a
+/// live tournament_id, but a match outlives nothing getting deleted, so this
+/// degrades to no tournament info rather than panicking).
+fn match_tournament_info_from_record(
+    rec: &MatchRecord,
+    tournaments: &std::collections::HashMap<String, TournamentRecord>,
+) -> Option<MatchTournamentInfo> {
+    let tournament_id = rec.tournament_id.clone()?;
+    let tournament = tournaments.get(&tournament_id)?;
+    let round_info = rec
+        .tournament_round
+        .unwrap_or(TournamentRoundInfo { round: 0, slot: 0 });
+    Some(MatchTournamentInfo {
+        tournament_id,
+        tournament_name: tournament.name.clone(),
+        format: tournament_format_from_record(tournament.format),
+        status: tournament.status.clone(),
+        round: round_info.round,
+        slot: round_info.slot,
+    })
+}
+
+/// `GET /tournaments/{id}/matches` row — the fields a bracket/fixtures list
+/// needs, deliberately lighter than `match_from_records` (no roster lookup).
+pub fn tournament_match_summary_from_record(rec: &MatchRecord) -> TournamentMatchSummary {
+    let round_info = rec
+        .tournament_round
+        .unwrap_or(TournamentRoundInfo { round: 0, slot: 0 });
+    TournamentMatchSummary {
+        id: rec.id.clone(),
+        round: round_info.round,
+        slot: round_info.slot,
+        starts_at: parse_ts(&rec.starts_at),
+        status: match_status_from_str(&rec.status),
+        sides: rec.sides.values().map(match_side_from_record).collect(),
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
+    }
+}
+
+pub fn tournament_entry_from_record(rec: &TournamentEntryRecord) -> TournamentEntry {
+    TournamentEntry {
+        tournament_id: rec.tournament_id.clone(),
+        entrant_id: rec.entrant_id.clone(),
+        status: rec.status.clone(),
+        seed: rec.seed,
+        squad: rec.squad,
+        added_by_user_id: rec.added_by_user_id.clone(),
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
 // ===========================================================================
 // Score (union) <-> ScoreRecord
 // ===========================================================================
-
-pub fn score_from_record(rec: &ScoreRecord) -> Score {
-    match rec {
-        ScoreRecord::Simple { entries } => Score::Simple(SimpleScore {
-            entries: entries.clone(),
-        }),
-        ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
-            entries: entries.clone(),
-        }),
-        ScoreRecord::Cricket {
-            innings,
-            recent_deliveries,
-            next_ball_context,
-            awaiting_next_innings,
-        } => Score::Cricket(CricketScore {
-            innings: innings
-                .iter()
-                .map(cricket_score_innings_from_record)
-                .collect(),
-            recent_deliveries: recent_deliveries
-                .as_ref()
-                .map(|ds| ds.iter().map(cricket_delivery_from_record).collect()),
-            next_ball_context: next_ball_context
-                .as_ref()
-                .map(next_ball_context_from_record),
-            awaiting_next_innings: *awaiting_next_innings,
-            // Not stored — `Api::hydrate_score_players` fills this afterward
-            // (see `CricketScore::players`' doc comment).
-            players: std::collections::HashMap::new(),
-        }),
-        ScoreRecord::Football {
-            score,
-            goals,
-            cards,
-            substitutions,
-            period,
-            period_times,
-            penalty_shootout,
-            penalty_shootout_score,
-        } => Score::Football(FootballScore {
-            score: score.clone(),
-            goals: goals
-                .as_ref()
-                .map(|gs| gs.iter().map(football_goal_event_from_record).collect()),
-            cards: cards
-                .as_ref()
-                .map(|cs| cs.iter().map(football_card_event_from_record).collect()),
-            substitutions: substitutions.as_ref().map(|subs| {
-                subs.iter()
-                    .map(football_substitution_event_from_record)
-                    .collect()
-            }),
-            period: period.as_ref().map(football_period_from_record),
-            period_times: period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| (football_period_from_record(p), parse_ts(t)))
-                    .collect()
-            }),
-            penalty_shootout: penalty_shootout.as_ref().map(|ks| {
-                ks.iter()
-                    .map(|k| FootballPenaltyShootoutKick {
-                        side_id: k.side_id.clone(),
-                        scored: k.scored,
-                    })
-                    .collect()
-            }),
-            penalty_shootout_score: penalty_shootout_score.clone(),
-            // Not stored — `Api::hydrate_score_players` fills this afterward.
-            players: std::collections::HashMap::new(),
-        }),
-        ScoreRecord::Netball {
-            score,
-            goals,
-            fouls,
-            period,
-            period_times,
-            period_scores,
-        } => Score::Netball(NetballScore {
-            score: score.clone(),
-            goals: goals
-                .as_ref()
-                .map(|gs| gs.iter().map(netball_goal_event_from_record).collect()),
-            fouls: fouls
-                .as_ref()
-                .map(|fs| fs.iter().map(netball_foul_event_from_record).collect()),
-            period: period.as_ref().map(netball_period_from_record),
-            period_times: period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| (netball_period_from_record(p), parse_ts(t)))
-                    .collect()
-            }),
-            period_scores: period_scores.as_ref().map(|pss| {
-                pss.iter()
-                    .map(|(p, entries)| (netball_period_from_record(p), entries.clone()))
-                    .collect()
-            }),
-            // Not stored — `Api::hydrate_score_players` fills this afterward.
-            players: std::collections::HashMap::new(),
-        }),
-    }
-}
-
-fn overs_from_record(rec: &OversRecord) -> Overs {
-    Overs {
-        overs: rec.overs,
-        balls: rec.balls,
-    }
-}
-
-fn overs_to_record(overs: &Overs) -> OversRecord {
-    OversRecord {
-        overs: overs.overs,
-        balls: overs.balls,
-    }
-}
-
-fn cricket_dismissal_to_record(d: &CricketDismissal) -> CricketDismissalRecord {
-    CricketDismissalRecord {
-        kind: cricket_dismissal_kind_to_record(&d.kind),
-        bowler_player_id: d.bowler_player_id.clone(),
-        fielder_player_id: d.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_dismissal_from_record(rec: &CricketDismissalRecord) -> CricketDismissal {
-    CricketDismissal {
-        kind: cricket_dismissal_kind_from_record(&rec.kind),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        fielder_player_id: rec.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_batting_entry_to_record(b: &CricketBattingEntry) -> CricketBattingEntryRecord {
-    CricketBattingEntryRecord {
-        player_id: b.player_id.clone(),
-        runs: b.runs,
-        balls_faced: b.balls_faced,
-        fours: b.fours,
-        sixes: b.sixes,
-        dismissal: b.dismissal.as_ref().map(cricket_dismissal_to_record),
-        batting_position: b.batting_position,
-    }
-}
-
-fn cricket_batting_entry_from_record(rec: &CricketBattingEntryRecord) -> CricketBattingEntry {
-    CricketBattingEntry {
-        player_id: rec.player_id.clone(),
-        runs: rec.runs,
-        balls_faced: rec.balls_faced,
-        fours: rec.fours,
-        sixes: rec.sixes,
-        dismissal: rec.dismissal.as_ref().map(cricket_dismissal_from_record),
-        batting_position: rec.batting_position,
-    }
-}
-
-fn cricket_bowling_entry_to_record(b: &CricketBowlingEntry) -> CricketBowlingEntryRecord {
-    CricketBowlingEntryRecord {
-        player_id: b.player_id.clone(),
-        overs: overs_to_record(&b.overs),
-        maidens: b.maidens,
-        runs_conceded: b.runs_conceded,
-        wickets: b.wickets,
-        wides: b.wides,
-        no_balls: b.no_balls,
-    }
-}
-
-fn cricket_bowling_entry_from_record(rec: &CricketBowlingEntryRecord) -> CricketBowlingEntry {
-    CricketBowlingEntry {
-        player_id: rec.player_id.clone(),
-        overs: overs_from_record(&rec.overs),
-        maidens: rec.maidens,
-        runs_conceded: rec.runs_conceded,
-        wickets: rec.wickets,
-        wides: rec.wides,
-        no_balls: rec.no_balls,
-    }
-}
-
-fn cricket_extras_to_record(e: &CricketExtras) -> CricketExtrasRecord {
-    CricketExtrasRecord {
-        byes: e.byes,
-        leg_byes: e.leg_byes,
-        wides: e.wides,
-        no_balls: e.no_balls,
-        penalty: e.penalty,
-    }
-}
-
-fn cricket_extras_from_record(rec: &CricketExtrasRecord) -> CricketExtras {
-    CricketExtras {
-        byes: rec.byes,
-        leg_byes: rec.leg_byes,
-        wides: rec.wides,
-        no_balls: rec.no_balls,
-        penalty: rec.penalty,
-    }
-}
-
-fn cricket_fall_of_wicket_to_record(f: &CricketFallOfWicket) -> CricketFallOfWicketRecord {
-    CricketFallOfWicketRecord {
-        wicket: f.wicket,
-        runs: f.runs,
-        player_id: f.player_id.clone(),
-        overs: f.overs.map(|o| overs_to_record(&o)),
-    }
-}
-
-fn cricket_fall_of_wicket_from_record(rec: &CricketFallOfWicketRecord) -> CricketFallOfWicket {
-    CricketFallOfWicket {
-        wicket: rec.wicket,
-        runs: rec.runs,
-        player_id: rec.player_id.clone(),
-        overs: rec.overs.map(|o| overs_from_record(&o)),
-    }
-}
-
-fn cricket_score_innings_to_record(i: &CricketScoreInnings) -> CricketScoreInningsRecord {
-    CricketScoreInningsRecord {
-        batting_side_id: i.batting_side_id.clone(),
-        bowling_side_id: i.bowling_side_id.clone(),
-        runs: i.runs,
-        wickets: i.wickets,
-        overs: overs_to_record(&i.overs),
-        declared: i.declared,
-        batting: i
-            .batting
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_batting_entry_to_record).collect()),
-        bowling: i
-            .bowling
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_bowling_entry_to_record).collect()),
-        fall_of_wickets: i
-            .fall_of_wickets
-            .as_ref()
-            .map(|fs| fs.iter().map(cricket_fall_of_wicket_to_record).collect()),
-        extras: i.extras.as_ref().map(cricket_extras_to_record),
-    }
-}
-
-fn cricket_score_innings_from_record(rec: &CricketScoreInningsRecord) -> CricketScoreInnings {
-    CricketScoreInnings {
-        batting_side_id: rec.batting_side_id.clone(),
-        bowling_side_id: rec.bowling_side_id.clone(),
-        runs: rec.runs,
-        wickets: rec.wickets,
-        overs: overs_from_record(&rec.overs),
-        declared: rec.declared,
-        batting: rec
-            .batting
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_batting_entry_from_record).collect()),
-        bowling: rec
-            .bowling
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_bowling_entry_from_record).collect()),
-        fall_of_wickets: rec
-            .fall_of_wickets
-            .as_ref()
-            .map(|fs| fs.iter().map(cricket_fall_of_wicket_from_record).collect()),
-        extras: rec.extras.as_ref().map(cricket_extras_from_record),
-    }
-}
-
-pub fn score_to_record(score: &Score) -> ScoreRecord {
-    match score {
-        Score::Simple(s) => ScoreRecord::Simple {
-            entries: s.entries.clone(),
-        },
-        Score::Sets(s) => ScoreRecord::Sets {
-            entries: s.entries.clone(),
-        },
-        Score::Cricket(s) => ScoreRecord::Cricket {
-            innings: s
-                .innings
-                .iter()
-                .map(cricket_score_innings_to_record)
-                .collect(),
-            recent_deliveries: s
-                .recent_deliveries
-                .as_ref()
-                .map(|ds| ds.iter().map(cricket_delivery_to_record).collect()),
-            next_ball_context: s
-                .next_ball_context
-                .as_ref()
-                .map(next_ball_context_to_record),
-            awaiting_next_innings: s.awaiting_next_innings,
-        },
-        Score::Football(s) => ScoreRecord::Football {
-            score: s.score.clone(),
-            goals: s
-                .goals
-                .as_ref()
-                .map(|gs| gs.iter().map(football_goal_event_to_record).collect()),
-            cards: s
-                .cards
-                .as_ref()
-                .map(|cs| cs.iter().map(football_card_event_to_record).collect()),
-            substitutions: s.substitutions.as_ref().map(|subs| {
-                subs.iter()
-                    .map(football_substitution_event_to_record)
-                    .collect()
-            }),
-            period: s.period.as_ref().map(football_period_to_record),
-            period_times: s.period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| {
-                        (
-                            football_period_to_record(p),
-                            t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                        )
-                    })
-                    .collect()
-            }),
-            penalty_shootout: s.penalty_shootout.as_ref().map(|ks| {
-                ks.iter()
-                    .map(|k| FootballPenaltyShootoutKickRecord {
-                        side_id: k.side_id.clone(),
-                        scored: k.scored,
-                    })
-                    .collect()
-            }),
-            penalty_shootout_score: s.penalty_shootout_score.clone(),
-        },
-        Score::Netball(s) => ScoreRecord::Netball {
-            score: s.score.clone(),
-            goals: s
-                .goals
-                .as_ref()
-                .map(|gs| gs.iter().map(netball_goal_event_to_record).collect()),
-            fouls: s
-                .fouls
-                .as_ref()
-                .map(|fs| fs.iter().map(netball_foul_event_to_record).collect()),
-            period: s.period.as_ref().map(netball_period_to_record),
-            period_times: s.period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| {
-                        (
-                            netball_period_to_record(p),
-                            t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                        )
-                    })
-                    .collect()
-            }),
-            period_scores: s.period_scores.as_ref().map(|pss| {
-                pss.iter()
-                    .map(|(p, entries)| (netball_period_to_record(p), entries.clone()))
-                    .collect()
-            }),
-        },
-    }
-}
 
 pub fn confirmed_score_from_record(rec: &ConfirmedScoreRecord) -> ConfirmedScore {
     ConfirmedScore {
@@ -931,6 +1154,7 @@ pub fn invitation_from_record(rec: &InvitationRecord) -> Invitation {
         invited_at: parse_ts(&rec.invited_at),
         responded_at: parse_ts_opt(&rec.responded_at),
         kind: invitation_kind_from_record(&rec.kind),
+        reserve_spot: rec.reserve_spot,
     }
 }
 
@@ -957,6 +1181,7 @@ pub fn invitation_from_embedded(rec: &EmbeddedInvitationRecord) -> Invitation {
         invited_at: parse_ts(&rec.invited_at),
         responded_at: parse_ts_opt(&rec.responded_at),
         kind: invitation_kind_from_record(&rec.kind),
+        reserve_spot: rec.reserve_spot,
     }
 }
 
@@ -1041,6 +1266,8 @@ pub fn team_from_records(team: &TeamRecord, is_followed_by_me: bool) -> Team {
         invite_token: team.invite_token.clone(),
         follower_count: team.follower_count as u32,
         is_followed_by_me,
+        colour: team.colour.clone(),
+        tournament_id: team.tournament_id.clone(),
     }
 }
 
@@ -1057,7 +1284,30 @@ pub fn team_list_item_from_record(team: &TeamRecord, is_followed_by_me: bool) ->
     }
 }
 
-pub fn match_player_from_record(rec: &MatchPlayerRecord) -> MatchPlayer {
+/// `match_record` supplies `authority` and `created_by_user_id` — see
+/// `agon_service::main::caller_match_authority_role`, the single place that
+/// lookup is implemented; this mirrors it per-player rather than importing
+/// it, since `main.rs` already depends on this module.
+pub fn match_player_from_record(
+    rec: &MatchPlayerRecord,
+    match_record: &MatchRecord,
+) -> MatchPlayer {
+    let authority_role = rec.user_id.as_deref().and_then(|uid| {
+        match_record
+            .authority
+            .get(uid)
+            .copied()
+            .or_else(|| {
+                (match_record.created_by_user_id == uid).then_some(MatchPlayerRoleRecord::Owner)
+            })
+            .or_else(|| {
+                match_record
+                    .side_authority
+                    .values()
+                    .any(|user_ids| user_ids.iter().any(|u| u == uid))
+                    .then_some(MatchPlayerRoleRecord::SideAdmin)
+            })
+    });
     MatchPlayer {
         member: member_from_parts(
             &rec.player_id,
@@ -1067,25 +1317,20 @@ pub fn match_player_from_record(rec: &MatchPlayerRecord) -> MatchPlayer {
         ),
         side_id: rec.side_id.clone(),
         is_member_of_team: rec.is_member_of_team,
-        role: match_player_role_from_record(rec.role),
+        role: match_player_role_from_record(
+            authority_role.unwrap_or(MatchPlayerRoleRecord::Player),
+        ),
     }
 }
 
-/// See `agon_core::dao::records::MatchPlayerRole`'s doc comment for why this
+/// See `agon_services_core::dao::records::MatchPlayerRole`'s doc comment for why this
 /// is its own type rather than a reuse of the team role.
 pub fn match_player_role_from_record(rec: MatchPlayerRoleRecord) -> MatchPlayerRole {
     match rec {
         MatchPlayerRoleRecord::Owner => MatchPlayerRole::Owner,
         MatchPlayerRoleRecord::Admin => MatchPlayerRole::Admin,
+        MatchPlayerRoleRecord::SideAdmin => MatchPlayerRole::SideAdmin,
         MatchPlayerRoleRecord::Player => MatchPlayerRole::Player,
-    }
-}
-
-pub fn match_player_role_to_record(role: MatchPlayerRole) -> MatchPlayerRoleRecord {
-    match role {
-        MatchPlayerRole::Owner => MatchPlayerRoleRecord::Owner,
-        MatchPlayerRole::Admin => MatchPlayerRoleRecord::Admin,
-        MatchPlayerRole::Player => MatchPlayerRoleRecord::Player,
     }
 }
 
@@ -1130,6 +1375,17 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
+        open_join_enabled: rec.open_join_enabled,
+        open_join: rec
+            .open_join
+            .as_ref()
+            .map(side_open_join_policy_from_record),
+        max_open_spots: rec.max_open_spots,
+        open_joined_count: rec.open_joined_count,
+        // Filled in afterward from `MatchRecord::side_authority` (this
+        // function only has the side record, not its parent match) — see
+        // `match_from_records`.
+        side_admin_user_ids: Vec::new(),
         // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
@@ -1249,10 +1505,17 @@ pub fn location_from_record(rec: &LocationRecord) -> Location {
 /// record the API didn't write, and `None` is the honest answer for it:
 /// nothing would rate it.
 pub fn rating_ladder(rec: &MatchRecord) -> Option<String> {
-    if !rec.ranked {
+    rating_ladder_for(&rec.match_type, rec.ranked)
+}
+
+/// [`rating_ladder`] for a match state that isn't a stored record: a sport tag
+/// and whether it would be ranked. `update_match` needs the ladder of the state
+/// a PATCH would leave the match in, before anything is written.
+pub fn rating_ladder_for(match_type: &str, ranked: bool) -> Option<String> {
+    if !ranked {
         return None;
     }
-    ladder_for_tag(&rec.match_type).map(|ladder| ladder.as_str().to_owned())
+    ladder_for_tag(match_type).map(|ladder| ladder.as_str().to_owned())
 }
 
 /// Why a match in sport `match_type` (a stored tag) can't be ranked, or
@@ -1269,11 +1532,15 @@ pub fn unrankable_sport_reason(match_type: &str) -> Option<String> {
 
 /// Build the API `Match` from a match record plus its sides and players.
 /// `i_liked` is a viewer-relative flag the caller resolves separately.
+/// `tournaments` is a pre-fetched batch (see `Dao::batch_get_tournaments`),
+/// keyed by tournament id — pass an empty map when the caller already knows
+/// the match isn't a tournament match.
 pub fn match_from_records(
     rec: &MatchRecord,
     sides: &[MatchSideRecord],
     players: &[MatchPlayerRecord],
     i_liked: bool,
+    tournaments: &std::collections::HashMap<String, TournamentRecord>,
 ) -> Match {
     Match {
         id: rec.id.clone(),
@@ -1292,8 +1559,22 @@ pub fn match_from_records(
                 asset_id: Some(p.asset_id.clone()),
             })
             .collect(),
-        sides: sides.iter().map(match_side_from_record).collect(),
-        players: players.iter().map(match_player_from_record).collect(),
+        sides: sides
+            .iter()
+            .map(|s| {
+                let mut side = match_side_from_record(s);
+                side.side_admin_user_ids = rec
+                    .side_authority
+                    .get(&side.id)
+                    .cloned()
+                    .unwrap_or_default();
+                side
+            })
+            .collect(),
+        players: players
+            .iter()
+            .map(|p| match_player_from_record(p, rec))
+            .collect(),
         confirmed_score: rec
             .confirmed_score
             .as_ref()
@@ -1307,12 +1588,22 @@ pub fn match_from_records(
         format: rec.format.as_ref().map(match_format_from_record),
         ranked: rec.ranked,
         rating_ladder: rating_ladder(rec),
+        // Needs a read of its own (the caller's `RATINGCONTRIB#` item on
+        // this match, and their current rating to check it is published at
+        // all), so `get_match` fills it in; every other caller of this
+        // mapper leaves it `None`. A match that was just created or just
+        // edited has no rating movement to report yet anyway — the pipeline
+        // runs off the stream.
+        viewer_rating_delta: None,
         // Set by the caller right after this call, from the same aggregate
         // this function already consumed (see `caller_match_role`'s call
         // sites in `main.rs`) — a placeholder here, since this pure mapping
         // function has no viewer to resolve it against.
         viewer_role: None,
         viewer_team_join_side_ids: None,
+        open_join: rec.open_join.as_ref().map(open_join_scope_from_record),
+        series_id: rec.series_id.clone(),
+        tournament: match_tournament_info_from_record(rec, tournaments),
     }
 }
 
@@ -1412,6 +1703,176 @@ pub fn ranked_lock_reason_for_update(
     None
 }
 
+/// Why a **rated** ranked match refuses this edit, or `None` if the request
+/// changes nothing its ratings were computed from.
+///
+/// A Weng-Lin update is not invertible: what a match did to you depends on
+/// every opponent's sigma at that moment, so there is no delta to subtract
+/// and a correction can only be made by replaying the ladder forward in
+/// played order. `RepairRatings` is that replay and isn't built, so today an
+/// edit that moves what a rating was built on leaves the stored number
+/// quietly wrong with nothing in the system that notices.
+///
+/// Three inputs are therefore closed once a ranked match has a confirmed
+/// score — the moment the pipeline will have rated it:
+///
+/// - **the roster**, because who played and which side they played for is
+///   literally what `rate_match` was given,
+/// - **the start time**, because ratings are applied in played order and
+///   moving a match reorders somebody's ladder,
+/// - **the status**, because cancelling a match it has already rated would
+///   need its effect withdrawn, which is the same non-invertible problem.
+///
+/// The **score stays editable, deliberately.** A wrong result is the thing
+/// most worth being able to fix, it is the one correction the pipeline
+/// already detects (`RepairTrigger::Rerated`), and refusing it would leave
+/// a typo permanent — strictly worse than a replayable mistake. Cosmetic
+/// fields (name, description, location, photos, side names and colours) are
+/// not considered here at all: no rating was ever computed from them.
+///
+/// Gated on `confirmed_score` rather than on a pending submission, because
+/// that is exactly what the rating pipeline gates on. A score still awaiting
+/// confirmation has rated nobody, so a roster edit underneath it is applied
+/// *before* the rating exists and is correct by construction.
+///
+/// Before any score, nothing is refused: the match hasn't been rated, and
+/// organising one is mostly roster edits.
+#[must_use]
+pub fn rated_ranked_edit_reason(
+    stored: &MatchRecord,
+    edits_roster: bool,
+    moves_start_time: bool,
+    changes_status: bool,
+) -> Option<&'static str> {
+    if !stored.ranked || stored.confirmed_score.is_none() {
+        return None;
+    }
+    if edits_roster {
+        return Some("a ranked match's roster is fixed once it has a score");
+    }
+    if moves_start_time {
+        return Some("a ranked match can't be rescheduled once it has a score");
+    }
+    if changes_status {
+        return Some("a ranked match's status is fixed once it has a score");
+    }
+    None
+}
+
+/// The players a match ranked on some ladder can't have in it, sorted by why.
+/// Built by [`unratable_players`]; empty means all of them can play.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UnratablePlayers {
+    /// Players with no Agon account, by display name. There is no profile to
+    /// keep a rating on, and the rating pipeline refuses a match outright
+    /// rather than rate around a guest on a side (Weng-Lin sums a side's
+    /// beliefs, so their part of the result would be credited to their
+    /// team-mates). Keeping them out of a ranked match is therefore not a
+    /// consent rule but a "this could never be rated" one.
+    ///
+    /// Once the only reason a player could be unratable. Not being opted in
+    /// used to be the other, and is not a reason for anything now: every
+    /// account is rated from the first match it completes, and the number is
+    /// published once its placement matches are behind it
+    /// (`agon_services_core::rating::placement`) — which nobody can opt into or out
+    /// of, so it is not a reason to keep anyone out of a match.
+    pub without_account: Vec<String>,
+}
+
+/// Sort `players` into those who couldn't take a spot in a match ranked on
+/// `ladder`. Each player is a `(user_id, display_name)` pair, the part of a
+/// roster row, an `added_players` entry or a waitlist entry this needs.
+/// `users` holds the profiles of the linked ones, from one `batch_get_users`.
+///
+/// This is for the paths that put *someone else* in a ranked match (an
+/// organiser's `added_players`, switching a match to ranked). It refuses
+/// rather than asks, which used to be because consent has to come from the
+/// player and those paths can't ask them — and is now because the one thing
+/// left to refuse, a player with no account, is not something anybody can
+/// consent their way out of.
+///
+/// It no longer takes the ladder or the players' profiles, because with the
+/// opt-in rule gone there is nothing on a profile left to check. Callers that
+/// read those profiles only to pass them here can drop the read.
+pub fn unratable_players<'a>(
+    players: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+) -> UnratablePlayers {
+    let mut unratable = UnratablePlayers::default();
+    for (user_id, display_name) in players {
+        if user_id.is_none() {
+            unratable
+                .without_account
+                .push(display_name.unwrap_or("an unnamed player").to_owned());
+        }
+    }
+    unratable
+}
+
+/// The refusal for an organiser's `added_players` on a ranked match, or `None`
+/// if everyone listed may be added.
+///
+/// The only reason left is a player with no account, who could never be
+/// rated whoever added them. Adding someone who simply hasn't opted in is
+/// fine now: the match rates them latently, and nothing they or the organiser
+/// does about it changes the result.
+#[must_use]
+/// The refusal for *creating* a match ranked with guests invited to it, or
+/// `None` if everyone invited could be rated.
+///
+/// Separate from [`switch_to_ranked_reason`] because the way out is
+/// different, and the message is most of what this function is. On a switch
+/// the match already exists and the guests are already on it, so the advice
+/// is to remove them. At creation nothing has happened yet: the organiser is
+/// choosing between a ranked match made of accounts and a friendly, and
+/// telling them to "remove" someone they are in the middle of inviting would
+/// describe an edit they haven't made.
+pub fn ranked_guest_invites_reason(unratable: &UnratablePlayers) -> Option<String> {
+    if !unratable.without_account.is_empty() {
+        return Some(format!(
+            "a ranked match can't include guests without an Agon account: {}. \
+             Invite them to Agon, or create this match as a friendly",
+            unratable.without_account.join(", ")
+        ));
+    }
+    None
+}
+
+pub fn ranked_added_players_reason(unratable: &UnratablePlayers) -> Option<String> {
+    if !unratable.without_account.is_empty() {
+        return Some(format!(
+            "players without an Agon account can't be added to a ranked match: {}",
+            unratable.without_account.join(", ")
+        ));
+    }
+    None
+}
+
+/// The refusal for switching a match to ranked, or `None` if the match could
+/// actually be rated afterwards.
+///
+/// Only the players in a spot are judged, and only for having an account. A
+/// switch used to be refused unless everyone in a spot had opted in, and
+/// separately unless everyone on the *waitlist* had too — the latter because
+/// a player waiting on a friendly that turned ranked had no way left to
+/// consent (joining the waitlist again is a 409, an invite-derived entry's
+/// invitation is already accepted, and move-in refused them because an admin
+/// couldn't consent for them). That whole knot was consent machinery, and it
+/// is gone: nobody needs to have agreed for the match to rate, so a waitlist
+/// is no longer a reason to refuse anything and needs no read here.
+///
+/// What survives is not a consent rule. A guest on a side makes the match
+/// unrateable outright, so a switch that would produce one is refused rather
+/// than allowed to quietly produce a ranked match that never rates.
+#[must_use]
+pub fn switch_to_ranked_reason(in_a_spot: &UnratablePlayers) -> Option<String> {
+    if !in_a_spot.without_account.is_empty() {
+        return Some(format!(
+            "a match with players who have no Agon account can't be ranked; remove them first: {}",
+            in_a_spot.without_account.join(", ")
+        ));
+    }
+    None
+}
 /// Build the feed's `FeedMatch` from a match summary (meta + sides, no
 /// players) and the viewer's already-resolved `known_participants` — the
 /// feed's equivalent of [`match_from_records`], but never touches the
@@ -1427,6 +1888,7 @@ pub fn feed_match_from_records(
     viewer_invitation_pending: bool,
     viewer_can_join_side_ids: Vec<String>,
     i_liked: bool,
+    tournaments: &std::collections::HashMap<String, TournamentRecord>,
 ) -> FeedMatch {
     FeedMatch {
         id: rec.id.clone(),
@@ -1470,6 +1932,9 @@ pub fn feed_match_from_records(
         },
         format: rec.format.as_ref().map(match_format_from_record),
         total_player_count: rec.total_player_count as u32,
+        tournament: match_tournament_info_from_record(rec, tournaments),
+        ranked: rec.ranked,
+        rating_ladder: rating_ladder(rec),
     }
 }
 
@@ -1482,8 +1947,9 @@ pub fn search_match_from_records(
     rec: &MatchRecord,
     sides: &[MatchSideRecord],
     users: &std::collections::HashMap<String, UserRecord>,
-    outcome: Option<agon_core::search::MatchOutcome>,
+    outcome: Option<agon_services_core::search::MatchOutcome>,
     i_liked: bool,
+    tournaments: &std::collections::HashMap<String, TournamentRecord>,
 ) -> SearchMatch {
     SearchMatch {
         id: rec.id.clone(),
@@ -1521,15 +1987,18 @@ pub fn search_match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        tournament: match_tournament_info_from_record(rec, tournaments),
+        ranked: rec.ranked,
+        rating_ladder: rating_ladder(rec),
     }
 }
 
 /// Map the search client's outcome enum to the API's.
-fn match_outcome_from_search(outcome: agon_core::search::MatchOutcome) -> MatchOutcome {
+fn match_outcome_from_search(outcome: agon_services_core::search::MatchOutcome) -> MatchOutcome {
     match outcome {
-        agon_core::search::MatchOutcome::Won => MatchOutcome::Won,
-        agon_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
-        agon_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
+        agon_services_core::search::MatchOutcome::Won => MatchOutcome::Won,
+        agon_services_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
+        agon_services_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
     }
 }
 
@@ -1574,674 +2043,25 @@ pub fn like_user_id(rec: &MatchLikeRecord) -> String {
 // `MatchScoreRecord`'s doc comment).
 // ===========================================================================
 
-/// Wrap a `Score` into the `(sport, score)` record shape. The sport tag
-/// mirrors the union variant so a read can pick the right variant.
-pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScoreRecord {
-    let sport = match score {
-        Score::Football(_) => "football",
-        Score::Cricket(_) => "cricket",
-        Score::Netball(_) => "netball",
-        Score::Simple(_) => "simple",
-        Score::Sets(_) => "sets",
-    }
-    .to_string();
-    MatchScoreRecord {
-        sport,
-        score: score_to_record(score),
-        last_seq,
-    }
-}
-
-pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
-    score_from_record(&rec.score)
-}
+// `match_score_to_record`/`match_score_from_record` are generated by
+// `define_sport_dispatch!` above.
 
 // ===========================================================================
 // Match format: MatchFormat (API, poem-openapi) <-> MatchFormatRecord (DAO,
-// plain serde). A hand-mirrored DAO enum rather than opaque JSON, same
-// convention as live scoring (see LiveEventPayloadRecord's doc comment) and
-// for the same reason: a variant added on the API side and forgotten here is
-// a compile error, not a silently-dropped setting on read.
+// plain serde) — `match_format_to_record`/`match_format_from_record`/
+// `match_format_sport_tag` are generated by `define_sport_dispatch!` above.
 // ===========================================================================
-
-pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
-    match fmt {
-        MatchFormat::Football(f) => MatchFormatRecord::Football(FootballFormatRecord {
-            half_length_minutes: f.half_length_minutes,
-            num_halves: f.num_halves,
-            extra_time: f.extra_time,
-            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
-            penalties: f.penalties,
-        }),
-        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
-            overs_per_innings: f.overs_per_innings,
-            innings_per_side: f.innings_per_side,
-            balls_per_over: f.balls_per_over,
-            no_ball_penalty_runs: f.no_ball_penalty_runs,
-            wide_penalty_runs: f.wide_penalty_runs,
-            wide_is_extra_ball: f.wide_is_extra_ball,
-            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-            free_hit_after_no_ball: f.free_hit_after_no_ball,
-        }),
-        MatchFormat::Netball(f) => MatchFormatRecord::Netball(NetballFormatRecord {
-            num_quarters: f.num_quarters,
-            quarter_length_minutes: f.quarter_length_minutes,
-            two_point_zone: f.two_point_zone,
-            extra_time: f.extra_time,
-        }),
-    }
-}
-
-/// Build the API `MatchFormat` from a stored record. Infallible — `format`
-/// is a typed DAO enum, not JSON, so there's no parse step that can fail.
-pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
-    match rec {
-        MatchFormatRecord::Football(f) => MatchFormat::Football(FootballFormat {
-            half_length_minutes: f.half_length_minutes,
-            num_halves: f.num_halves,
-            extra_time: f.extra_time,
-            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
-            penalties: f.penalties,
-        }),
-        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
-            overs_per_innings: f.overs_per_innings,
-            innings_per_side: f.innings_per_side,
-            balls_per_over: f.balls_per_over,
-            no_ball_penalty_runs: f.no_ball_penalty_runs,
-            wide_penalty_runs: f.wide_penalty_runs,
-            wide_is_extra_ball: f.wide_is_extra_ball,
-            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-            free_hit_after_no_ball: f.free_hit_after_no_ball,
-        }),
-        MatchFormatRecord::Netball(f) => MatchFormat::Netball(NetballFormat {
-            num_quarters: f.num_quarters,
-            quarter_length_minutes: f.quarter_length_minutes,
-            two_point_zone: f.two_point_zone,
-            extra_time: f.extra_time,
-        }),
-    }
-}
-
-/// The sport tag a `MatchFormat` is for, mirroring the union variant (same
-/// convention as `live_event_sport_tag`) — used to reject a format that
-/// doesn't match the match's own sport.
-pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
-    match fmt {
-        MatchFormat::Football(_) => "football",
-        MatchFormat::Cricket(_) => "cricket",
-        MatchFormat::Netball(_) => "netball",
-    }
-}
 
 // ===========================================================================
 // Live scoring: LiveEventInput (API, poem-openapi) <-> LiveEventPayloadRecord
-// (DAO, plain serde). Two hand-synced enum trees rather than an opaque JSON
-// blob — see LiveEventRecord's doc comment for why. The compiler catches a
-// variant added on one side and forgotten on the other; a missing match arm
-// below is a build failure, not a silent runtime drop.
+// (DAO, plain serde) — `live_event_sport_tag`/`live_event_input_to_record`/
+// `live_event_payload_from_record` are generated by `define_sport_dispatch!`
+// above.
 // ===========================================================================
 
-/// The stored sport tag for a live event, mirroring the union variant so a
-/// read can pick the right variant back out (same convention as
-/// `match_score_to_record`).
-pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
-    match event {
-        LiveEventInput::Football(_) => "football",
-        LiveEventInput::Cricket(_) => "cricket",
-        LiveEventInput::Netball(_) => "netball",
-    }
-}
-
-pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
-    match event {
-        LiveEventInput::Football(f) => {
-            LiveEventPayloadRecord::Football(football_live_event_to_record(f))
-        }
-        LiveEventInput::Cricket(c) => {
-            LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
-        }
-        LiveEventInput::Netball(n) => {
-            LiveEventPayloadRecord::Netball(netball_live_event_to_record(n))
-        }
-    }
-}
-
-pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
-    match rec {
-        LiveEventPayloadRecord::Football(f) => {
-            LiveEventInput::Football(football_live_event_from_record(f))
-        }
-        LiveEventPayloadRecord::Cricket(c) => {
-            LiveEventInput::Cricket(cricket_live_event_from_record(c))
-        }
-        LiveEventPayloadRecord::Netball(n) => {
-            LiveEventInput::Netball(netball_live_event_from_record(n))
-        }
-    }
-}
-
-// ---- Football ---------------------------------------------------------
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm — both carry the same `FootballGoalEvent`/`FootballGoalEventRecord`
-/// shape.
-fn football_goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventRecord {
-    FootballGoalEventRecord {
-        side_id: g.side_id.clone(),
-        scorer_player_id: g.scorer_player_id.clone(),
-        assist_player_id: g.assist_player_id.clone(),
-        own_goal: g.own_goal,
-        penalty: g.penalty,
-        minute: g.minute,
-        occurred_at: g
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoalEvent {
-    FootballGoalEvent {
-        side_id: rec.side_id.clone(),
-        scorer_player_id: rec.scorer_player_id.clone(),
-        assist_player_id: rec.assist_player_id.clone(),
-        own_goal: rec.own_goal,
-        penalty: rec.penalty,
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm, same reasoning as `football_goal_event_to_record`.
-fn football_card_event_to_record(c: &FootballCardEvent) -> FootballCardEventRecord {
-    FootballCardEventRecord {
-        side_id: c.side_id.clone(),
-        player_id: c.player_id.clone(),
-        color: match c.color {
-            FootballCardColor::Yellow => FootballCardColorRecord::Yellow,
-            FootballCardColor::Red => FootballCardColorRecord::Red,
-        },
-        minute: c.minute,
-        occurred_at: c
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_card_event_from_record(rec: &FootballCardEventRecord) -> FootballCardEvent {
-    FootballCardEvent {
-        side_id: rec.side_id.clone(),
-        player_id: rec.player_id.clone(),
-        color: match rec.color {
-            FootballCardColorRecord::Yellow => FootballCardColor::Yellow,
-            FootballCardColorRecord::Red => FootballCardColor::Red,
-        },
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-fn football_substitution_event_to_record(
-    s: &FootballSubstitutionEvent,
-) -> FootballSubstitutionEventRecord {
-    FootballSubstitutionEventRecord {
-        side_id: s.side_id.clone(),
-        player_in_id: s.player_in_id.clone(),
-        player_out_id: s.player_out_id.clone(),
-        minute: s.minute,
-        occurred_at: s
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_substitution_event_from_record(
-    rec: &FootballSubstitutionEventRecord,
-) -> FootballSubstitutionEvent {
-    FootballSubstitutionEvent {
-        side_id: rec.side_id.clone(),
-        player_in_id: rec.player_in_id.clone(),
-        player_out_id: rec.player_out_id.clone(),
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm (`period`/`period_times`' map keys) — both need the same
-/// `FootballPeriod`/`FootballPeriodRecord` correspondence.
-fn football_period_to_record(period: &FootballPeriod) -> FootballPeriodRecord {
-    match period {
-        FootballPeriod::KickOff => FootballPeriodRecord::KickOff,
-        FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
-        FootballPeriod::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
-        FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
-        FootballPeriod::ExtraTimeKickOff => FootballPeriodRecord::ExtraTimeKickOff,
-        FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
-        FootballPeriod::ExtraTimeSecondHalfKickOff => {
-            FootballPeriodRecord::ExtraTimeSecondHalfKickOff
-        }
-        FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
-        FootballPeriod::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
-    }
-}
-
-fn football_period_from_record(rec: &FootballPeriodRecord) -> FootballPeriod {
-    match rec {
-        FootballPeriodRecord::KickOff => FootballPeriod::KickOff,
-        FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
-        FootballPeriodRecord::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
-        FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
-        FootballPeriodRecord::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
-        FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
-        FootballPeriodRecord::ExtraTimeSecondHalfKickOff => {
-            FootballPeriod::ExtraTimeSecondHalfKickOff
-        }
-        FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
-        FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
-    }
-}
-
-fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
-    match event {
-        FootballLiveEvent::Goal(g) => {
-            FootballLiveEventRecord::Goal(football_goal_event_to_record(g))
-        }
-        FootballLiveEvent::Card(c) => {
-            FootballLiveEventRecord::Card(football_card_event_to_record(c))
-        }
-        FootballLiveEvent::Substitution(s) => {
-            FootballLiveEventRecord::Substitution(football_substitution_event_to_record(s))
-        }
-        FootballLiveEvent::Period(p) => {
-            FootballLiveEventRecord::Period(FootballPeriodEventRecord {
-                period: football_period_to_record(&p.period),
-            })
-        }
-        FootballLiveEvent::PenaltyShootoutKick(k) => {
-            FootballLiveEventRecord::PenaltyShootoutKick(FootballPenaltyShootoutKickRecord {
-                side_id: k.side_id.clone(),
-                scored: k.scored,
-            })
-        }
-    }
-}
-
-fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiveEvent {
-    match rec {
-        FootballLiveEventRecord::Goal(g) => {
-            FootballLiveEvent::Goal(football_goal_event_from_record(g))
-        }
-        FootballLiveEventRecord::Card(c) => {
-            FootballLiveEvent::Card(football_card_event_from_record(c))
-        }
-        FootballLiveEventRecord::Substitution(s) => {
-            FootballLiveEvent::Substitution(football_substitution_event_from_record(s))
-        }
-        FootballLiveEventRecord::Period(p) => FootballLiveEvent::Period(FootballPeriodEvent {
-            period: football_period_from_record(&p.period),
-        }),
-        FootballLiveEventRecord::PenaltyShootoutKick(k) => {
-            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                side_id: k.side_id.clone(),
-                scored: k.scored,
-            })
-        }
-    }
-}
-
-// ---- Netball --------------------------------------------------------------
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
-/// arm — both carry the same `NetballGoalEvent`/`NetballGoalEventRecord`
-/// shape.
-fn netball_goal_event_to_record(g: &NetballGoalEvent) -> NetballGoalEventRecord {
-    NetballGoalEventRecord {
-        side_id: g.side_id.clone(),
-        scorer_player_id: g.scorer_player_id.clone(),
-        scorer_position: g.scorer_position.as_ref().map(netball_position_to_record),
-        two_points: g.two_points,
-        minute: g.minute,
-        occurred_at: g
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn netball_goal_event_from_record(rec: &NetballGoalEventRecord) -> NetballGoalEvent {
-    NetballGoalEvent {
-        side_id: rec.side_id.clone(),
-        scorer_player_id: rec.scorer_player_id.clone(),
-        scorer_position: rec
-            .scorer_position
-            .as_ref()
-            .map(netball_position_from_record),
-        two_points: rec.two_points,
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-fn netball_position_to_record(p: &NetballPosition) -> NetballPositionRecord {
-    match p {
-        NetballPosition::GoalShooter => NetballPositionRecord::GoalShooter,
-        NetballPosition::GoalAttack => NetballPositionRecord::GoalAttack,
-        NetballPosition::WingAttack => NetballPositionRecord::WingAttack,
-        NetballPosition::Centre => NetballPositionRecord::Centre,
-        NetballPosition::WingDefence => NetballPositionRecord::WingDefence,
-        NetballPosition::GoalDefence => NetballPositionRecord::GoalDefence,
-        NetballPosition::GoalKeeper => NetballPositionRecord::GoalKeeper,
-    }
-}
-
-fn netball_position_from_record(rec: &NetballPositionRecord) -> NetballPosition {
-    match rec {
-        NetballPositionRecord::GoalShooter => NetballPosition::GoalShooter,
-        NetballPositionRecord::GoalAttack => NetballPosition::GoalAttack,
-        NetballPositionRecord::WingAttack => NetballPosition::WingAttack,
-        NetballPositionRecord::Centre => NetballPosition::Centre,
-        NetballPositionRecord::WingDefence => NetballPosition::WingDefence,
-        NetballPositionRecord::GoalDefence => NetballPosition::GoalDefence,
-        NetballPositionRecord::GoalKeeper => NetballPosition::GoalKeeper,
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
-/// arm, same reasoning as `netball_goal_event_to_record`.
-fn netball_foul_event_to_record(fo: &NetballFoulEvent) -> NetballFoulEventRecord {
-    NetballFoulEventRecord {
-        side_id: fo.side_id.clone(),
-        player_id: fo.player_id.clone(),
-        foul_kind: match fo.foul_kind {
-            NetballFoulKind::Contact => NetballFoulKindRecord::Contact,
-            NetballFoulKind::Obstruction => NetballFoulKindRecord::Obstruction,
-            NetballFoulKind::Footwork => NetballFoulKindRecord::Footwork,
-            NetballFoulKind::Offside => NetballFoulKindRecord::Offside,
-            NetballFoulKind::HeldBall => NetballFoulKindRecord::HeldBall,
-            NetballFoulKind::Other => NetballFoulKindRecord::Other,
-        },
-        minute: fo.minute,
-        occurred_at: fo
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn netball_foul_event_from_record(rec: &NetballFoulEventRecord) -> NetballFoulEvent {
-    NetballFoulEvent {
-        side_id: rec.side_id.clone(),
-        player_id: rec.player_id.clone(),
-        foul_kind: match rec.foul_kind {
-            NetballFoulKindRecord::Contact => NetballFoulKind::Contact,
-            NetballFoulKindRecord::Obstruction => NetballFoulKind::Obstruction,
-            NetballFoulKindRecord::Footwork => NetballFoulKind::Footwork,
-            NetballFoulKindRecord::Offside => NetballFoulKind::Offside,
-            NetballFoulKindRecord::HeldBall => NetballFoulKind::HeldBall,
-            NetballFoulKindRecord::Other => NetballFoulKind::Other,
-        },
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
-/// arm (`period`/`period_times`/`period_scores`' map keys) — both need the
-/// same `NetballPeriod`/`NetballPeriodRecord` correspondence.
-fn netball_period_to_record(period: &NetballPeriod) -> NetballPeriodRecord {
-    match period {
-        NetballPeriod::Start => NetballPeriodRecord::Start,
-        NetballPeriod::QuarterOneEnd => NetballPeriodRecord::QuarterOneEnd,
-        NetballPeriod::QuarterTwoStart => NetballPeriodRecord::QuarterTwoStart,
-        NetballPeriod::QuarterTwoEnd => NetballPeriodRecord::QuarterTwoEnd,
-        NetballPeriod::QuarterThreeStart => NetballPeriodRecord::QuarterThreeStart,
-        NetballPeriod::QuarterThreeEnd => NetballPeriodRecord::QuarterThreeEnd,
-        NetballPeriod::QuarterFourStart => NetballPeriodRecord::QuarterFourStart,
-        NetballPeriod::FullTime => NetballPeriodRecord::FullTime,
-        NetballPeriod::ExtraTimeStart => NetballPeriodRecord::ExtraTimeStart,
-        NetballPeriod::ExtraTimeEnd => NetballPeriodRecord::ExtraTimeEnd,
-    }
-}
-
-fn netball_period_from_record(rec: &NetballPeriodRecord) -> NetballPeriod {
-    match rec {
-        NetballPeriodRecord::Start => NetballPeriod::Start,
-        NetballPeriodRecord::QuarterOneEnd => NetballPeriod::QuarterOneEnd,
-        NetballPeriodRecord::QuarterTwoStart => NetballPeriod::QuarterTwoStart,
-        NetballPeriodRecord::QuarterTwoEnd => NetballPeriod::QuarterTwoEnd,
-        NetballPeriodRecord::QuarterThreeStart => NetballPeriod::QuarterThreeStart,
-        NetballPeriodRecord::QuarterThreeEnd => NetballPeriod::QuarterThreeEnd,
-        NetballPeriodRecord::QuarterFourStart => NetballPeriod::QuarterFourStart,
-        NetballPeriodRecord::FullTime => NetballPeriod::FullTime,
-        NetballPeriodRecord::ExtraTimeStart => NetballPeriod::ExtraTimeStart,
-        NetballPeriodRecord::ExtraTimeEnd => NetballPeriod::ExtraTimeEnd,
-    }
-}
-
-fn netball_live_event_to_record(event: &NetballLiveEvent) -> NetballLiveEventRecord {
-    match event {
-        NetballLiveEvent::Goal(g) => NetballLiveEventRecord::Goal(netball_goal_event_to_record(g)),
-        NetballLiveEvent::Foul(fo) => {
-            NetballLiveEventRecord::Foul(netball_foul_event_to_record(fo))
-        }
-        NetballLiveEvent::Period(p) => NetballLiveEventRecord::Period(NetballPeriodEventRecord {
-            period: netball_period_to_record(&p.period),
-            score: p.score.clone(),
-        }),
-    }
-}
-
-fn netball_live_event_from_record(rec: &NetballLiveEventRecord) -> NetballLiveEvent {
-    match rec {
-        NetballLiveEventRecord::Goal(g) => {
-            NetballLiveEvent::Goal(netball_goal_event_from_record(g))
-        }
-        NetballLiveEventRecord::Foul(fo) => {
-            NetballLiveEvent::Foul(netball_foul_event_from_record(fo))
-        }
-        NetballLiveEventRecord::Period(p) => NetballLiveEvent::Period(NetballPeriodEvent {
-            period: netball_period_from_record(&p.period),
-            score: p.score.clone(),
-        }),
-    }
-}
-
-// ---- Cricket ------------------------------------------------------------
-
-fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRecord {
-    match event {
-        CricketLiveEvent::Delivery(d) => {
-            CricketLiveEventRecord::Delivery(cricket_delivery_to_record(d))
-        }
-        CricketLiveEvent::Retire(r) => CricketLiveEventRecord::Retire(CricketRetireEventRecord {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEvent::InningsStart(s) => {
-            CricketLiveEventRecord::InningsStart(CricketInningsStartEventRecord {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEvent::InningsEnd(e) => {
-            CricketLiveEventRecord::InningsEnd(CricketInningsEndEventRecord {
-                reason: innings_end_reason_to_record(&e.reason),
-            })
-        }
-    }
-}
-
-pub fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
-    match rec {
-        CricketLiveEventRecord::Delivery(d) => {
-            CricketLiveEvent::Delivery(cricket_delivery_from_record(d))
-        }
-        CricketLiveEventRecord::Retire(r) => CricketLiveEvent::Retire(CricketRetireEvent {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEventRecord::InningsStart(s) => {
-            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEventRecord::InningsEnd(e) => {
-            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-                reason: innings_end_reason_from_record(&e.reason),
-            })
-        }
-    }
-}
-
-fn innings_end_reason_to_record(reason: &InningsEndReason) -> InningsEndReasonRecord {
-    match reason {
-        InningsEndReason::AllOut => InningsEndReasonRecord::AllOut,
-        InningsEndReason::OversComplete => InningsEndReasonRecord::OversComplete,
-        InningsEndReason::Declared => InningsEndReasonRecord::Declared,
-        InningsEndReason::TargetReached => InningsEndReasonRecord::TargetReached,
-    }
-}
-
-fn innings_end_reason_from_record(rec: &InningsEndReasonRecord) -> InningsEndReason {
-    match rec {
-        InningsEndReasonRecord::AllOut => InningsEndReason::AllOut,
-        InningsEndReasonRecord::OversComplete => InningsEndReason::OversComplete,
-        InningsEndReasonRecord::Declared => InningsEndReason::Declared,
-        InningsEndReasonRecord::TargetReached => InningsEndReason::TargetReached,
-    }
-}
-
-fn next_ball_context_to_record(ctx: &NextBallContext) -> NextBallContextRecord {
-    NextBallContextRecord {
-        striker_player_id: ctx.striker_player_id.clone(),
-        non_striker_player_id: ctx.non_striker_player_id.clone(),
-        bowler_player_id: ctx.bowler_player_id.clone(),
-        over: ctx.over,
-        ball: ctx.ball,
-        previous_over_bowler_player_id: ctx.previous_over_bowler_player_id.clone(),
-        runs_conceded_this_over: ctx.runs_conceded_this_over,
-    }
-}
-
-fn next_ball_context_from_record(rec: &NextBallContextRecord) -> NextBallContext {
-    NextBallContext {
-        striker_player_id: rec.striker_player_id.clone(),
-        non_striker_player_id: rec.non_striker_player_id.clone(),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        over: rec.over,
-        ball: rec.ball,
-        previous_over_bowler_player_id: rec.previous_over_bowler_player_id.clone(),
-        runs_conceded_this_over: rec.runs_conceded_this_over,
-    }
-}
-
-fn cricket_delivery_to_record(d: &CricketDelivery) -> CricketDeliveryRecord {
-    CricketDeliveryRecord {
-        over: d.over,
-        ball: d.ball,
-        bowler_player_id: d.bowler_player_id.clone(),
-        striker_player_id: d.striker_player_id.clone(),
-        non_striker_player_id: d.non_striker_player_id.clone(),
-        runs_off_bat: d.runs_off_bat,
-        extra: d.extra.as_ref().map(cricket_delivery_extra_to_record),
-        wicket: d.wicket.as_ref().map(cricket_delivery_wicket_to_record),
-        occurred_at: d
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn cricket_delivery_from_record(rec: &CricketDeliveryRecord) -> CricketDelivery {
-    CricketDelivery {
-        over: rec.over,
-        ball: rec.ball,
-        bowler_player_id: rec.bowler_player_id.clone(),
-        striker_player_id: rec.striker_player_id.clone(),
-        non_striker_player_id: rec.non_striker_player_id.clone(),
-        runs_off_bat: rec.runs_off_bat,
-        extra: rec.extra.as_ref().map(cricket_delivery_extra_from_record),
-        wicket: rec.wicket.as_ref().map(cricket_delivery_wicket_from_record),
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-fn cricket_delivery_extra_to_record(e: &CricketDeliveryExtra) -> CricketDeliveryExtraRecord {
-    CricketDeliveryExtraRecord {
-        kind: cricket_extra_kind_to_record(&e.kind),
-        runs: e.runs,
-    }
-}
-
-fn cricket_delivery_extra_from_record(rec: &CricketDeliveryExtraRecord) -> CricketDeliveryExtra {
-    CricketDeliveryExtra {
-        kind: cricket_extra_kind_from_record(&rec.kind),
-        runs: rec.runs,
-    }
-}
-
-fn cricket_extra_kind_to_record(kind: &CricketExtraKind) -> CricketExtraKindRecord {
-    match kind {
-        CricketExtraKind::Wide => CricketExtraKindRecord::Wide,
-        CricketExtraKind::NoBall => CricketExtraKindRecord::NoBall,
-        CricketExtraKind::Bye => CricketExtraKindRecord::Bye,
-        CricketExtraKind::LegBye => CricketExtraKindRecord::LegBye,
-        CricketExtraKind::Penalty => CricketExtraKindRecord::Penalty,
-    }
-}
-
-fn cricket_extra_kind_from_record(rec: &CricketExtraKindRecord) -> CricketExtraKind {
-    match rec {
-        CricketExtraKindRecord::Wide => CricketExtraKind::Wide,
-        CricketExtraKindRecord::NoBall => CricketExtraKind::NoBall,
-        CricketExtraKindRecord::Bye => CricketExtraKind::Bye,
-        CricketExtraKindRecord::LegBye => CricketExtraKind::LegBye,
-        CricketExtraKindRecord::Penalty => CricketExtraKind::Penalty,
-    }
-}
-
-fn cricket_delivery_wicket_to_record(w: &CricketDeliveryWicket) -> CricketDeliveryWicketRecord {
-    CricketDeliveryWicketRecord {
-        kind: cricket_dismissal_kind_to_record(&w.kind),
-        dismissed_player_id: w.dismissed_player_id.clone(),
-        bowler_player_id: w.bowler_player_id.clone(),
-        fielder_player_id: w.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_delivery_wicket_from_record(rec: &CricketDeliveryWicketRecord) -> CricketDeliveryWicket {
-    CricketDeliveryWicket {
-        kind: cricket_dismissal_kind_from_record(&rec.kind),
-        dismissed_player_id: rec.dismissed_player_id.clone(),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        fielder_player_id: rec.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_dismissal_kind_to_record(kind: &CricketDismissalKind) -> CricketDismissalKindRecord {
-    match kind {
-        CricketDismissalKind::Bowled => CricketDismissalKindRecord::Bowled,
-        CricketDismissalKind::Caught => CricketDismissalKindRecord::Caught,
-        CricketDismissalKind::LegBeforeWicket => CricketDismissalKindRecord::LegBeforeWicket,
-        CricketDismissalKind::RunOut => CricketDismissalKindRecord::RunOut,
-        CricketDismissalKind::Stumped => CricketDismissalKindRecord::Stumped,
-        CricketDismissalKind::HitWicket => CricketDismissalKindRecord::HitWicket,
-        CricketDismissalKind::RetiredOut => CricketDismissalKindRecord::RetiredOut,
-        CricketDismissalKind::RetiredHurt => CricketDismissalKindRecord::RetiredHurt,
-    }
-}
-
-fn cricket_dismissal_kind_from_record(rec: &CricketDismissalKindRecord) -> CricketDismissalKind {
-    match rec {
-        CricketDismissalKindRecord::Bowled => CricketDismissalKind::Bowled,
-        CricketDismissalKindRecord::Caught => CricketDismissalKind::Caught,
-        CricketDismissalKindRecord::LegBeforeWicket => CricketDismissalKind::LegBeforeWicket,
-        CricketDismissalKindRecord::RunOut => CricketDismissalKind::RunOut,
-        CricketDismissalKindRecord::Stumped => CricketDismissalKind::Stumped,
-        CricketDismissalKindRecord::HitWicket => CricketDismissalKind::HitWicket,
-        CricketDismissalKindRecord::RetiredOut => CricketDismissalKind::RetiredOut,
-        CricketDismissalKindRecord::RetiredHurt => CricketDismissalKind::RetiredHurt,
-    }
-}
+// Cricket's, football's and netball's API<->DAO mapping (score/format/
+// live-event) have moved to `crate::sports::{cricket,football,netball}` —
+// see their module doc comments.
 
 // ---- Batch append / read / derive ---------------------------------------
 
@@ -2276,86 +2096,7 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
     }
 }
 
-/// Folds a match's live event log into its full detail. `None` if
-/// `match_type` isn't a sport live scoring supports yet (only football and
-/// cricket so far — see `LiveEventInput`).
-///
-/// `records` is whatever the DAO currently has on record, in seq order — a
-/// deleted event is already absent from it and an amended one already shows
-/// its corrected content, so there's no filtering pass needed here.
-pub fn derive_live_score(
-    match_type: &str,
-    records: &[LiveEventRecord],
-    format: Option<&MatchFormatRecord>,
-) -> Option<Score> {
-    match match_type {
-        "football" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, FootballLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Football(f) => {
-                        Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
-                    }
-                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => None,
-                })
-                .collect();
-            Some(Score::Football(FootballScore::from_events(&events)))
-        }
-        "cricket" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, CricketLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Cricket(c) => {
-                        Some((parse_ts(&r.occurred_at), cricket_live_event_from_record(c)))
-                    }
-                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Netball(_) => {
-                        None
-                    }
-                })
-                .collect();
-            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-                cricket_format_args(format);
-            Some(Score::Cricket(CricketScore::from_events(
-                &events,
-                balls_per_over,
-                wide_is_extra_ball,
-                no_ball_is_extra_ball,
-            )))
-        }
-        "netball" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, NetballLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Netball(n) => {
-                        Some((parse_ts(&r.occurred_at), netball_live_event_from_record(n)))
-                    }
-                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Cricket(_) => {
-                        None
-                    }
-                })
-                .collect();
-            Some(Score::Netball(NetballScore::from_events(&events)))
-        }
-        _ => None,
-    }
-}
-
-/// A cricket match's configured over length and extra-ball rules — standard
-/// rules (a 6-ball over, wides/no-balls re-bowled as extras) unless the match
-/// configured something else (e.g. The Hundred's 5-ball over). The only
-/// pieces of match format the DAO-agnostic scoring math actually needs, so
-/// callers thread these three through as plain arguments rather than the
-/// whole format.
-pub fn cricket_format_args(format: Option<&MatchFormatRecord>) -> (u32, bool, bool) {
-    match format {
-        Some(MatchFormatRecord::Cricket(f)) => (
-            f.balls_per_over,
-            f.wide_is_extra_ball,
-            f.no_ball_is_extra_ball,
-        ),
-        _ => (6, true, true),
-    }
-}
+// `derive_live_score` is generated by `define_sport_dispatch!` above.
 
 // ===========================================================================
 // Notifications
@@ -2375,6 +2116,7 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::TeamMatchJoinable { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::MatchReminder { actor_user_id, .. } => actor_user_id,
     }
 }
 
@@ -2393,19 +2135,14 @@ pub fn deleted_user_profile(actor_id: &str) -> UserProfile {
         id: actor_id.to_string(),
         name: "Deleted user".to_string(),
         profile_image: None,
-        stats: UserStats {
-            cricket: None,
-            football: None,
-            tennis: None,
-            badminton: None,
-            squash: None,
-            table_tennis: None,
-            netball: None,
-            other: None,
-        },
+        stats: user_stats_from_record(&UserStatsRecord::default()),
         follower_count: 0,
         following_count: 0,
         is_followed_by_me: false,
+        // A deleted account's ratings go with it. They were never this
+        // profile's to show anyway: the placeholder exists so a stale link
+        // resolves, not so a vanished player keeps a standing.
+        ratings: Vec::new(),
     }
 }
 
@@ -2527,6 +2264,17 @@ pub fn notification_from_record(
             match_id: match_id.clone(),
             match_name: match_name.clone(),
         }),
+        NotificationKindRecord::MatchReminder {
+            match_id,
+            match_name,
+            starts_at,
+            ..
+        } => NotificationKind::MatchReminder(MatchReminderNotification {
+            organizer: actor,
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+            starts_at: parse_ts(starts_at),
+        }),
     };
     Notification {
         id: rec.id.clone(),
@@ -2548,165 +2296,10 @@ mod tests {
     /// a mapping bug is a value silently changing shape or going missing.
     /// Compared via JSON rather than a derived `PartialEq` (the API types
     /// don't derive it) so this doesn't need extra derives just for testing.
-    #[test]
-    fn football_live_event_round_trips_through_dao_mirror() {
-        let events = vec![
-            FootballLiveEvent::Goal(FootballGoalEvent {
-                side_id: "riverside".into(),
-                scorer_player_id: Some("alvarez".into()),
-                assist_player_id: None,
-                own_goal: true,
-                penalty: false,
-                minute: Some(63),
-                occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
-            }),
-            FootballLiveEvent::Card(FootballCardEvent {
-                side_id: "oak_park".into(),
-                player_id: "khan".into(),
-                color: FootballCardColor::Red,
-                minute: None,
-                occurred_at: None,
-            }),
-            FootballLiveEvent::Substitution(FootballSubstitutionEvent {
-                side_id: "oak_park".into(),
-                player_in_id: "moreno".into(),
-                player_out_id: "khan".into(),
-                minute: Some(70),
-                occurred_at: Some(parse_ts("2024-05-01T20:10:00.000Z")),
-            }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeKickOff,
-            }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeSecondHalfKickOff,
-            }),
-            FootballLiveEvent::Period(FootballPeriodEvent {
-                period: FootballPeriod::ExtraTimeFullTime,
-            }),
-            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                side_id: "riverside".into(),
-                scored: true,
-            }),
-        ];
-
-        for event in events {
-            let input = LiveEventInput::Football(event);
-            let original_json = input.to_json();
-            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
-            assert_eq!(original_json, round_tripped.to_json());
-        }
-    }
-
-    #[test]
-    fn cricket_live_event_round_trips_through_dao_mirror() {
-        let events = vec![
-            CricketLiveEvent::Delivery(CricketDelivery {
-                over: 4,
-                ball: 3,
-                bowler_player_id: "patel".into(),
-                striker_player_id: "sharma".into(),
-                non_striker_player_id: "verma".into(),
-                runs_off_bat: 0,
-                extra: Some(CricketDeliveryExtra {
-                    kind: CricketExtraKind::Wide,
-                    runs: 1,
-                }),
-                wicket: Some(CricketDeliveryWicket {
-                    kind: CricketDismissalKind::Caught,
-                    dismissed_player_id: "sharma".into(),
-                    bowler_player_id: Some("patel".into()),
-                    fielder_player_id: Some("cole".into()),
-                }),
-                occurred_at: Some(parse_ts("2024-05-01T20:04:03.000Z")),
-            }),
-            CricketLiveEvent::Retire(CricketRetireEvent {
-                batter_player_id: "sharma".into(),
-                retired_out: false,
-            }),
-            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                batting_side_id: "warriors".into(),
-                bowling_side_id: "mill_lane".into(),
-            }),
-            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-                reason: InningsEndReason::Declared,
-            }),
-        ];
-
-        for event in events {
-            let input = LiveEventInput::Cricket(event);
-            let original_json = input.to_json();
-            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
-            assert_eq!(original_json, round_tripped.to_json());
-        }
-    }
-
-    #[test]
-    fn netball_live_event_round_trips_through_dao_mirror() {
-        let events = vec![
-            NetballLiveEvent::Goal(NetballGoalEvent {
-                side_id: "kestrels".into(),
-                scorer_player_id: Some("shooter_1".into()),
-                scorer_position: Some(NetballPosition::GoalShooter),
-                two_points: false,
-                minute: Some(4),
-                occurred_at: Some(parse_ts("2024-05-01T20:04:00.000Z")),
-            }),
-            NetballLiveEvent::Foul(NetballFoulEvent {
-                side_id: "harriers".into(),
-                player_id: Some("defender_1".into()),
-                foul_kind: NetballFoulKind::Contact,
-                minute: Some(6),
-                occurred_at: Some(parse_ts("2024-05-01T20:06:00.000Z")),
-            }),
-            NetballLiveEvent::Period(NetballPeriodEvent {
-                period: NetballPeriod::QuarterOneEnd,
-                score: HashMap::from([("kestrels".to_string(), 12), ("harriers".to_string(), 9)]),
-            }),
-        ];
-
-        for event in events {
-            let input = LiveEventInput::Netball(event);
-            let original_json = input.to_json();
-            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
-            assert_eq!(original_json, round_tripped.to_json());
-        }
-    }
-
-    #[test]
-    fn match_format_round_trips_through_dao_mirror() {
-        let formats = vec![
-            MatchFormat::Football(FootballFormat {
-                half_length_minutes: 40,
-                num_halves: 2,
-                extra_time: true,
-                extra_time_half_length_minutes: Some(15),
-                penalties: true,
-            }),
-            MatchFormat::Cricket(CricketFormat {
-                overs_per_innings: None,
-                innings_per_side: 2,
-                balls_per_over: 6,
-                no_ball_penalty_runs: 2,
-                wide_penalty_runs: 1,
-                wide_is_extra_ball: true,
-                no_ball_is_extra_ball: false,
-                free_hit_after_no_ball: false,
-            }),
-            MatchFormat::Netball(NetballFormat {
-                num_quarters: 4,
-                quarter_length_minutes: 15,
-                two_point_zone: false,
-                extra_time: true,
-            }),
-        ];
-
-        for format in formats {
-            let original_json = format.to_json();
-            let round_tripped = match_format_from_record(&match_format_to_record(&format));
-            assert_eq!(original_json, round_tripped.to_json());
-        }
-    }
-
+    /// Each sport's own cases live alongside that sport's types in
+    /// `crate::sports::{football,cricket,netball}`'s own tests — this only
+    /// covers the two sport-agnostic shapes (`Simple`/`Sets`) that live here
+    /// in `mapping.rs` itself.
     #[test]
     fn score_round_trips_through_dao_mirror() {
         let scores = vec![
@@ -2719,246 +2312,600 @@ mod tests {
                     ("side_blue".to_string(), vec![4, 6, 5]),
                 ]),
             }),
-            // A manually-entered cricket result: totals only, no per-player detail.
-            Score::Cricket(CricketScore {
-                innings: vec![
-                    CricketScoreInnings {
-                        batting_side_id: "warriors".into(),
-                        bowling_side_id: "mill_lane".into(),
-                        runs: 180,
-                        wickets: 6,
-                        overs: Overs {
-                            overs: 20,
-                            balls: 0,
-                        },
-                        declared: false,
-                        batting: None,
-                        bowling: None,
-                        fall_of_wickets: None,
-                        extras: None,
-                    },
-                    CricketScoreInnings {
-                        batting_side_id: "mill_lane".into(),
-                        bowling_side_id: "warriors".into(),
-                        runs: 165,
-                        wickets: 10,
-                        overs: Overs {
-                            overs: 19,
-                            balls: 3,
-                        },
-                        declared: false,
-                        batting: None,
-                        bowling: None,
-                        fall_of_wickets: None,
-                        extras: None,
-                    },
-                ],
-                recent_deliveries: None,
-                next_ball_context: None,
-                awaiting_next_innings: None,
-                players: HashMap::new(),
-            }),
-            // A live-scored cricket result: full per-player detail.
-            Score::Cricket(CricketScore {
-                innings: vec![CricketScoreInnings {
-                    batting_side_id: "warriors".into(),
-                    bowling_side_id: "mill_lane".into(),
-                    runs: 45,
-                    wickets: 1,
-                    overs: Overs { overs: 8, balls: 2 },
-                    declared: false,
-                    batting: Some(vec![CricketBattingEntry {
-                        player_id: "player_1".into(),
-                        runs: 30,
-                        balls_faced: 20,
-                        fours: 4,
-                        sixes: 1,
-                        dismissal: Some(CricketDismissal {
-                            kind: CricketDismissalKind::Caught,
-                            bowler_player_id: Some("player_5".into()),
-                            fielder_player_id: Some("player_6".into()),
-                        }),
-                        batting_position: Some(1),
-                    }]),
-                    bowling: Some(vec![CricketBowlingEntry {
-                        player_id: "player_5".into(),
-                        overs: Overs { overs: 4, balls: 0 },
-                        maidens: 1,
-                        runs_conceded: 20,
-                        wickets: 1,
-                        wides: 0,
-                        no_balls: 0,
-                    }]),
-                    fall_of_wickets: Some(vec![CricketFallOfWicket {
-                        wicket: 1,
-                        runs: 30,
-                        player_id: "player_1".into(),
-                        overs: Some(Overs { overs: 7, balls: 4 }),
-                    }]),
-                    extras: Some(CricketExtras {
-                        byes: 1,
-                        leg_byes: 2,
-                        wides: 3,
-                        no_balls: 0,
-                        penalty: 0,
-                    }),
-                }],
-                recent_deliveries: Some(vec![CricketDelivery {
-                    over: 8,
-                    ball: 3,
-                    bowler_player_id: "player_5".into(),
-                    striker_player_id: "player_1".into(),
-                    non_striker_player_id: "player_2".into(),
-                    runs_off_bat: 1,
-                    extra: None,
-                    wicket: None,
-                    occurred_at: Some(parse_ts("2024-05-01T20:08:03.000Z")),
-                }]),
-                next_ball_context: Some(NextBallContext {
-                    striker_player_id: Some("player_2".into()),
-                    non_striker_player_id: Some("player_1".into()),
-                    bowler_player_id: Some("player_5".into()),
-                    over: 8,
-                    ball: 4,
-                    previous_over_bowler_player_id: None,
-                    runs_conceded_this_over: 1,
-                }),
-                awaiting_next_innings: Some(false),
-                players: HashMap::new(),
-            }),
-            // A manually-entered football result: totals only, no detail.
-            Score::Football(FootballScore {
-                score: HashMap::from([("side_red".to_string(), 3), ("side_blue".to_string(), 1)]),
-                goals: None,
-                cards: None,
-                substitutions: None,
-                period: None,
-                period_times: None,
-                penalty_shootout: None,
-                penalty_shootout_score: None,
-                players: HashMap::new(),
-            }),
-            // A live-scored football result: full goal/card/sub detail.
-            Score::Football(FootballScore {
-                score: HashMap::from([("side_red".to_string(), 2), ("side_blue".to_string(), 1)]),
-                goals: Some(vec![
-                    FootballGoalEvent {
-                        side_id: "side_red".into(),
-                        scorer_player_id: Some("player_1".into()),
-                        assist_player_id: Some("player_2".into()),
-                        own_goal: false,
-                        penalty: false,
-                        minute: Some(23),
-                        occurred_at: Some(parse_ts("2024-05-01T20:23:00.000Z")),
-                    },
-                    FootballGoalEvent {
-                        side_id: "side_blue".into(),
-                        scorer_player_id: None,
-                        assist_player_id: None,
-                        own_goal: true,
-                        penalty: false,
-                        minute: None,
-                        occurred_at: None,
-                    },
-                ]),
-                cards: Some(vec![FootballCardEvent {
-                    side_id: "side_blue".into(),
-                    player_id: "player_3".into(),
-                    color: FootballCardColor::Yellow,
-                    minute: Some(60),
-                    occurred_at: Some(parse_ts("2024-05-01T21:00:00.000Z")),
-                }]),
-                substitutions: Some(vec![FootballSubstitutionEvent {
-                    side_id: "side_red".into(),
-                    player_in_id: "player_4".into(),
-                    player_out_id: "player_1".into(),
-                    minute: Some(75),
-                    occurred_at: Some(parse_ts("2024-05-01T21:15:00.000Z")),
-                }]),
-                period: Some(FootballPeriod::FullTime),
-                period_times: Some(HashMap::from([
-                    (
-                        FootballPeriod::KickOff,
-                        parse_ts("2024-05-01T20:00:00.000Z"),
-                    ),
-                    (
-                        FootballPeriod::FullTime,
-                        parse_ts("2024-05-01T21:45:00.000Z"),
-                    ),
-                ])),
-                penalty_shootout: Some(vec![FootballPenaltyShootoutKick {
-                    side_id: "side_red".into(),
-                    scored: true,
-                }]),
-                penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
-                players: HashMap::new(),
-            }),
-            // A manually-entered / quarter-only-scored netball result: goal
-            // tally only, no goal-by-goal detail.
-            Score::Netball(NetballScore {
-                score: HashMap::from([("kestrels".to_string(), 45), ("harriers".to_string(), 38)]),
-                goals: None,
-                fouls: None,
-                period: Some(NetballPeriod::FullTime),
-                period_times: None,
-                period_scores: Some(HashMap::from([
-                    (
-                        NetballPeriod::QuarterOneEnd,
-                        HashMap::from([("kestrels".to_string(), 12), ("harriers".to_string(), 9)]),
-                    ),
-                    (
-                        NetballPeriod::FullTime,
-                        HashMap::from([("kestrels".to_string(), 45), ("harriers".to_string(), 38)]),
-                    ),
-                ])),
-                players: HashMap::new(),
-            }),
-            // A live-scored (event-by-event) netball result: full goal/foul
-            // detail.
-            Score::Netball(NetballScore {
-                score: HashMap::from([("kestrels".to_string(), 2), ("harriers".to_string(), 1)]),
-                goals: Some(vec![
-                    NetballGoalEvent {
-                        side_id: "kestrels".into(),
-                        scorer_player_id: Some("player_1".into()),
-                        scorer_position: Some(NetballPosition::GoalShooter),
-                        two_points: false,
-                        minute: Some(3),
-                        occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
-                    },
-                    NetballGoalEvent {
-                        side_id: "kestrels".into(),
-                        scorer_player_id: Some("player_2".into()),
-                        scorer_position: Some(NetballPosition::GoalAttack),
-                        two_points: true,
-                        minute: Some(7),
-                        occurred_at: Some(parse_ts("2024-05-01T20:07:00.000Z")),
-                    },
-                ]),
-                fouls: Some(vec![NetballFoulEvent {
-                    side_id: "harriers".into(),
-                    player_id: Some("player_3".into()),
-                    foul_kind: NetballFoulKind::Obstruction,
-                    minute: Some(5),
-                    occurred_at: Some(parse_ts("2024-05-01T20:05:00.000Z")),
-                }]),
-                period: Some(NetballPeriod::QuarterOneEnd),
-                period_times: Some(HashMap::from([(
-                    NetballPeriod::QuarterOneEnd,
-                    parse_ts("2024-05-01T20:15:00.000Z"),
-                )])),
-                period_scores: Some(HashMap::from([(
-                    NetballPeriod::QuarterOneEnd,
-                    HashMap::from([("kestrels".to_string(), 2), ("harriers".to_string(), 1)]),
-                )])),
-                players: HashMap::new(),
-            }),
         ];
 
         for score in scores {
             let original_json = score.to_json();
             let round_tripped = score_from_record(&score_to_record(&score));
             assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ranked matches: the ladder, and the lock on changing the flag
+    // -----------------------------------------------------------------------
+
+    /// A ranked squash match nobody has played yet, starting at `starts_at`.
+    fn scheduled_match(starts_at: &str) -> MatchRecord {
+        MatchRecord {
+            id: "m1".to_string(),
+            created_by_user_id: "u1".to_string(),
+            name: "Tuesday".to_string(),
+            description: String::new(),
+            match_type: "squash".to_string(),
+            status: "scheduled".to_string(),
+            starts_at: starts_at.to_string(),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: None,
+            series_id: None,
+            tournament_id: None,
+            tournament_round: None,
+            sides: HashMap::new(),
+            header_photos: Vec::new(),
+            authority: HashMap::new(),
+            side_authority: HashMap::new(),
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            ranked: true,
+            open_join: None,
+            open_joined_count: 0,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    /// The "now" the lock tests judge against: midday on the day the fixtures
+    /// are scheduled.
+    fn lock_now() -> chrono::DateTime<chrono::Utc> {
+        parse_ts("2026-06-01T12:00:00.000Z")
+    }
+
+    /// The flag is free to change right up to the start. Anything stricter
+    /// would stop an organiser correcting a mis-click on a match nobody has
+    /// played yet, which is the only time the choice is genuinely free.
+    #[test]
+    fn ranked_is_open_until_the_match_starts() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T18:00:00.000Z"), lock_now()),
+            None
+        );
+    }
+
+    /// The bug the lock exists to prevent: play the game, see the result, and
+    /// only *then* decide whether it counts. Once `starts_at` has passed the
+    /// outcome may be known, so the choice is closed even with no score typed
+    /// in.
+    #[test]
+    fn ranked_locks_once_the_match_has_started() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T09:00:00.000Z"), lock_now()),
+            Some("the match has already started")
+        );
+    }
+
+    /// Nothing stops a match being scored before its scheduled start, so the
+    /// clock alone isn't enough: a submitted score closes the choice by itself.
+    #[test]
+    fn ranked_locks_on_a_submitted_score_even_before_the_start_time() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.pending_score = Some(PendingScoreRecord {
+            submission_id: "s1".to_string(),
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+            confirmations: Vec::new(),
+        });
+        assert_eq!(
+            ranked_lock_reason(&m, lock_now()),
+            Some("a score has already been submitted")
+        );
+    }
+
+    /// What a check on `confirmed_score`/`pending_score` alone would miss: a
+    /// dispute *clears* `pending_score`, so a scored-then-disputed match has
+    /// neither field set. Without the status arm the lock would reopen on
+    /// exactly the match whose result everybody has already seen.
+    #[test]
+    fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        assert_eq!(
+            ranked_lock_reason(&m, lock_now()),
+            Some("the match is no longer scheduled")
+        );
+    }
+
+    /// A point reports the rating *after* its match, the band after it, and
+    /// the delta exactly as stored — not recomputed from the two ends, which
+    /// is what keeps a retuned scale from rewriting what a card once said.
+    #[test]
+    fn a_history_point_reports_the_rating_after_its_match() {
+        let rec = agon_services_core::dao::records::RatingHistoryRecord {
+            ladder: "squash".to_string(),
+            match_id: "m1".to_string(),
+            played_at: "2026-06-01T18:00:00.000Z".to_string(),
+            movement: agon_services_core::dao::records::RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 8.333,
+                mu_after: 26.0,
+                sigma_after: 7.5,
+                // Deliberately not what the mu change implies, so the test
+                // can tell a stored delta from a recomputed one.
+                display_delta: 7,
+            },
+            applied_at: "2026-06-02T09:00:00.000Z".to_string(),
+        };
+
+        let point = rating_history_point_from_record(&rec);
+        assert_eq!(point.match_id, "m1");
+        assert_eq!(point.delta, 7, "the stored delta, not mu_after - mu_before");
+        assert_eq!(point.rating, display(26.0, 7.5).rating);
+        assert_eq!(point.confidence, display(26.0, 7.5).confidence);
+        assert_eq!(point.rating_before, 1500, "mu 25 is the scale's origin");
+        assert!(
+            point.confidence < display(25.0, 8.333).confidence,
+            "the band narrows as sigma falls, which is what the chart shows"
+        );
+    }
+
+    /// Every shape a match is served in agrees about whether it is ranked.
+    ///
+    /// The three mappers are separate functions over the same record, so
+    /// nothing but a test stops one of them being updated and the others
+    /// not — which is exactly how the feed and search ended up unable to
+    /// mark a ranked match while the detail page could.
+    #[test]
+    fn ranked_is_carried_into_every_match_shape() {
+        let ranked = scheduled_match("2026-06-01T18:00:00.000Z");
+        let users = HashMap::new();
+        let tournaments = HashMap::new();
+
+        let detail = match_from_records(&ranked, &[], &[], false, &tournaments);
+        let feed = feed_match_from_records(
+            &ranked,
+            &[],
+            &users,
+            Vec::new(),
+            0,
+            None,
+            false,
+            false,
+            Vec::new(),
+            false,
+            &tournaments,
+        );
+        let hit = search_match_from_records(&ranked, &[], &users, None, false, &tournaments);
+
+        assert!(detail.ranked && feed.ranked && hit.ranked);
+        let ladder = Some("squash".to_string());
+        assert_eq!(detail.rating_ladder, ladder);
+        assert_eq!(feed.rating_ladder, ladder);
+        assert_eq!(hit.rating_ladder, ladder);
+    }
+
+    /// A friendly carries no ladder in any shape — `rating_ladder` is `Some`
+    /// exactly when `ranked`, which is what lets a client treat the two as
+    /// one fact rather than checking both.
+    #[test]
+    fn a_friendly_has_no_ladder_in_any_shape() {
+        let mut friendly = scheduled_match("2026-06-01T18:00:00.000Z");
+        friendly.ranked = false;
+        let users = HashMap::new();
+        let tournaments = HashMap::new();
+
+        let detail = match_from_records(&friendly, &[], &[], false, &tournaments);
+        let feed = feed_match_from_records(
+            &friendly,
+            &[],
+            &users,
+            Vec::new(),
+            0,
+            None,
+            false,
+            false,
+            Vec::new(),
+            false,
+            &tournaments,
+        );
+        let hit = search_match_from_records(&friendly, &[], &users, None, false, &tournaments);
+
+        assert!(!detail.ranked && !feed.ranked && !hit.ranked);
+        assert_eq!(detail.rating_ladder, None);
+        assert_eq!(feed.rating_ladder, None);
+        assert_eq!(hit.rating_ladder, None);
+    }
+
+    /// The detail mapper never invents a movement: it has no viewer and no
+    /// reads, so `get_match` is the only thing that can fill this in, and a
+    /// mapper that quietly defaulted it to `Some(0)` would read as "this
+    /// match moved you nothing" on every other caller.
+    #[test]
+    fn the_mapper_leaves_the_viewers_delta_unset() {
+        let m = match_from_records(&rated_match(), &[], &[], false, &HashMap::new());
+        assert_eq!(m.viewer_rating_delta, None);
+    }
+
+    /// A squash match with a confirmed score, i.e. one the pipeline has
+    /// rated.
+    fn rated_match() -> MatchRecord {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        m.confirmed_score = Some(ConfirmedScoreRecord {
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+        });
+        m
+    }
+
+    /// Each of the three rating inputs is refused on its own, and the score
+    /// is the one thing left open.
+    #[test]
+    fn a_rated_ranked_match_closes_its_rating_inputs() {
+        let m = rated_match();
+        assert_eq!(
+            rated_ranked_edit_reason(&m, true, false, false),
+            Some("a ranked match's roster is fixed once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, true, false),
+            Some("a ranked match can't be rescheduled once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, false, true),
+            Some("a ranked match's status is fixed once it has a score")
+        );
+        // Nothing the rating was built from: a score edit, or a rename.
+        assert_eq!(rated_ranked_edit_reason(&m, false, false, false), None);
+    }
+
+    /// Before a score there is no rating to protect, and setting a match up
+    /// is mostly roster edits — so the lock mustn't apply yet. Getting this
+    /// wrong would make a ranked match impossible to organise.
+    #[test]
+    fn an_unscored_ranked_match_refuses_nothing() {
+        let m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
+    /// A friendly's roster was never anybody's rating input, so none of this
+    /// applies however the match was scored.
+    #[test]
+    fn a_scored_friendly_refuses_nothing() {
+        let mut m = rated_match();
+        m.ranked = false;
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
+    /// **Regression.** The first version of this lock read the stored record
+    /// alone, which let a single PATCH walk through it and close it behind
+    /// itself: `{ score, ranked: false }` on a match still stored `scheduled`
+    /// with a future start recorded the result *and* de-ranked it. That is the
+    /// "log the game, see that you lost, then de-rank it" bug itself, and it
+    /// needs no trickery — playing before the scheduled slot is ordinary.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
+        let scheduled = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(
+            ranked_lock_reason(&scheduled, lock_now()),
+            None,
+            "the stored state alone still says the flag is open, which is the trap"
+        );
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled,
+                "scheduled",
+                "2026-06-01T18:00:00.000Z",
+                true,
+                lock_now()
+            ),
+            Some("this request submits a score")
+        );
+    }
+
+    /// The same hole reached without a `score`: starting, completing or
+    /// cancelling the match in the same call. Mirrors the stored status arm,
+    /// so a PATCH can't reach in one step a state it couldn't reach in two.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_moves_the_status_on() {
+        for status in ["in_progress", "completed", "cancelled"] {
+            assert_eq!(
+                ranked_lock_reason_for_update(
+                    &scheduled_match("2026-06-01T18:00:00.000Z"),
+                    status,
+                    "2026-06-01T18:00:00.000Z",
+                    false,
+                    lock_now()
+                ),
+                Some("this request takes the match out of scheduled"),
+                "{status}"
+            );
+        }
+    }
+
+    /// ...and the clock arm: backdating the match into the past is the same
+    /// claim as "it has already been played".
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_backdates_the_match() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-05-30T09:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            Some("this request moves the start time into the past")
+        );
+    }
+
+    /// The other direction, and why the stored record still counts: pushing
+    /// `starts_at` back into the future must not *re*open the flag on a match
+    /// that has already started. That request's resulting state is an innocent
+    /// scheduled match, so a resulting-state-only lock would let it through.
+    #[test]
+    fn ranked_cannot_be_reopened_by_rescheduling_a_started_match_into_the_future() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T09:00:00.000Z"),
+                "scheduled",
+                "2026-06-08T18:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            Some("the match has already started")
+        );
+    }
+
+    /// An ordinary edit to a match nobody has played yet leaves the flag open:
+    /// the lock must stay off until something genuinely closes it, or an
+    /// organiser could never correct a mis-click.
+    #[test]
+    fn ranked_is_still_open_on_an_unplayed_match_being_edited() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-06-02T18:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            None
+        );
+    }
+
+    /// `rating_ladder` says where *this* result goes, not what the sport could
+    /// do: nothing for a friendly, even in a sport with a ladder. A ranked
+    /// match in a ladderless sport (which the API refuses to create) gets
+    /// nothing either, because nothing would rate it.
+    #[test]
+    fn a_rating_ladder_is_only_given_for_a_ranked_match() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rating_ladder(&m).as_deref(), Some("squash"));
+        m.ranked = false;
+        assert_eq!(rating_ladder(&m), None);
+        m.ranked = true;
+        m.match_type = "other".to_string();
+        assert_eq!(rating_ladder(&m), None);
+    }
+
+    /// `other` can't be ranked and every modelled sport can, checked on the
+    /// tags `MatchType` really stores. The API's check takes a stored tag
+    /// while the engine maps its own `Sport` mirror, so this is what catches
+    /// the two drifting apart — a tag the engine didn't recognise would read
+    /// as `other` and quietly become unrankable.
+    #[test]
+    fn only_a_sport_without_a_ladder_is_unrankable() {
+        for sport in [
+            MatchType::Tennis,
+            MatchType::Badminton,
+            MatchType::Squash,
+            MatchType::TableTennis,
+            MatchType::Football,
+            MatchType::Cricket,
+            MatchType::Netball,
+        ] {
+            let tag = match_type_tag(&sport);
+            assert_eq!(unrankable_sport_reason(tag), None, "{tag}");
+        }
+        assert!(
+            unrankable_sport_reason(match_type_tag(&MatchType::Other))
+                .is_some_and(|reason| reason.contains("no rating ladder"))
+        );
+    }
+
+    /// An invitation's match context reports whether the match is ranked
+    /// *now*, read from the match rather than the invitation: the organiser can
+    /// switch a match to ranked after inviting people, and the warning on the
+    /// accept screen has to follow. A match that can't be found reads as a
+    /// friendly instead of failing the page.
+    #[test]
+    fn an_invitation_context_reports_the_matchs_current_ranked_flag() {
+        let context = InvitationContextRecord::Match {
+            match_id: "m1".to_string(),
+            match_name: "Tuesday".to_string(),
+        };
+        let resolve = |matches: &HashMap<String, MatchRecord>| {
+            let InvitationContext::Match(ctx) = invitation_context_from_record(&context, matches)
+            else {
+                panic!("expected a match context");
+            };
+            (ctx.ranked, ctx.rating_ladder)
+        };
+
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(
+            resolve(&HashMap::from([("m1".to_string(), m.clone())])),
+            (true, Some("squash".to_string()))
+        );
+        m.ranked = false;
+        assert_eq!(
+            resolve(&HashMap::from([("m1".to_string(), m)])),
+            (false, None)
+        );
+        assert_eq!(resolve(&HashMap::new()), (false, None));
+    }
+
+    // -----------------------------------------------------------------------
+    // Rating consent: who may take a spot in, or wait for, a ranked match
+    // -----------------------------------------------------------------------
+
+    /// A profile named `name`, rated on nothing.
+    fn user_record(id: &str, name: &str) -> UserRecord {
+        UserRecord {
+            id: id.to_string(),
+            email: format!("{id}@example.com"),
+            name: name.to_string(),
+            profile_image_url: None,
+            follower_count: 0,
+            following_count: 0,
+            unread_count: 0,
+            stats: UserStatsRecord::default(),
+            ratings: HashMap::new(),
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            is_admin: false,
+        }
+    }
+
+    /// The paths that put someone *else* in a ranked match sort out the
+    /// players who could never be rated there. That is now only players with
+    /// no account: there is no profile to keep a rating on, and the pipeline
+    /// refuses the match rather than rate a side around one of them.
+    ///
+    /// Not being opted in used to belong here too, and deliberately counted a
+    /// missing profile as a refusal. Both are gone — a player nothing vouches
+    /// for is simply rated latently like everyone else.
+    #[test]
+    fn only_players_without_an_account_cannot_be_rated() {
+        let unratable = unratable_players([
+            (Some("in"), None),
+            (Some("out"), None),
+            (None, Some("Ringer")),
+            (Some("ghost"), None),
+            (None, None),
+        ]);
+        assert_eq!(
+            unratable,
+            UnratablePlayers {
+                without_account: vec!["Ringer".to_string(), "an unnamed player".to_string()],
+            }
+        );
+        assert_eq!(
+            unratable_players([(Some("in"), None)]),
+            UnratablePlayers::default()
+        );
+    }
+
+    /// Each refusal is silent when there's nobody to refuse, and otherwise
+    /// names who. All three remaining refusals are about accounts, so all
+    /// three say so — there is no longer a second kind to report underneath.
+    #[test]
+    fn the_roster_refusals_name_who_and_what_to_do() {
+        let nobody = UnratablePlayers::default();
+        assert_eq!(ranked_added_players_reason(&nobody), None);
+        assert_eq!(switch_to_ranked_reason(&nobody), None);
+        assert_eq!(ranked_guest_invites_reason(&nobody), None);
+
+        let guest = UnratablePlayers {
+            without_account: vec!["Ringer".to_string()],
+        };
+        for reason in [
+            ranked_added_players_reason(&guest).unwrap(),
+            switch_to_ranked_reason(&guest).unwrap(),
+            ranked_guest_invites_reason(&guest).unwrap(),
+        ] {
+            assert!(reason.contains("Agon account"), "{reason}");
+            assert!(reason.contains("Ringer"), "{reason}");
+        }
+
+        // The refusals on an existing match tell you to take the guest off
+        // it. The creation one can't say that — nothing has been created, and
+        // the organiser is mid-invite — so it names the two choices actually
+        // still open instead.
+        assert!(
+            switch_to_ranked_reason(&guest).unwrap().contains("remove"),
+            "a switch is refused on a match the guests are already on"
+        );
+        let creating = ranked_guest_invites_reason(&guest).unwrap();
+        assert!(!creating.contains("remove"), "{creating}");
+        assert!(creating.contains("friendly"), "{creating}");
+    }
+
+    fn rated(matches_rated: u64) -> agon_services_core::dao::records::RatingRecord {
+        agon_services_core::dao::records::RatingRecord {
+            mu: 27.0,
+            sigma: 2.0,
+            matches_rated,
+            last_rated_at: "2026-09-15T10:00:00.000Z".to_string(),
+        }
+    }
+
+    /// **The leak boundary.** A rating exists for every ladder a user has
+    /// played a ranked match on, and only a placed one may leave the
+    /// service. One short of the threshold is one short, and the filter is
+    /// here rather than at each caller because a number withheld in four
+    /// responses and sent in the fifth is withheld nowhere.
+    #[test]
+    fn only_a_placed_rating_is_published() {
+        let mut user = user_record("u1", "Sam");
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("tennis".to_string(), rated(PLACEMENT_MATCHES + 30)),
+            ("netball".to_string(), rated(PLACEMENT_MATCHES - 1)),
+        ]);
+
+        let published = published_ratings_from_record(&user);
+        assert_eq!(
+            published
+                .iter()
+                .map(|r| r.ladder.as_str())
+                .collect::<Vec<_>>(),
+            vec!["squash", "tennis"]
+        );
+        let squash = &published[0];
+        assert_eq!(squash.matches_rated, PLACEMENT_MATCHES as u32);
+        assert_eq!(squash.floor, squash.rating - squash.confidence);
+    }
+
+    /// The two lists partition the ladders a user has a rating on: squash is
+    /// published, netball is placing, and neither appears twice. There is no
+    /// third state to fall into, which is the property worth a test — it is
+    /// what lets a client render "where do I stand" from the two fields
+    /// without asking what a ladder in neither would mean.
+    #[test]
+    fn placements_hold_exactly_the_ladders_a_rating_does_not() {
+        let mut user = user_record("u1", "Sam");
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("netball".to_string(), rated(2)),
+            ("tennis".to_string(), rated(1)),
+        ]);
+
+        let placements = rating_placements_from_record(&user);
+        assert_eq!(
+            placements
+                .iter()
+                .map(|p| (p.ladder.as_str(), p.played, p.required))
+                .collect::<Vec<_>>(),
+            vec![
+                ("netball", 2, PLACEMENT_MATCHES as u32),
+                ("tennis", 1, PLACEMENT_MATCHES as u32),
+            ]
+        );
+        let published: Vec<String> = published_ratings_from_record(&user)
+            .into_iter()
+            .map(|r| r.ladder)
+            .collect();
+        assert_eq!(published, vec!["squash".to_string()]);
+        for placing in &placements {
+            assert!(!published.contains(&placing.ladder), "{}", placing.ladder);
         }
     }
 

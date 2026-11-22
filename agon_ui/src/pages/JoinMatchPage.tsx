@@ -9,7 +9,8 @@ import { clearPendingInvite } from '@/lib/pendingInvite'
 import { forgetJoinLink, rememberJoinLink } from '@/lib/joinLinkMemory'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { relativeTime, scheduledDateTime } from '@/lib/datetime'
-import { sidePlayerCountLabel, sideTeamHint, sideDisplayName } from '@/lib/members'
+import { isParticipant, sidePlayerCountLabel, sideTeamHint, sideDisplayName } from '@/lib/members'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 import { Avatar } from '@/components/agon/Avatar'
 import { LinkLandingCard } from '@/components/agon/LinkLandingCard'
@@ -79,16 +80,20 @@ export function JoinMatchPage() {
   })
 
   const match = matchQuery.data
+  const currentUserId = useCurrentUserId()
+  // The roster, not `viewer_role` — that's owner/admin authority only, so a
+  // plain player would never be recognised as already in.
+  const alreadyIn = !!match && isParticipant(match, currentUserId)
 
   // Already on the roster (joined via this link earlier, or some other way)
   // — the server would just bounce the join with a 409, so skip straight to
   // the match instead of showing an invite screen for a game we're already in.
   useEffect(() => {
-    if (match?.viewer_role != null) {
+    if (match && alreadyIn) {
       clearPendingInvite()
       navigate(`/matches/${match.id}`, { replace: true })
     }
-  }, [match?.viewer_role, match?.id, navigate])
+  }, [alreadyIn, match, navigate])
 
   const choice = preview.data && match ? joinChoiceFor(preview.data, match) : undefined
   const pickableSides = choice && match ? sidesFor(choice, match) : []
@@ -156,7 +161,7 @@ export function JoinMatchPage() {
 
   const conflict = join.data && join.data !== 'joined' ? join.data : null
 
-  if (preview.isLoading || (matchId && matchQuery.isLoading) || match?.viewer_role != null) {
+  if (preview.isLoading || (matchId && matchQuery.isLoading) || alreadyIn) {
     return <LinkLandingCard description="Loading this game…" />
   }
 

@@ -578,6 +578,7 @@ export function NetballPlayersTab({
   finished,
   footer,
   layout = 'stack',
+  canManage,
 }: {
   match: Match
   detail: NetballEventSource | null
@@ -589,6 +590,8 @@ export function NetballPlayersTab({
   /** `columns` (desktop) puts the sides side by side and leaves the top
    *  performer out; `top` renders only the top performer card. */
   layout?: PlayersLayout
+  /** Viewer is an owner/admin — shows the make/remove-admin menu on each row. */
+  canManage?: boolean
 }) {
   const following = useViewerFollowing(currentUserId)
   const scorers = useMemo(() => (detail ? scorerRows(match, detail) : []), [match, detail])
@@ -614,7 +617,16 @@ export function NetballPlayersTab({
   }
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
   const row = (p: MatchPlayer, i: number) => (
-    <PlayerRow key={p.member.id} player={p} first={i === 0} currentUserId={currentUserId} followingIds={following.data} line={lineFor(p.member.id)} />
+    <PlayerRow
+      key={p.member.id}
+      player={p}
+      first={i === 0}
+      currentUserId={currentUserId}
+      followingIds={following.data}
+      matchId={match.id}
+      canManage={canManage}
+      line={lineFor(p.member.id)}
+    />
   )
 
   const topCard = top && topPlayer ? (

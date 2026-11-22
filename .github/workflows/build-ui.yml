@@ -22,8 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # agon_core compiled to wasm for the browser (the auto team builder).
+      # The CLI's version must equal agon_core_wasm's pinned `wasm-bindgen`.
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.100
       - run: npm install
       - run: npm run generate
+      - run: npm run build:wasm
       - run: npm run build
       # Shared with docker-ui.yml's publish job so it doesn't have to redo
       # `./.github/actions/setup` (a full Rust workspace build, just to
@@ -33,4 +40,10 @@ jobs:
         with:
           name: agon-ui-openapi-types
           path: agon_ui/src/types/api.ts
+          retention-days: 1
+      # Same idea for the wasm build, so docker-ui.yml needs no Rust toolchain.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agon-ui-wasm
+          path: agon_ui/src/wasm
           retention-days: 1

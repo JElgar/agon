@@ -16,12 +16,17 @@ import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 import { formatWinRate, type BestFigure } from '@/lib/stats'
 import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
+import { RatingCard } from '@/components/agon/RatingCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useProfileView } from '@/hooks/useProfileView'
+import { useRatingHistory } from '@/hooks/useRatingHistory'
+import { placementFor, ratingFor } from '@/lib/rating'
 import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
-type UserProfile = components['schemas']['UserProfile']
+type CricketPlayerStats = components['schemas']['CricketPlayerStats']
+type FootballPlayerStats = components['schemas']['FootballPlayerStats']
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
 
@@ -32,7 +37,7 @@ const RECENT_LIMIT = 10
 const FETCH_LIMIT = 50
 /** Trailing months shown in the activity chart. */
 const CHART_MONTHS = 6
-/** Outcomes shown in the "recent form" row, most recent first. */
+/** Outcomes shown in the "recent form" row, most recent last (on the right). */
 const FORM_LIMIT = 5
 
 const MONTH_LABELS = [
@@ -65,24 +70,15 @@ export function SportStatsPage() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ResultFilter>('all')
 
-  const profileQuery = useQuery({
-    queryKey: ['profile', userId ?? 'me'],
-    queryFn: async (): Promise<UserProfile> => {
-      if (userId) {
-        const { data, error } = await fetchClient.GET('/users/{user_id}', {
-          params: { path: { user_id: userId } },
-        })
-        if (error || !data) throw new Error('Failed to load profile')
-        return data
-      }
-      const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
-      return data.profile
-    },
-  })
+  const profileQuery = useProfileView(userId)
 
-  const profileId = profileQuery.data?.id
+  const profileId = profileQuery.data?.profile.id
   const matchType = sport as MatchType
+
+  // Keyed on the resolved profile id rather than the route's `userId`, which
+  // is absent on your own page — so your own chart and someone else's share
+  // one cache entry shape instead of two.
+  const historyQuery = useRatingHistory(profileId, matchType)
 
   const matchesQuery = useQuery({
     queryKey: ['profile-sport-matches', profileId, sport],
@@ -113,8 +109,13 @@ export function SportStatsPage() {
     )
   }
 
-  const profile = profileQuery.data
+  const { profile, placements } = profileQuery.data
   const stats = profile.stats[matchType as keyof typeof profile.stats]
+  // Cricket's and football's stats cards key off the sport itself, not off
+  // which fields happen to be present — a future sport could easily add its
+  // own `assists`-like counter without being football.
+  const cricketStats = matchType === 'cricket' ? (stats as CricketPlayerStats | undefined) : undefined
+  const footballStats = matchType === 'football' ? (stats as FootballPlayerStats | undefined) : undefined
   const Icon = sportIcon(matchType)
   const matches = matchesQuery.data
   const recentByDate = sortedByDate(matches)
@@ -125,73 +126,82 @@ export function SportStatsPage() {
   // beside the win rate (see `DesktopSport.dc.html`) — no other sport has a
   // bespoke desktop board, so everyone else's banner just reflows via its
   // own responsive classes with no `extra` cluster.
-  const bannerExtra =
-    stats && 'goals' in stats ? (
-      <>
-        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
-        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
-      </>
-    ) : undefined
+  const bannerExtra = footballStats ? (
+    <>
+      <PerMatchStat value={footballStats.goals} label="Goals" matches={footballStats.matches_played} />
+      <PerMatchStat value={footballStats.assists} label="Assists" matches={footballStats.matches_played} />
+    </>
+  ) : undefined
 
-  const breakdownEl = !stats ? null : 'runs' in stats ? (
+  const breakdownEl = cricketStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Batting &amp; bowling</SectionHeading>
       <Card className="grid grid-cols-3 gap-3 p-[18px] sm:grid-cols-5">
-        <StatTile value={stats.runs} label="Runs" />
-        <StatTile value={stats.wickets} label="Wickets" />
-        <StatTile value={stats.fours} label="Fours" />
-        <StatTile value={stats.sixes} label="Sixes" />
-        <StatTile value={stats.catches} label="Catches" />
+        <StatTile value={cricketStats.runs} label="Runs" />
+        <StatTile value={cricketStats.wickets} label="Wickets" />
+        <StatTile value={cricketStats.fours} label="Fours" />
+        <StatTile value={cricketStats.sixes} label="Sixes" />
+        <StatTile value={cricketStats.catches} label="Catches" />
       </Card>
       <Card className="grid grid-cols-3 gap-3 p-[18px]">
         <StatTileWithInfo
-          value={stats.batting_average?.toFixed(1) ?? '-'}
+          value={cricketStats.batting_average?.toFixed(1) ?? '-'}
           label="Average"
           info="Runs scored per dismissal — the traditional batting average. Shows “-” until you've been out at least once."
         />
         <StatTileWithInfo
-          value={stats.strike_rate?.toFixed(0) ?? '-'}
+          value={cricketStats.strike_rate?.toFixed(0) ?? '-'}
           label="Strike rate"
           info="Runs scored per 100 balls faced."
         />
         <StatTileWithInfo
-          value={stats.economy?.toFixed(1) ?? '-'}
+          value={cricketStats.economy?.toFixed(1) ?? '-'}
           label="Economy"
           info="Runs conceded per over bowled — lower is better."
         />
       </Card>
     </section>
-  ) : 'goals' in stats ? (
+  ) : footballStats ? (
     <section className="flex flex-col gap-3 xl:hidden">
       <SectionHeading>Goals &amp; assists</SectionHeading>
       <Card className="grid grid-cols-2 gap-4 p-[18px]">
-        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
-        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
+        <PerMatchStat value={footballStats.goals} label="Goals" matches={footballStats.matches_played} />
+        <PerMatchStat value={footballStats.assists} label="Assists" matches={footballStats.matches_played} />
       </Card>
     </section>
   ) : null
 
-  const personalBestsEl = !stats ? null : 'runs' in stats ? (
+  const personalBestsEl = cricketStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Personal bests</SectionHeading>
       <PersonalBestsCard
-        rows={[{ label: 'High score', unit: 'runs', figure: stats.best_runs }]}
-        bowlingFigure={stats.best_bowling}
+        rows={[{ label: 'High score', unit: 'runs', figure: cricketStats.best_runs }]}
+        bowlingFigure={cricketStats.best_bowling}
         onOpen={(id) => navigate(`/matches/${id}`)}
       />
     </section>
-  ) : 'goals' in stats ? (
+  ) : footballStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Personal bests</SectionHeading>
       <PersonalBestsCard
         rows={[
-          { label: 'Most goals in a match', unit: 'goals', figure: stats.best_goals },
-          { label: 'Most goals + assists', sub: 'in one match', figure: stats.best_goal_contributions },
+          { label: 'Most goals in a match', unit: 'goals', figure: footballStats.best_goals },
+          { label: 'Most goals + assists', sub: 'in one match', figure: footballStats.best_goal_contributions },
         ]}
         onOpen={(id) => navigate(`/matches/${id}`)}
       />
     </section>
   ) : null
+
+  const ratingEl = (
+    <RatingCard
+      sport={matchType}
+      rating={ratingFor(profile.ratings, matchType)}
+      placement={placementFor(placements, matchType)}
+      isOwnProfile={isOwnProfile}
+      history={historyQuery.data}
+    />
+  )
 
   const chartEl = (
     <section className="flex flex-col gap-3">
@@ -271,6 +281,7 @@ export function SportStatsPage() {
               verified against the "Sport" board's mobile mock. */}
           <div className="flex flex-col gap-4 xl:hidden">
             <WinRateBanner stats={stats} recentOutcomes={recentByDate.map((m) => m.outcome)} />
+            {ratingEl}
             {breakdownEl}
             {personalBestsEl}
             {chartEl}
@@ -290,7 +301,8 @@ export function SportStatsPage() {
                 recentOutcomes={recentByDate.map((m) => m.outcome)}
                 extra={bannerExtra}
               />
-              {'runs' in stats && breakdownEl}
+              {ratingEl}
+              {cricketStats && breakdownEl}
               {recentMatchesEl}
             </div>
             <div className="flex flex-col gap-4">
@@ -331,7 +343,10 @@ function WinRateBanner({
    *  hidden below `xl` regardless of what's passed. */
   extra?: React.ReactNode
 }) {
-  const form = recentOutcomes.filter((o): o is MatchOutcome => !!o).slice(0, FORM_LIMIT)
+  const form = recentOutcomes
+    .filter((o): o is MatchOutcome => !!o)
+    .slice(0, FORM_LIMIT)
+    .reverse()
 
   return (
     <Card className="flex flex-col gap-4 p-[18px] xl:gap-5 xl:p-6">

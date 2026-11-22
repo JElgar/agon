@@ -85,6 +85,10 @@ export function MatchJoinSettingsEditor({
       ? match.sides.reduce((sum, s) => sum + (s.max_players ?? 0), 0)
       : undefined
 
+  // The collapsed summary otherwise never surfaces this — an owner had no
+  // way to even tell team self-join was on without opening Edit first.
+  const teamJoinSides = match.sides.filter((s) => s.team_id && s.team_join_enabled)
+
   if (!editing) {
     return (
       <div className="flex items-center justify-between rounded-xl border bg-card p-4">
@@ -102,6 +106,13 @@ export function MatchJoinSettingsEditor({
                   .map((s, i) => `${sideDisplayName(s) ?? `Side ${i + 1}`}: ${s.max_players ?? '∞'}`)
                   .join(' · ')}${derivedCap !== undefined ? ` (max ${derivedCap} total)` : ''}`}
           </p>
+          {teamJoinSides.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {`Team members can join directly: ${teamJoinSides
+                .map((side, i) => sideDisplayName(side) ?? `Side ${i + 1}`)
+                .join(' · ')}`}
+            </p>
+          )}
         </div>
         {canManage && (
           <Button

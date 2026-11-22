@@ -26,6 +26,10 @@ export interface PlayerSearchInputProps {
   onAdd: (player: TaggedPlayer) => void
   className?: string
   autoFocus?: boolean
+  /** False hides the "Add … as guest" option — a ranked match can't contain
+   *  a guest at all, so the create flow never offers one rather than letting
+   *  it get tagged and refused later. Defaults to true. */
+  allowGuests?: boolean
 }
 
 /**
@@ -40,6 +44,7 @@ export function PlayerSearchInput({
   onAdd,
   className,
   autoFocus,
+  allowGuests = true,
 }: PlayerSearchInputProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -69,13 +74,14 @@ export function PlayerSearchInput({
       )
     : []
   const trimmed = term.trim()
-  const canAddGuest = trimmed.length >= 1 && !takenKeys.has(`ext:${trimmed.toLowerCase()}`)
+  const canAddGuest = allowGuests && trimmed.length >= 1 && !takenKeys.has(`ext:${trimmed.toLowerCase()}`)
   const items: SearchItem[] = [
     ...results.map((u): SearchItem => ({ kind: 'user', user: u })),
     ...(canAddGuest ? [{ kind: 'guest', name: trimmed } as const] : []),
   ]
   const isLoading = searching && search.isLoading
   const nothingFound = !isLoading && items.length === 0 && trimmed.length > 0
+  const noAccountForRankedMatch = nothingFound && !allowGuests
 
   const reset = () => {
     setTerm('')
@@ -121,7 +127,13 @@ export function PlayerSearchInput({
       </ComboboxInput>
       <ComboboxContent>
         {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
-        {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
+        {nothingFound && (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            {noAccountForRankedMatch
+              ? `No Agon account found for "${trimmed}" — ranked matches can't include guests.`
+              : 'No matches.'}
+          </p>
+        )}
         <ComboboxList>
           {(item: SearchItem) =>
             item.kind === 'user' ? (

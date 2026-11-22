@@ -7,13 +7,14 @@ import {
   Link,
   useLocation,
 } from 'react-router-dom'
-import { Bell, Search } from 'lucide-react'
+import { Bell, Search, Shield } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
 import { IosInstallBanner } from '@/components/IosInstallBanner'
+import { OfflineBanner } from '@/components/OfflineBanner'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { DesktopNav } from '@/components/DesktopNav'
 import { TabletHeader, TabletFloatingNav } from '@/components/TabletNav'
@@ -24,11 +25,12 @@ import { useUnreadNotificationsCount } from '@/hooks/useUnreadCount'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
-import { ScheduledMatchesPage } from '@/pages/ScheduledMatchesPage'
 import { BrowseMatchesPage } from '@/pages/BrowseMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { EditMatchPage } from '@/pages/EditMatchPage'
+import { MatchSeriesPage } from '@/pages/MatchSeriesPage'
 import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
 import { LiveScoringPage } from '@/pages/LiveScoringPage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
@@ -39,19 +41,42 @@ import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import { JoinMatchPage } from '@/pages/JoinMatchPage'
 import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
+import { YoutubeConnectionPage } from '@/pages/YoutubeConnectionPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
+import { AdminLayout } from '@/pages/admin/AdminLayout'
+import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
+import { AdminMatchesPage } from '@/pages/admin/AdminMatchesPage'
+import { useIsAdmin } from '@/hooks/useIsAdmin'
+import { CreatePage } from '@/pages/CreatePage'
+import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
+import { TournamentPage } from '@/pages/TournamentPage'
+import { TournamentEntriesPage } from '@/pages/TournamentEntriesPage'
 import {
   getPendingInvite,
   setPendingInvite,
   type PendingInvite,
 } from '@/lib/pendingInvite'
+import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { identifyPosthogUser } from '@/lib/posthog'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex items-center justify-center">{children}</div>
   )
+}
+
+/** Gates an `/admin/...` route on `useIsAdmin`. Purely a UX nicety — the
+ *  server enforces the real check on every `/admin/...` request regardless
+ *  of what renders here. */
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const isAdmin = useIsAdmin()
+  if (!isAdmin) {
+    return <Navigate to="/feed" replace />
+  }
+  return <>{children}</>
 }
 
 /** Placeholder for a page not yet built in the rewrite. */
@@ -68,29 +93,41 @@ function ComingSoon({ title }: { title: string }) {
  *  ≥1280px), a top bar + floating pill nav at the tablet breakpoint
  *  (`md`–`xl`, ~768–1279px), and a top bar + bottom tab bar below that,
  *  wrapping the routed content. */
-/** Match detail pages pin their own "Give kudos" / RSVP action bar to the
- *  bottom of the screen; the bottom tab bar would just compete with it for
- *  the same strip of screen, so it's hidden there (but not on `/matches/new`
- *  or `/matches/scheduled`, which have no pinned bar of their own). */
-function isNestedMatchPage(pathname: string): boolean {
-  return /^\/matches\/[^/]+$/.test(pathname)
+/** Match detail pages and the log-match flow each pin their own action bar
+ *  (`PinnedActionBar`: "Give kudos" / RSVP / Continue) to the bottom of the
+ *  screen; the bottom tab bar would just compete with it for the same strip
+ *  of screen, so it's hidden on those pages (`/matches/new` and
+ *  `/matches/:matchId`, but not `/matches/search` or `/matches/scheduled`,
+ *  which have no pinned bar of their own). */
+function hasPinnedActionBar(pathname: string): boolean {
+  return /^\/matches\/(?!search$|scheduled$)[^/]+$/.test(pathname)
 }
 
 function AppShell({ onSignOut }: { onSignOut: () => void }) {
   const { data: unread } = useUnreadNotificationsCount()
+  const isAdmin = useIsAdmin()
   const location = useLocation()
-  const showMobileBottomNav = !isNestedMatchPage(location.pathname)
+  const showMobileBottomNav = !hasPinnedActionBar(location.pathname)
 
   return (
     <div className="min-h-screen bg-background">
       <DesktopNav unread={unread} onSignOut={onSignOut} />
       <div className="min-h-screen xl:pl-[248px]">
         {/* Mobile top bar: brand + quick links to the two nav destinations
-              that don't fit the bottom tab bar. Replaced by `TabletHeader`
-              at `md`, and by the sidebar's own nav at `xl`. */}
+              that don't fit the bottom tab bar, plus (for an admin account)
+              the only way into the admin panel below the desktop sidebar's
+              own breakpoint. Replaced by `TabletHeader` at `md`, and by the
+              sidebar's own nav at `xl`. */}
           <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden">
             <Logo />
             <div className="flex items-center gap-2">
+              {isAdmin && (
+                <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
+                  <Link to="/admin" aria-label="Admin">
+                    <Shield className="size-5" />
+                  </Link>
+                </Button>
+              )}
               <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
                 <Link to="/search" aria-label="Find people">
                   <Search className="size-5" />
@@ -119,14 +156,23 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
+          <Route path="/create" element={<CreatePage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
-          <Route path="/matches/scheduled" element={<ScheduledMatchesPage />} />
+          <Route
+            path="/matches/scheduled"
+            element={<Navigate to="/matches/search?tab=scheduled" replace />}
+          />
           <Route path="/matches/search" element={<BrowseMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+          <Route path="/matches/:matchId/edit" element={<EditMatchPage />} />
+          <Route path="/match-series/:seriesId" element={<MatchSeriesPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/teams/:teamId" element={<TeamPage />} />
+          <Route path="/tournaments/new" element={<CreateTournamentPage />} />
+          <Route path="/tournaments/:tournamentId" element={<TournamentPage />} />
+          <Route path="/tournaments/:tournamentId/entries" element={<TournamentEntriesPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
@@ -135,6 +181,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/devices" element={<PairedDevicesPage />} />
+          <Route path="/settings/youtube" element={<YoutubeConnectionPage />} />
           <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
           <Route path="/users/:userId" element={<ProfilePage />} />
           <Route path="/users/:userId/stats/:sport" element={<SportStatsPage />} />
@@ -225,20 +272,41 @@ function AuthenticatedApp() {
   // survives login. `pendingLink` is the token on the *current* URL, used to
   // preview the invite/join on the logged-out screen.
   const pendingLink = usePendingLinkCapture()
+  const isOnline = useOnlineStatus()
+  const location = useLocation()
 
   // Resolve the caller's Agon profile. A 404 means the Supabase account exists
   // but hasn't completed signup (no `/users` record yet) → show profile creation.
   // We use the raw fetch client here (not $api) because the gate decision hinges
   // on the HTTP *status*, which openapi-react-query hides behind the parsed body.
+  //
+  // `fetchClient.GET` rejects (rather than returning a response) when the
+  // request can't reach the network at all — which is exactly what happens on
+  // a cold reload while offline. In that case fall back to whether this
+  // account had a profile last time it successfully checked, so someone who
+  // has already been let into the app isn't dropped back onto an error
+  // screen just because they lost connectivity.
   const gate = useQuery({
     queryKey: ['profile-gate'],
     enabled: !!session,
     retry: false,
     queryFn: async (): Promise<ProfileGate> => {
-      const { data, response } = await fetchClient.GET('/users/me')
-      if (data) return 'has-profile'
-      if (response.status === 404) return 'needs-profile'
-      throw new Error(`Failed to load profile (${response.status})`)
+      try {
+        const { data, response } = await fetchClient.GET('/users/me')
+        if (data) {
+          setHasProfileCache(true)
+          identifyPosthogUser(data.profile.id)
+          return 'has-profile'
+        }
+        if (response.status === 404) {
+          setHasProfileCache(false)
+          return 'needs-profile'
+        }
+        throw new Error(`Failed to load profile (${response.status})`)
+      } catch (err) {
+        if (!isOnline && getHasProfileCache()) return 'has-profile'
+        throw err
+      }
     },
   })
 
@@ -280,7 +348,11 @@ function AuthenticatedApp() {
       <CenteredMessage>
         <div className="text-center">
           <h2 className="text-xl font-semibold mb-4">Something went wrong</h2>
-          <p className="text-muted-foreground mb-4">Couldn't load your profile.</p>
+          <p className="text-muted-foreground mb-4">
+            {isOnline
+              ? "Couldn't load your profile."
+              : "You're offline and don't have a saved profile to show yet."}
+          </p>
           <div className="space-x-2">
             <Button onClick={() => gate.refetch()} variant="outline">
               Retry
@@ -291,6 +363,24 @@ function AuthenticatedApp() {
           </div>
         </div>
       </CenteredMessage>
+    )
+  }
+
+  // The admin panel is its own full-screen layout — rendered here, outside
+  // `AppShell`'s chrome entirely, rather than nested inside `AppShell`'s own
+  // `<Routes>` (which would leave the main app's sidebar/top bar/bottom nav
+  // wrapped around it). `AdminRoute` still gates it on `useIsAdmin`.
+  if (location.pathname.startsWith('/admin')) {
+    return (
+      <AdminRoute>
+        <Routes>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<Navigate to="/admin/users" replace />} />
+            <Route path="users" element={<AdminUsersPage />} />
+            <Route path="matches" element={<AdminMatchesPage />} />
+          </Route>
+        </Routes>
+      </AdminRoute>
     )
   }
 
@@ -305,6 +395,7 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
       <BrowserRouter>
+        <OfflineBanner />
         <AuthProvider>
           <AuthenticatedApp />
         </AuthProvider>

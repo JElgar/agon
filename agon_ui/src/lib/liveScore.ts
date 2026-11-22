@@ -770,6 +770,9 @@ export function liveClockLabel(state: FootballScore, now: Date = new Date()): st
 export interface FootballProgressionContext {
   isDraw: boolean
   extraTime: boolean
+  /** The format's `num_halves` — a 1-half match has no half-time break to
+   *  offer: the 1st half's clock-advance action goes straight to full-time. */
+  numHalves: number
 }
 
 /** The `FootballPeriod` marker to record for "the next thing that happens"
@@ -786,7 +789,7 @@ export function nextPeriodForPhase(
     case 'not_started':
       return 'kick_off'
     case 'first_half':
-      return 'half_time'
+      return ctx.numHalves <= 1 ? 'full_time' : 'half_time'
     case 'half_time':
       return 'second_half_kick_off'
     case 'second_half':
@@ -815,7 +818,7 @@ export function nextPhaseActionLabel(
     case 'not_started':
       return 'Kick off'
     case 'first_half':
-      return 'End 1st half'
+      return ctx.numHalves <= 1 ? 'Full-time' : 'End 1st half'
     case 'half_time':
       return 'Start 2nd half'
     case 'second_half':

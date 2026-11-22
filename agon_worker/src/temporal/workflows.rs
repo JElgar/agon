@@ -25,6 +25,10 @@ use super::activities::{
     AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk,
 };
 
+/// How long before a match's `starts_at` its reminder notification fires —
+/// see `MatchReminder`.
+const REMINDER_LEAD: Duration = Duration::from_secs(24 * 3600);
+
 /// How many feed rows to write per activity invocation. Each chunk is a
 /// separately-retryable, checkpointed step — the whole point of running fan-out
 /// on Temporal (a mid-way failure resumes, not restarts).
@@ -64,7 +68,7 @@ pub struct FanOutMatchInput {
     pub match_id: String,
     /// The match's `starts_at` before this write, when this run was triggered
     /// by a change that moved it (a reschedule). `starts_at` is part of the
-    /// feed row's sort key (see `agon_core::dao::feed`), so a re-fan-out after
+    /// feed row's sort key (see `agon_services_core::dao::feed`), so a re-fan-out after
     /// a reschedule writes a *new* row rather than updating the old one in
     /// place — `None` for every other trigger (creation, an invitation
     /// acceptance, any other meta edit) skips the cleanup step below.
@@ -289,7 +293,7 @@ fn to_std_duration(d: chrono::Duration) -> Duration {
 /// What one `MaterializeSeries` execution does once it decides it's neither
 /// gone, `"ended"`, nor `"paused"` — i.e. once it's actually generating.
 /// Pure (no Temporal context), so the window/termination logic is directly
-/// unit-tested (see `tests` below) the same way `agon_core::series` keeps
+/// unit-tested (see `tests` below) the same way `agon_services_core::series` keeps
 /// its date math pure and separate from the activity calls that use it.
 #[derive(Debug, Clone, PartialEq)]
 struct MaterializeCycle {
@@ -332,6 +336,7 @@ enum MaterializeOutcome {
 /// this cycle generates anything at all.
 fn plan_materialize_cycle(
     first_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: chrono_tz::Tz,
     frequency: &str,
     weekday: chrono::Weekday,
     occurrences_generated: u32,
@@ -341,8 +346,14 @@ fn plan_materialize_cycle(
     let not_yet_started = (0..occurrences_generated)
         .rev()
         .take_while(|&index| {
-            agon_core::series::occurrence_starts_at(first_starts_at, frequency, weekday, index)
-                .is_some_and(|starts_at| starts_at > now)
+            agon_services_core::series::occurrence_starts_at(
+                first_starts_at,
+                timezone,
+                frequency,
+                weekday,
+                index,
+            )
+            .is_some_and(|starts_at| starts_at > now)
         })
         .count() as u32;
 
@@ -352,8 +363,14 @@ fn plan_materialize_cycle(
     let mut next_index = occurrences_generated;
     let mut window = not_yet_started;
     while window < MATERIALIZE_WINDOW && total.is_none_or(|total| next_index < total) {
-        if agon_core::series::occurrence_starts_at(first_starts_at, frequency, weekday, next_index)
-            .is_none()
+        if agon_services_core::series::occurrence_starts_at(
+            first_starts_at,
+            timezone,
+            frequency,
+            weekday,
+            next_index,
+        )
+        .is_none()
         {
             break;
         }
@@ -370,8 +387,9 @@ fn plan_materialize_cycle(
         MaterializeOutcome::Finish
     } else {
         let oldest_pending_index = occurrences_generated - not_yet_started;
-        match agon_core::series::occurrence_starts_at(
+        match agon_services_core::series::occurrence_starts_at(
             first_starts_at,
+            timezone,
             frequency,
             weekday,
             oldest_pending_index,
@@ -467,7 +485,7 @@ impl MaterializeSeries {
 
         // 3. Anchor + bounded total (`None` for `Never`) — the same
         //    computation `agon_service`'s create handler validated at
-        //    creation time, via the same `agon_core::series` functions, so
+        //    creation time, via the same `agon_services_core::series` functions, so
         //    the two can never disagree on what "the next occurrence"
         //    means.
         let Ok(first_starts_at) = series
@@ -476,15 +494,19 @@ impl MaterializeSeries {
         else {
             return Ok(());
         };
-        let Some(weekday) = agon_core::series::weekday_from_sunday_index(series.weekday) else {
+        let Some(weekday) = agon_services_core::series::weekday_from_sunday_index(series.weekday)
+        else {
+            return Ok(());
+        };
+        let Ok(timezone) = series.timezone.parse::<chrono_tz::Tz>() else {
             return Ok(());
         };
         let total = match &series.ends {
-            agon_core::dao::records::SeriesEndRecord::AfterN { count } => Some(*count),
-            agon_core::dao::records::SeriesEndRecord::OnDate { date } => {
+            agon_services_core::dao::records::SeriesEndRecord::AfterN { count } => Some(*count),
+            agon_services_core::dao::records::SeriesEndRecord::OnDate { date } => {
                 match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
-                    Ok(end_date) => Some(agon_core::series::count_occurrences_through(
-                        first_starts_at.date_naive(),
+                    Ok(end_date) => Some(agon_services_core::series::count_occurrences_through(
+                        first_starts_at.with_timezone(&timezone).date_naive(),
                         &series.frequency,
                         weekday,
                         end_date,
@@ -492,12 +514,13 @@ impl MaterializeSeries {
                     Err(_) => return Ok(()),
                 }
             }
-            agon_core::dao::records::SeriesEndRecord::Never => None,
+            agon_services_core::dao::records::SeriesEndRecord::Never => None,
         };
 
         // 4. Decide this cycle's work.
         let cycle = plan_materialize_cycle(
             first_starts_at,
+            timezone,
             &series.frequency,
             weekday,
             series.occurrences_generated,
@@ -510,8 +533,9 @@ impl MaterializeSeries {
         //    before; nothing about *how* one occurrence is generated
         //    changes here, only how many are generated per cycle.
         for index in cycle.generate {
-            let Some(starts_at) = agon_core::series::occurrence_starts_at(
+            let Some(starts_at) = agon_services_core::series::occurrence_starts_at(
                 first_starts_at,
+                timezone,
                 &series.frequency,
                 weekday,
                 index,
@@ -557,8 +581,9 @@ impl MaterializeSeries {
             MaterializeOutcome::Finish => Ok(()),
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 ctx.timer(to_std_duration(sleep)).await;
-                ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())?;
-                Ok(())
+                // `continue_as_new` only ever returns `Err` (its `Ok` is `Infallible`),
+                // so after `?` there's no value left: match it away to `!`.
+                match ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())? {}
             }
         }
     }
@@ -583,7 +608,15 @@ mod materialize_tests {
         // point here is checking it lines up with `first`, not the cap
         // (`sleep_is_capped_even_for_a_distant_next_occurrence` covers that).
         let now = dt("2026-06-02T10:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            1,
+            None,
+            now,
+        );
         assert_eq!(cycle.generate, vec![1, 2, 3]);
         match cycle.outcome {
             MaterializeOutcome::SleepThenContinue(sleep) => {
@@ -600,7 +633,15 @@ mod materialize_tests {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
         // 4 generated (indices 0..=3), none of which have started yet.
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 4, None, now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            4,
+            None,
+            now,
+        );
         assert_eq!(cycle.generate, Vec::<u32>::new());
     }
 
@@ -614,7 +655,15 @@ mod materialize_tests {
         // two have started (June 2, June 9), leaving only indices 2 and 3
         // still pending.
         let now = dt("2026-06-10T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 4, None, now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            4,
+            None,
+            now,
+        );
         assert_eq!(cycle.generate, vec![4, 5]);
     }
 
@@ -625,7 +674,15 @@ mod materialize_tests {
     fn finishes_a_bounded_series_once_its_total_is_reached() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 1, Some(2), now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            1,
+            Some(2),
+            now,
+        );
         assert_eq!(cycle.generate, vec![1]);
         assert_eq!(cycle.outcome, MaterializeOutcome::Finish);
     }
@@ -636,7 +693,15 @@ mod materialize_tests {
     fn finishes_immediately_if_the_bounded_total_is_already_generated() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 2, Some(2), now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            2,
+            Some(2),
+            now,
+        );
         assert_eq!(cycle.generate, Vec::<u32>::new());
         assert_eq!(cycle.outcome, MaterializeOutcome::Finish);
     }
@@ -647,7 +712,15 @@ mod materialize_tests {
     fn an_indefinite_series_never_finishes() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "yearly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "yearly",
+            chrono::Weekday::Tue,
+            1,
+            None,
+            now,
+        );
         assert!(matches!(
             cycle.outcome,
             MaterializeOutcome::SleepThenContinue(_)
@@ -660,7 +733,15 @@ mod materialize_tests {
     fn sleep_is_capped_even_for_a_distant_next_occurrence() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "yearly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "yearly",
+            chrono::Weekday::Tue,
+            1,
+            None,
+            now,
+        );
         match cycle.outcome {
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 assert_eq!(sleep, materialize_poll_cap());
@@ -676,5 +757,76 @@ mod materialize_tests {
             to_std_duration(chrono::Duration::hours(2)),
             Duration::from_secs(2 * 60 * 60)
         );
+    }
+}
+
+// ===========================================================================
+// MatchReminder — a pre-kickoff heads-up for a match.
+// ===========================================================================
+
+/// Inputs to the reminder workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchReminderInput {
+    pub match_id: String,
+    /// RFC-3339; the match's `starts_at` as of the write that started this
+    /// workflow. Not re-read if the match is rescheduled afterwards — a
+    /// reschedule re-fans-out (see `FanOutMatch`) but doesn't restart this
+    /// workflow, so a reminder can fire relative to a since-changed kickoff
+    /// time. Acceptable for a first cut: rescheduling a match close enough
+    /// to its reminder window to matter is rare, and the activity itself
+    /// re-reads the match's *current* state before sending anything.
+    pub starts_at: String,
+}
+
+/// Wait until `REMINDER_LEAD` before a match's kickoff, then send everyone
+/// who might play in it a heads-up. Started off the same `#META` insert that
+/// triggers `FanOutMatch` for any match created as part of a series (see
+/// `workflow_for` in `agon_worker::consumer`) — a series occurrence has no
+/// personal invite list of its own, so this is the only advance notice its
+/// audience gets. Workflow id: `reminder-<match_id>`.
+///
+/// One-shot: waits out a single timer, sends one activity call, and ends —
+/// no checkpointing needed beyond Temporal's own durable timer (a worker
+/// crash mid-wait just resumes the same timer on replay).
+#[workflow]
+#[derive(Default)]
+pub struct MatchReminder;
+
+#[workflow_methods]
+impl MatchReminder {
+    #[run]
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: MatchReminderInput,
+    ) -> WorkflowResult<()> {
+        let Ok(starts_at) = input.starts_at.parse::<chrono::DateTime<chrono::Utc>>() else {
+            return Ok(());
+        };
+        let now = ctx
+            .workflow_time()
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .unwrap_or_else(chrono::Utc::now);
+        // The match has already started (or is about to) by the time this
+        // workflow got to run — too late for a "coming up" reminder to make
+        // sense.
+        if now >= starts_at {
+            return Ok(());
+        }
+
+        let fire_at = starts_at - chrono::Duration::from_std(REMINDER_LEAD).unwrap();
+        if fire_at > now
+            && let Ok(wait) = (fire_at - now).to_std()
+        {
+            ctx.timer(wait).await;
+        }
+
+        ctx.start_activity(
+            AgonActivities::send_match_reminder,
+            input.match_id,
+            activity_opts(),
+        )
+        .await?;
+
+        Ok(())
     }
 }

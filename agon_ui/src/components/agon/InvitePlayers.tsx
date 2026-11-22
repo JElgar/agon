@@ -4,6 +4,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   PlayerSideEditor,
   type TaggedPlayer,
@@ -17,12 +18,13 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 }
 
 /**
- * "Invite players" panel on the match detail page (match admins only). Collects
- * people to invite via the shared `PlayerSideEditor` — registered users or
- * typed-in guests — plus which side they're joining, then POSTs them to
- * `/matches/{id}/invitations`. The server creates each invitee's roster slot +
- * invitation, so on success we refresh the match (they appear as "invited") and
- * close the panel.
+ * "Invite players" panel on the match detail page — a match admin, or a
+ * side admin inviting only to their own side (`restrictedSideId`, from
+ * `mySideAdminSideId`). Collects people to invite via the shared
+ * `PlayerSideEditor` — registered users or typed-in guests — plus which
+ * side they're joining, then POSTs them to `/matches/{id}/invitations`. The
+ * server creates each invitee's roster slot + invitation, so on success we
+ * refresh the match (they appear as "invited") and close the panel.
  *
  * Users already on the match are excluded from search so they can't be
  * double-invited.
@@ -30,14 +32,21 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 export function InvitePlayers({
   match,
   onDone,
+  restrictedSideId,
 }: {
   match: Match
   onDone: () => void
+  /** Set for a side admin: locks the side picker to this side, since the
+   * server rejects an invite naming any other side for them. */
+  restrictedSideId?: string
 }) {
   const queryClient = useQueryClient()
   const [players, setPlayers] = useState<TaggedPlayer[]>([])
   // Default to the first side; the invite endpoint takes one side per call.
-  const [sideId, setSideId] = useState<string>(match.sides[0]?.id ?? '')
+  const [sideId, setSideId] = useState<string>(restrictedSideId ?? match.sides[0]?.id ?? '')
+  // Off by default: a plain invite holds no roster spot until accepted,
+  // same as today. On, it counts toward the match/side cap immediately.
+  const [reserveSpot, setReserveSpot] = useState(false)
 
   // Everyone already linked to this match, so we don't offer to invite them again.
   const existingUserIds = match.players.flatMap((p) =>
@@ -63,6 +72,7 @@ export function InvitePlayers({
             invited_user_ids,
             invited_external_names,
             side_id: sideId || undefined,
+            reserve_spot: reserveSpot,
           },
         },
       )
@@ -92,18 +102,45 @@ export function InvitePlayers({
         <Label htmlFor="invite-side" className="text-xs text-muted-foreground">
           Which side?
         </Label>
-        <select
-          id="invite-side"
-          value={sideId}
-          onChange={(e) => setSideId(e.target.value)}
-          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
-        >
-          {match.sides.map((side, i) => (
-            <option key={side.id} value={side.id}>
-              {sideLabel(match, i, `Side ${i + 1}`)}
-            </option>
-          ))}
-        </select>
+        {restrictedSideId ? (
+          <p className="mt-1 text-sm">
+            {sideLabel(
+              match,
+              match.sides.findIndex((s) => s.id === restrictedSideId),
+              'Your side',
+            )}
+          </p>
+        ) : (
+          <select
+            id="invite-side"
+            value={sideId}
+            onChange={(e) => setSideId(e.target.value)}
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            {match.sides.map((side, i) => (
+              <option key={side.id} value={side.id}>
+                {sideLabel(match, i, `Side ${i + 1}`)}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+        <div>
+          <Label htmlFor="invite-reserve-spot" className="text-sm">
+            Reserve them a spot
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Counts towards the match/side limit while the invite is pending,
+            not just once it's accepted.
+          </p>
+        </div>
+        <Switch
+          id="invite-reserve-spot"
+          checked={reserveSpot}
+          onCheckedChange={setReserveSpot}
+        />
       </div>
 
       {invite.isError && (

@@ -73,6 +73,32 @@ export function joinLink(token: string): string {
 }
 
 /**
+ * Share `url` via the native share sheet where available, else copy it to
+ * the clipboard, else fall back to a `prompt` so the user can copy it by
+ * hand (e.g. clipboard blocked in an insecure context). Returns whether it
+ * ended up on the clipboard — `CopyInviteButton` uses that to show its
+ * transient "Copied!" state; a share-sheet or prompt completion doesn't need
+ * one, since each already confirms itself.
+ */
+export async function shareOrCopyLink(url: string): Promise<boolean> {
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: 'Join me on Agon', url })
+      return false
+    } catch {
+      // User dismissed the sheet, or share failed — fall through to copy.
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url)
+    return true
+  } catch {
+    window.prompt('Copy this invite link:', url)
+    return false
+  }
+}
+
+/**
  * The viewer's own pending invitation to a match, if they've been invited (as a
  * known Agon user) and haven't yet responded — else null. Lets match views show
  * the viewer their invite and an accept/decline action, mirroring the inbox.
@@ -265,6 +291,22 @@ export function isMatchOwner(
 }
 
 /**
+ * The side, if any, the viewer holds `side_admin` authority over
+ * (`MatchSide.side_admin_user_ids`) — doesn't require them to be a player on
+ * it, or anywhere on the roster. A side admin may manage that one side's own
+ * ringer settings and invite people to it (`caller_can_manage_side`
+ * server-side), but — unlike `canManageMatch` — not the match's other
+ * settings, and not who holds the role itself.
+ */
+export function mySideAdminSideId(
+  match: Match,
+  currentUserId: string | undefined,
+): string | undefined {
+  if (!currentUserId) return undefined
+  return match.sides.find((s) => s.side_admin_user_ids.includes(currentUserId))?.id
+}
+
+/**
  * The side the viewer themselves plays on, if they're a participant — so
  * match views can put the viewer's own side on the left regardless of the
  * order the server happens to store `sides` in (see `orderSidesForViewer`).
@@ -390,6 +432,45 @@ export function matchPlayerTotalLabel(match: Match): string {
     : undefined
   if (cap != null) return `${count}/${cap} players`
   return `${count} ${count === 1 ? 'player' : 'players'}`
+}
+
+/** The match's total headcount, from whichever field the given shape
+ *  carries it in — `FeedMatch.total_player_count` (pre-aggregated) or a full
+ *  `Match.players` roster to count directly. `undefined` for a `SearchMatch`,
+ *  which carries neither. */
+function matchTotalPlayerCount(match: Match | FeedMatch | SearchMatch): number | undefined {
+  if ('total_player_count' in match) return match.total_player_count
+  if ('players' in match) return match.players.length
+  return undefined
+}
+
+/** Whether a scheduled match has anyone not yet assigned to a side. A side's
+ *  own roster count (`sidePlayerCountLabel`) never includes the unassigned,
+ *  so showing it per side alongside unassigned players can make a match
+ *  look emptier than it is. `false` for a `SearchMatch` — it carries no
+ *  overall headcount to compare against the sides' counts, so there's no
+ *  way to tell. */
+export function matchHasUnassignedPlayers(match: Match | FeedMatch | SearchMatch): boolean {
+  const total = matchTotalPlayerCount(match)
+  if (total == null) return false
+  const assigned = match.sides.reduce((sum, s) => sum + s.player_count, 0)
+  return total > assigned
+}
+
+/** "8 spots left" (or "1 spot left") — the match's remaining capacity
+ *  overall, shown in place of the per-side counts once
+ *  `matchHasUnassignedPlayers` is true. `undefined` when any side is still
+ *  uncapped (no overall ceiling to report yet, same rule as
+ *  `matchPlayerTotalLabel`) or the match carries no overall headcount
+ *  (`SearchMatch`). */
+export function matchSpotsLeftLabel(match: Match | FeedMatch | SearchMatch): string | undefined {
+  const total = matchTotalPlayerCount(match)
+  if (total == null) return undefined
+  const caps = match.sides.map((s) => s.max_players)
+  if (!caps.every((c) => c != null)) return undefined
+  const cap = caps.reduce<number>((sum, c) => sum + (c ?? 0), 0)
+  const left = Math.max(0, cap - total)
+  return `${left} ${left === 1 ? 'spot' : 'spots'} left`
 }
 
 /**

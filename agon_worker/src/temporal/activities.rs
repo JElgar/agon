@@ -1,11 +1,11 @@
 //! Temporal activities — the thin, idempotent, retryable units that touch the
-//! outside world. Each reuses the shared `agon_core` DAO / search client.
+//! outside world. Each reuses the shared `agon_services_core` DAO / search client.
 //!
 //! Activities take a single (de)serializable argument, so multi-field inputs are
 //! passed as structs.
 
-use agon_core::dao::Dao;
-use agon_core::search::{Index, SearchClient};
+use agon_services_core::dao::Dao;
+use agon_services_core::search::{Index, SearchClient};
 use serde::{Deserialize, Serialize};
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
@@ -19,7 +19,7 @@ pub struct AgonActivities {
 
 /// One audience member: the viewer plus their capped "people you follow in
 /// this match" list and their own side (if they're a participant) — see
-/// `agon_core::dao::audience::AudienceMember`.
+/// `agon_services_core::dao::audience::AudienceMember`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedViewer {
     pub viewer_id: String,
@@ -82,14 +82,14 @@ pub struct GenerateSeriesOccurrence {
     pub index: u32,
     /// This occurrence's full start time (already advanced from the
     /// series' first occurrence by the workflow's pure date math — see
-    /// `agon_core::series::occurrence_date`), RFC-3339.
+    /// `agon_services_core::series::occurrence_date`), RFC-3339.
     pub starts_at: String,
     pub created_by_user_id: String,
     pub match_type: String,
     pub name: String,
     pub description: String,
-    pub location: Option<agon_core::dao::records::LocationRecord>,
-    pub sides: Vec<agon_core::dao::records::SeriesSideRecord>,
+    pub location: Option<agon_services_core::dao::records::LocationRecord>,
+    pub sides: Vec<agon_services_core::dao::records::SeriesSideRecord>,
 }
 
 #[activities]
@@ -100,14 +100,18 @@ impl AgonActivities {
         self: std::sync::Arc<Self>,
         _ctx: ActivityContext,
         series_id: String,
-    ) -> Result<Option<agon_core::dao::records::SeriesRecord>, ActivityError> {
+    ) -> Result<Option<agon_services_core::dao::records::SeriesRecord>, ActivityError> {
         self.dao.get_series(&series_id).await.map_err(activity_err)
     }
 
     /// Generate one occurrence of a series: claim its generation slot, create
-    /// its match (team-linked sides only, no players — a series only
-    /// configures a team per side; roster join happens per-occurrence
-    /// later), then bump the series' `occurrences_generated` counter. Every
+    /// its match (team-linked sides only, with team self-join turned on and
+    /// no invited players — a series only configures a team per side and has
+    /// no invite-list support yet, so roster join happens per-occurrence via
+    /// each side's own team; the organiser gets `Owner` on a non-roster
+    /// `MatchOrganizerRecord`, since they never play in the template — see
+    /// that type's doc comment), then bump the series' `occurrences_generated`
+    /// counter. Every
     /// step is individually idempotent, so a retry of this whole activity —
     /// for an occurrence this activity (or an earlier attempt) already fully
     /// or partially generated — is always safe:
@@ -115,7 +119,7 @@ impl AgonActivities {
     ///   `(series_id, starts_at)`: if this attempt loses the race, it gets
     ///   back whichever match id the winning attempt offered, and uses that
     ///   one instead of the fresh id it generated for itself (see
-    ///   `agon_core::dao::series_ops`'s doc comment — this is what replaced
+    ///   `agon_services_core::dao::series_ops`'s doc comment — this is what replaced
     ///   the old hash-derived match id).
     /// - `create_match` on the claimed match id hits `Conflict` if that
     ///   occurrence's match already exists (the common case on a retry —
@@ -134,11 +138,11 @@ impl AgonActivities {
         _ctx: ActivityContext,
         input: GenerateSeriesOccurrence,
     ) -> Result<(), ActivityError> {
-        let claim = agon_core::dao::records::SeriesOccurrenceRecord {
+        let claim = agon_services_core::dao::records::SeriesOccurrenceRecord {
             series_id: input.series_id.clone(),
             index: input.index,
             starts_at: input.starts_at.clone(),
-            match_id: agon_core::id::new_id(),
+            match_id: agon_services_core::id::new_id(),
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
         let claimed = self
@@ -148,26 +152,43 @@ impl AgonActivities {
             .map_err(activity_err)?;
         let match_id = claimed.match_id;
 
-        let mut sides: std::collections::HashMap<String, agon_core::dao::records::MatchSideRecord> =
-            Default::default();
+        let mut sides: std::collections::HashMap<
+            String,
+            agon_services_core::dao::records::MatchSideRecord,
+        > = Default::default();
         for side in &input.sides {
-            let side_id = agon_core::id::new_id();
+            let side_id = agon_services_core::id::new_id();
             sides.insert(
                 side_id.clone(),
-                agon_core::dao::records::MatchSideRecord {
+                agon_services_core::dao::records::MatchSideRecord {
                     side_id,
                     team_id: Some(side.team_id.clone()),
                     name: side.name.clone(),
                     colour: side.colour.clone(),
                     max_players: side.max_players,
-                    team_join_enabled: false,
+                    // Roster join happens per-occurrence via each side's own
+                    // team (no invite-list support for a series yet) — this
+                    // has to be on or nobody can ever get onto a generated
+                    // occurrence.
+                    team_join_enabled: true,
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
             );
         }
+        // Mirrors `create_match_series`'s own authority entry: the series
+        // organiser never plays in the template, so without this they'd have
+        // no authority over any occurrence.
+        let authority = std::collections::HashMap::from([(
+            input.created_by_user_id.clone(),
+            agon_services_core::dao::records::MatchPlayerRole::Owner,
+        )]);
 
-        let match_record = agon_core::dao::records::MatchRecord {
+        let match_record = agon_services_core::dao::records::MatchRecord {
             id: match_id.clone(),
             created_by_user_id: input.created_by_user_id,
             name: input.name,
@@ -179,8 +200,12 @@ impl AgonActivities {
             total_player_count: 0,
             location: input.location,
             series_id: Some(input.series_id.clone()),
+            tournament_id: None,
+            tournament_round: None,
             header_photos: Vec::new(),
             sides,
+            authority,
+            side_authority: std::collections::HashMap::new(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,
@@ -195,12 +220,14 @@ impl AgonActivities {
             // single occurrence to ranked afterwards, which asks everyone in
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
+            open_join: None,
+            open_joined_count: 0,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 
         match self.dao.create_match(&match_record, &[]).await {
             Ok(()) => {}
-            Err(agon_core::dao::error::DaoError::Conflict(_)) => {
+            Err(agon_services_core::dao::error::DaoError::Conflict(_)) => {
                 // Already generated — by this attempt's own earlier try, or
                 // by whichever attempt won the claim above. Fall through to
                 // (re-)bump the counter, which is itself a no-op if that
@@ -281,12 +308,12 @@ impl AgonActivities {
         _ctx: ActivityContext,
         chunk: WriteFeedChunk,
     ) -> Result<(), ActivityError> {
-        let viewers: Vec<agon_core::dao::feed::FeedViewer> = chunk
+        let viewers: Vec<agon_services_core::dao::feed::FeedViewer> = chunk
             .viewers
             .into_iter()
-            .map(|v| agon_core::dao::feed::FeedViewer {
+            .map(|v| agon_services_core::dao::feed::FeedViewer {
                 viewer_id: v.viewer_id,
-                audience: agon_core::dao::audience::AudienceMember {
+                audience: agon_services_core::dao::audience::AudienceMember {
                     known_player_ids: v.known_player_ids,
                     known_player_count: v.known_player_count,
                     viewer_side_id: v.viewer_side_id,
@@ -386,17 +413,89 @@ impl AgonActivities {
             .await
             .map_err(activity_err)
     }
+
+    /// Send a "match coming up" reminder notification, fired by the
+    /// `MatchReminder` workflow a fixed time before kickoff. Recipients are
+    /// every accepted member of every team linked to one of the match's
+    /// sides (the same audience `notify_team_match_joinable` would offer a
+    /// join to) — the only invite-shaped notification a series occurrence
+    /// ever gets, since a series only configures team-linked sides with no
+    /// personal invite list. Idempotent: the notification id is
+    /// deterministic per (match, recipient), so a retried/redelivered run is
+    /// a harmless no-op. A no-op if the match is gone, or no longer
+    /// `scheduled` (cancelled, already started, or moved up before the
+    /// reminder fired).
+    #[activity]
+    pub async fn send_match_reminder(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        match_id: String,
+    ) -> Result<(), ActivityError> {
+        let Some(agg) = self.dao.get_match(&match_id).await.map_err(activity_err)? else {
+            return Ok(());
+        };
+        if agg.match_.status != "scheduled" {
+            return Ok(());
+        }
+
+        let team_ids: std::collections::BTreeSet<&str> = agg
+            .match_
+            .sides
+            .values()
+            .filter_map(|side| side.team_id.as_deref())
+            .collect();
+
+        let mut recipients = std::collections::BTreeSet::new();
+        for team_id in team_ids {
+            let Some(team_agg) = self.dao.get_team(team_id).await.map_err(activity_err)? else {
+                continue;
+            };
+            for member in &team_agg.members {
+                let Some(user_id) = &member.user_id else {
+                    continue;
+                };
+                let accepted = member
+                    .invitation
+                    .as_ref()
+                    .is_none_or(|inv| inv.status == "accepted");
+                if accepted {
+                    recipients.insert(user_id.clone());
+                }
+            }
+        }
+
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        for user_id in recipients {
+            let notif = agon_services_core::dao::records::NotificationRecord {
+                id: format!("notif-matchreminder-{match_id}-{user_id}"),
+                user_id,
+                is_read: false,
+                created_at: now.clone(),
+                kind: agon_services_core::dao::records::NotificationKindRecord::MatchReminder {
+                    actor_user_id: agg.match_.created_by_user_id.clone(),
+                    match_id: match_id.clone(),
+                    match_name: agg.match_.name.clone(),
+                    starts_at: agg.match_.starts_at.clone(),
+                },
+            };
+            self.dao
+                .create_notification(&notif)
+                .await
+                .map_err(activity_err)?;
+        }
+        Ok(())
+    }
 }
 
 /// Map a DAO error into a Temporal `ActivityError` (an Application error, so the
 /// activity retries per its retry policy). `DaoError` is a `std::error::Error`
 /// (thiserror), which `ActivityError` accepts via its blanket `From`.
-fn activity_err(err: agon_core::dao::error::DaoError) -> ActivityError {
+fn activity_err(err: agon_services_core::dao::error::DaoError) -> ActivityError {
     ActivityError::from(err)
 }
 
 /// Same, for a Meilisearch error.
-fn search_err(err: agon_core::error::SearchError) -> ActivityError {
+fn search_err(err: agon_services_core::error::SearchError) -> ActivityError {
     ActivityError::from(err)
 }
 

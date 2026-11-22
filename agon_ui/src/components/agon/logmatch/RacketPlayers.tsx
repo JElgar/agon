@@ -1,6 +1,6 @@
 import { initials } from '@/lib/members'
 import { useState } from 'react'
-import { Plus, X } from 'lucide-react'
+import { CircleAlert, Plus, X } from 'lucide-react'
 import { Avatar } from '../Avatar'
 import type { TaggedPlayer } from '../PlayerSideEditor'
 import { PlayerSearchInput } from '../PlayerSearchInput'
@@ -21,6 +21,9 @@ interface RacketPlayersProps {
   onSideAChange: (players: TaggedPlayer[]) => void
   onSideBChange: (players: TaggedPlayer[]) => void
   currentUserId?: string
+  /** True once the match is set to ranked, on step 1 — a ranked match can't
+   *  contain a guest, so neither picker offers adding one. */
+  ranked: boolean
 }
 
 /**
@@ -46,7 +49,7 @@ export function RacketPlayers(props: RacketPlayersProps) {
   )
 }
 
-function SinglesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUserId }: RacketPlayersProps) {
+function SinglesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUserId, ranked }: RacketPlayersProps) {
   const [open, setOpen] = useState<'a' | 'b' | null>(null)
   const taken = [...sideA, ...sideB]
   const slot = (key: 'a' | 'b', players: TaggedPlayer[], onChange: (p: TaggedPlayer[]) => void) => {
@@ -102,11 +105,29 @@ function SinglesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUser
         </span>
         {slot('b', sideB, onSideBChange)}
       </div>
+      {open && ranked && (
+        <div className="flex items-start gap-2 rounded-xl bg-warning/25 px-3 py-2.5 text-[13px] leading-snug">
+          <CircleAlert className="mt-px size-4 shrink-0" />
+          <span>
+            Ranked matches only allow players with an Agon account. Switch to Friendly to add a
+            guest.
+          </span>
+        </div>
+      )}
       {open && (open === 'a' ? sideA : sideB).length === 0 && (
         <PlayerSearchInput
           autoFocus
-          placeholder={open === 'a' ? 'Invite a player or add a guest' : 'Invite your opponent or add a guest'}
+          placeholder={
+            ranked
+              ? open === 'a'
+                ? 'Invite a player'
+                : 'Invite your opponent'
+              : open === 'a'
+                ? 'Invite a player or add a guest'
+                : 'Invite your opponent or add a guest'
+          }
           taken={taken}
+          allowGuests={!ranked}
           onAdd={(p) => {
             if (open === 'a') onSideAChange([p])
             else onSideBChange([p])
@@ -118,9 +139,17 @@ function SinglesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUser
   )
 }
 
-function DoublesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUserId }: RacketPlayersProps) {
+function DoublesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUserId, ranked }: RacketPlayersProps) {
   const taken = [...sideA, ...sideB]
   const youOnA = sideA.some((p) => p.kind === 'user' && p.id === currentUserId)
+  const placeholderFor = (empty: boolean, inviteWord: string) =>
+    ranked
+      ? empty
+        ? `Invite ${inviteWord}`
+        : 'Invite your partner'
+      : empty
+        ? `Invite ${inviteWord} or add a guest`
+        : 'Invite your partner or add a guest'
   return (
     <>
       <Pair
@@ -129,7 +158,8 @@ function DoublesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUser
         onChange={onSideAChange}
         taken={taken}
         currentUserId={currentUserId}
-        placeholder={sideA.length === 0 ? 'Invite a player or add a guest' : 'Invite your partner or add a guest'}
+        placeholder={placeholderFor(sideA.length === 0, 'a player')}
+        ranked={ranked}
       />
       <Pair
         title={youOnA ? 'Opponents' : 'Pair 2'}
@@ -137,7 +167,8 @@ function DoublesPicker({ sideA, sideB, onSideAChange, onSideBChange, currentUser
         onChange={onSideBChange}
         taken={taken}
         currentUserId={currentUserId}
-        placeholder={sideB.length === 0 ? 'Invite an opponent or add a guest' : 'Invite their partner or add a guest'}
+        placeholder={placeholderFor(sideB.length === 0, 'an opponent')}
+        ranked={ranked}
       />
     </>
   )
@@ -150,6 +181,7 @@ function Pair({
   taken,
   currentUserId,
   placeholder,
+  ranked,
 }: {
   title: string
   players: TaggedPlayer[]
@@ -157,6 +189,7 @@ function Pair({
   taken: TaggedPlayer[]
   currentUserId?: string
   placeholder: string
+  ranked: boolean
 }) {
   return (
     <FormSection title={title} aside={`${players.length} of 2`}>
@@ -187,10 +220,20 @@ function Pair({
             </div>
           )
         })}
+        {players.length < 2 && ranked && (
+          <div className="flex items-start gap-2 rounded-xl bg-warning/25 px-3 py-2.5 text-[13px] leading-snug">
+            <CircleAlert className="mt-px size-4 shrink-0" />
+            <span>
+              Ranked matches only allow players with an Agon account. Switch to Friendly to add a
+              guest.
+            </span>
+          </div>
+        )}
         {players.length < 2 && (
           <PlayerSearchInput
             placeholder={placeholder}
             taken={taken}
+            allowGuests={!ranked}
             onAdd={(p) => onChange([...players, p])}
           />
         )}

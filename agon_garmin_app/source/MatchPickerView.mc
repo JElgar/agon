@@ -2,6 +2,8 @@ import Toybox.Lang;
 import Toybox.WatchUi;
 import Toybox.Graphics;
 import Toybox.System;
+import Toybox.Time;
+import Toybox.Time.Gregorian;
 
 //! Shown after picking "Football" on the sport menu, before the score
 //! screen — lets the wearer pick which of their matches to actually
@@ -30,10 +32,13 @@ const MAX_MATCH_ITEMS = 10;
 //! `MatchMenuDelegate.onSelect`/`onMoreMatches`.
 const LOAD_MORE_ID = :match_picker_load_more;
 
-//! Extract up to `MAX_MATCH_ITEMS` `{"id" => .., "name" => ..}` entries
-//! from a `GET /matches` response's `items` array. A blank `name` (a
-//! match created without one) falls back to a placeholder — an empty
-//! menu label would otherwise be unselectable-looking.
+//! Extract up to `MAX_MATCH_ITEMS` `{"id" => .., "name" => .., "starts_at"
+//! => .., "status" => ..}` entries from a `GET /matches` response's
+//! `items` array (each a `SearchMatch`). A blank `name` (a match created
+//! without one) falls back to a placeholder — an empty menu label would
+//! otherwise be unselectable-looking. `starts_at`/`status` are carried
+//! through as-is (an RFC-3339 string and a `MatchStatus` wire value like
+//! `"in_progress"`) for `sortMatches`/`matchSubLabel` to read.
 function buildMatchList(items as Array) as Array {
     var matches = [];
     var i = 0;
@@ -45,24 +50,131 @@ function buildMatchList(items as Array) as Array {
             if (name == null || (name as String).length() == 0) {
                 name = "Match";
             }
-            matches = matches.add({ "id" => id, "name" => name });
+            matches = matches.add({
+                "id" => id,
+                "name" => name,
+                "starts_at" => item.get("starts_at"),
+                "status" => item.get("status")
+            });
         }
         i += 1;
     }
     return matches;
 }
 
+//! Weekday abbreviations for `matchSubLabel`, indexed by
+//! `Gregorian.Info.day_of_week - 1` (that field is 1 = Sunday).
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+//! `starts_at` parsed into a `Time.Moment`, or `null` if it's missing or
+//! unparseable — see `parseIso` (`LiveApiClient.mc`), reused here rather
+//! than duplicated.
+function matchStartsAtMoment(match as Dictionary) as Time.Moment? {
+    var iso = match.get("starts_at");
+    if (iso == null) {
+        return null;
+    }
+    return parseIso(iso as String);
+}
+
+//! Whether the server already considers this match live — the wire value
+//! `MatchStatus::InProgress` serializes to.
+function matchIsLive(match as Dictionary) as Boolean {
+    var status = match.get("status");
+    return status != null && (status as String).equals("in_progress");
+}
+
+//! Whether `starts_at` falls on the watch's current local calendar day.
+function matchIsToday(match as Dictionary) as Boolean {
+    var moment = matchStartsAtMoment(match);
+    if (moment == null) {
+        return false;
+    }
+    var info = Gregorian.info(moment as Time.Moment, Time.FORMAT_SHORT);
+    var nowInfo = Gregorian.info(Time.now(), Time.FORMAT_SHORT);
+    return info.year == nowInfo.year && info.month == nowInfo.month && info.day == nowInfo.day;
+}
+
+//! The menu row's sub-label: "Live now" for an in-progress match
+//! (status, not time, is what the wearer needs to see — the kickoff time
+//! of a match already underway isn't useful), otherwise the local
+//! kickoff time, "Today HH:MM" for today's matches and "<weekday>
+//! HH:MM" otherwise. "" if `starts_at` is missing/unparseable.
+function matchSubLabel(match as Dictionary) as String {
+    if (matchIsLive(match)) {
+        return "Live now";
+    }
+    var moment = matchStartsAtMoment(match);
+    if (moment == null) {
+        return "";
+    }
+    var info = Gregorian.info(moment as Time.Moment, Time.FORMAT_SHORT);
+    var timePart = Lang.format("$1$:$2$", [info.hour.format("%02d"), info.min.format("%02d")]);
+    if (matchIsToday(match)) {
+        return "Today " + timePart;
+    }
+    return WEEKDAY_NAMES[info.day_of_week - 1] + " " + timePart;
+}
+
+//! Orders the picker list: today's matches first, then live matches,
+//! then everything else by `starts_at` ascending (soonest first). A
+//! plain insertion sort, since `matches` is at most a handful of pages'
+//! worth and the rest of this file already favors manual loops over
+//! higher-order `Array` methods.
+function sortMatches(matches as Array) as Array {
+    var sorted = matches.slice(0, null);
+    var i = 1;
+    while (i < sorted.size()) {
+        var j = i;
+        while (j > 0 && matchBefore(sorted[j] as Dictionary, sorted[j - 1] as Dictionary)) {
+            var tmp = sorted[j];
+            sorted[j] = sorted[j - 1];
+            sorted[j - 1] = tmp;
+            j -= 1;
+        }
+        i += 1;
+    }
+    return sorted;
+}
+
+//! True if `a` should sort before `b` under `sortMatches`'s ordering.
+function matchBefore(a as Dictionary, b as Dictionary) as Boolean {
+    var aToday = matchIsToday(a);
+    var bToday = matchIsToday(b);
+    if (aToday != bToday) {
+        return aToday;
+    }
+    var aLive = matchIsLive(a);
+    var bLive = matchIsLive(b);
+    if (aLive != bLive) {
+        return aLive;
+    }
+    var aMoment = matchStartsAtMoment(a);
+    var bMoment = matchStartsAtMoment(b);
+    if (aMoment == null || bMoment == null) {
+        return false;
+    }
+    return (aMoment as Time.Moment).value() < (bMoment as Time.Moment).value();
+}
+
 //! Builds the match-picker menu from every match loaded so far (the
 //! first page, plus any further pages appended via the "More matches..."
-//! sentinel). `hasMore` — whether the page that produced `matches` came
-//! back with a `next_cursor` — controls whether that sentinel is
-//! appended as the last row.
+//! sentinel), ordered by `sortMatches` rather than fetch order. `hasMore`
+//! — whether the page that produced `matches` came back with a
+//! `next_cursor` — controls whether that sentinel is appended as the
+//! last row (always after every real match, regardless of sort order).
 function buildMatchMenu(matches as Array, hasMore as Boolean) as WatchUi.Menu2 {
     var menu = new WatchUi.Menu2({ :title => "Select match" });
+    var sorted = sortMatches(matches);
     var i = 0;
-    while (i < matches.size()) {
-        var match = matches[i] as Dictionary;
-        menu.addItem(new WatchUi.MenuItem(match.get("name") as String, null, match.get("id") as String, {}));
+    while (i < sorted.size()) {
+        var match = sorted[i] as Dictionary;
+        menu.addItem(new WatchUi.MenuItem(
+            match.get("name") as String,
+            matchSubLabel(match),
+            match.get("id") as String,
+            {}
+        ));
         i += 1;
     }
     if (hasMore) {

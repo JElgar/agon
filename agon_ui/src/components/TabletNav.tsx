@@ -89,7 +89,7 @@ export function TabletFloatingNav() {
         ))}
         <button
           type="button"
-          onClick={() => navigate('/matches/new')}
+          onClick={() => navigate('/create')}
           className="flex h-12 items-center gap-2 rounded-full bg-foreground px-5 text-[15px] font-bold text-background"
         >
           <svg
@@ -103,7 +103,7 @@ export function TabletFloatingNav() {
           >
             <path d="M12 5v14M5 12h14" />
           </svg>
-          New match
+          Create
         </button>
         {FLOATING_NAV_ITEMS.slice(1).map((item) => (
           <Link

@@ -110,12 +110,12 @@ public (a watch), whereas the old code only ever appeared in a phone's own
 settings UI. Net assessment: a modest improvement, not a free one — worth
 rate-limiting `POST /devices/pair` regardless (see "What's left to build").
 
-Under the hood (`agon_core::dao::device_pairing`), confirming a code
+Under the hood (`agon_services_core::dao::device_pairing`), confirming a code
 doesn't create some special "device session" concept — it reserves a
 synthetic auth identity (`device_sub`, shaped like `device:<id>`) and
 gives it its own `AUTH#<device_sub>` guard mapping to the confirming
 user's internal id. That's the same guard shape every real login already
-uses (`AUTH#<sub>`, see `agon_core::dao::keys::Pk::AuthGuard`) — a device
+uses (`AUTH#<sub>`, see `agon_services_core::dao::keys::Pk::AuthGuard`) — a device
 is just a second identity on the same account, exactly like linking a
 second OAuth provider would be. `require_uid` and everything built on it
 needed *zero* changes to support this.
@@ -262,7 +262,7 @@ Backend: done — the device-originated/QR-first pairing endpoints
 `POST /devices/pairing-codes/:code/confirm`, and the updated
 `POST /devices/pair`), device-signing infrastructure, unit tests
 (`agon_service/src/auth.rs`, `agon_service/src/qr.rs`,
-`agon_core::dao::device_pairing`). Not yet run through
+`agon_services_core::dao::device_pairing`). Not yet run through
 `make generate-schema` (needs `openapi-generator-cli`, not available in
 this sandbox) — run that once to regenerate `schema.json` and
 `openapi_client` before wiring the `agon_ui` confirm page against the

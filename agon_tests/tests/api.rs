@@ -406,6 +406,12 @@ async fn create_and_get_team() {
         .expect("get team");
     assert_eq!(fetched.id, team.id);
     assert_eq!(fetched.name, "Surrey");
+    // The owner implicitly follows their own team, and the count is seeded
+    // with the meta item rather than bumped by an update beside it — the two
+    // operations on one item that DynamoDB refuses, and that broke every
+    // `POST /teams` (#250). `follow_and_unfollow_team` relies on this
+    // starting at 1.
+    assert_eq!(fetched.follower_count, 1);
     // The creator is a member — members are listed separately (paginated),
     // not embedded on the team itself.
     let members = teams_team_id_members_get(&config, &team.id, None, None)
@@ -1680,6 +1686,84 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     assert_eq!(tennis.losses, 1, "invitee was on the losing side");
 }
 
+/// A roster player with no side assigned didn't play for either side, so a
+/// confirmed match must not credit them any outcome at all — not even a loss.
+#[tokio::test]
+async fn an_unassigned_roster_player_gets_no_stat_contribution() {
+    let (owner_config, _owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (unassigned_config, unassigned) = new_user().await;
+
+    // Side "b" gets a real opponent (so there's someone to confirm the
+    // score); a separate invite with no side_client_id puts a second user on
+    // the roster without ever assigning them a side.
+    let created = matches_post(
+        &owner_config,
+        completed_match(vec![
+            invite_users("b", &[&opponent.profile.id]),
+            models::CreateMatchInviteInput {
+                side_client_id: None,
+                invited_user_ids: vec![unassigned.profile.id.clone()],
+                invited_externals: vec![],
+            },
+        ]),
+    )
+    .await
+    .expect("create match");
+
+    for (config, id) in [
+        (&opponent_config, &opponent.profile.id),
+        (&unassigned_config, &unassigned.profile.id),
+    ] {
+        let inbox = users_me_invitations_get(config, None, None, None)
+            .await
+            .expect("inbox");
+        let detail = inbox
+            .items
+            .iter()
+            .find(|i| {
+                matches!(&*i.context,
+                models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
+            })
+            .unwrap_or_else(|| panic!("match invitation in {id}'s inbox"));
+        invitations_invitation_id_respond_post(
+            config,
+            &detail.invitation.id,
+            models::RespondToInvitationInput {
+                response: models::InvitationResponse::Accepted,
+                side_id: None,
+            },
+        )
+        .await
+        .expect("accept invitation");
+    }
+
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Tennis, 1, "opponent")
+        .await;
+    assert_eq!(
+        my_matches_played(&unassigned_config, models::MatchType::Tennis).await,
+        0,
+        "an unassigned roster player must not be credited a result for this match"
+    );
+}
+
 /// End-to-end for the *invite-link* (bearer token) acceptance flow into an
 /// already-completed match: an external invitee is created with a minted token,
 /// a real account then accepts by token, and afterwards the match is on that
@@ -1910,7 +1994,7 @@ async fn cricket_stats_track_batting_bowling_fielding_and_derived_rates() {
 /// `best_bowling` only ever ratchets up: a worse spell in a later match must
 /// not overwrite an existing record, and a better one must — while the
 /// career `wickets` total keeps accumulating regardless either way. This is
-/// the behavior `Dao::update_best_bowling_figures` exists for, so it's worth
+/// the behavior `Dao::update_best_figures` exists for, so it's worth
 /// covering across more than one match rather than just a single snapshot.
 #[tokio::test]
 async fn best_bowling_figures_only_ratchet_up_across_matches() {
@@ -2111,6 +2195,104 @@ async fn football_stats_track_goals_assists_and_best_goal_contributions() {
     );
 }
 
+/// A netball match's goal log credits each scorer's own `goals` — a
+/// two-point-zone goal counts once (it's one goal, worth two on the board) —
+/// alongside the usual played/won/lost.
+#[tokio::test]
+async fn netball_stats_track_goals_scored() {
+    let (owner_config, owner) = new_user().await;
+    let (teammate_config, teammate) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = match_between(
+        "Netball Match",
+        &[&owner.profile.id, &teammate.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.match_type = models::MatchType::Netball;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&teammate_config, &created.id).await;
+    accept_match_invitation(&opponent_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
+    let owner_pid = player_id_for_user(&created, &owner.profile.id);
+    let teammate_pid = player_id_for_user(&created, &teammate.profile.id);
+    let opponent_pid = player_id_for_user(&created, &opponent.profile.id);
+
+    let goal = |side: &str, scorer: &str, two_points: bool| {
+        let mut g = models::NetballGoalEvent::new(side.to_string(), two_points);
+        g.scorer_player_id = Some(scorer.to_string());
+        g
+    };
+    let score_tally = std::collections::HashMap::from([(side_a.clone(), 4), (side_b.clone(), 1)]);
+    let mut netball_score = models::ScoreNetballScore::new(
+        score_tally,
+        std::collections::HashMap::new(),
+        Default::default(),
+    );
+    netball_score.goals = Some(vec![
+        goal(&side_a, &owner_pid, false),
+        goal(&side_a, &owner_pid, true),
+        goal(&side_a, &teammate_pid, false),
+        goal(&side_b, &opponent_pid, false),
+    ]);
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(models::Score::Netball(Box::new(netball_score)))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch netball score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm netball score");
+
+    assert_matches_played_reaches(&owner_config, models::MatchType::Netball, 1, "owner").await;
+    let owner_netball = users_me_get(&owner_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .netball
+        .expect("netball stats");
+    assert_eq!(owner_netball.wins, 1);
+    assert_eq!(
+        owner_netball.goals, 2,
+        "two goals, one of them a two-pointer — counted as goals, not points"
+    );
+
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Netball, 1, "opponent")
+        .await;
+    let opponent_netball = users_me_get(&opponent_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .netball
+        .expect("netball stats");
+    assert_eq!(opponent_netball.losses, 1);
+    assert_eq!(opponent_netball.goals, 1);
+}
+
 /// A match confirmed with no winner is a draw for every participant: neither
 /// side's win nor loss is credited, only `draws`.
 #[tokio::test]
@@ -2231,19 +2413,23 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
 // Feed fan-out scenarios (multi-user end-to-end)
 //
 // The fan-out audience for a match is the deduplicated union of (see
-// docs/async-design.md / agon_core `resolve_fanout_audience`):
+// docs/async-design.md / agon_services_core `resolve_fanout_audience`):
 //   - the participants themselves (players with a linked user id),
 //   - every follower of each participating user,
-//   - every follower of each involved team (a side with a team id).
+//   - every follower of each involved team (a side with a team id),
+//   - everyone holding Owner/Admin authority on the match, even when they
+//     aren't themselves a player (a non-playing creator gets an implicit
+//     Owner entry — see `MatchRecord::authority`'s doc comment).
 // So a match lands in a viewer's feed iff they participate, follow a
-// participant, or follow an involved team. These tests drive that whole path
-// through the real stream -> SQS -> worker -> feed pipeline and assert both the
-// users who SHOULD receive the match and those who should NOT.
+// participant, follow an involved team, or hold authority over it. These
+// tests drive that whole path through the real stream -> SQS -> worker ->
+// feed pipeline and assert both the users who SHOULD receive the match and
+// those who should NOT.
 //
-// Note on the creator: on this surface the creator is only a participant if they
-// are themselves a player (a self-invite via `match_between`). A creator who
-// merely invites others is not in the audience, and neither are their followers
-// — the tests reflect that.
+// Note on the creator's followers: the creator themselves is always in the
+// audience (see above), but that doesn't fan out to their followers unless
+// they're also a player (a self-invite via `match_between`) — a non-playing
+// creator's followers are not in the audience.
 // ---------------------------------------------------------------------------
 
 /// The scenario from the ask: two users follow a third (the poster), the poster
@@ -2448,6 +2634,36 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
     assert_match_absent_from_feed(&stranger_config, &created.id, "stranger feed").await;
 }
 
+/// A non-playing creator (organizes a match without self-inviting) still sees
+/// it in their own feed — the creator is always in the fan-out audience, even
+/// though that doesn't extend to their followers (see the comment above).
+#[tokio::test]
+async fn match_fans_out_to_a_non_playing_creator() {
+    let (creator_config, creator) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let (creator_follower_config, _creator_follower) = new_user().await;
+
+    // Follows the creator, not any participant — shouldn't receive the match.
+    users_user_id_follow_post(&creator_follower_config, &creator.profile.id)
+        .await
+        .expect("follower follows creator");
+
+    let created = matches_post(&creator_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    // The creator themselves is in the audience despite not being a player.
+    assert_match_reaches_feed(&creator_config, &created.id, "creator's own feed").await;
+    // Their follower is not — the creator isn't a participant, so this isn't
+    // participant-follower fan-out.
+    assert_match_absent_from_feed(
+        &creator_follower_config,
+        &created.id,
+        "creator-follower feed",
+    )
+    .await;
+}
+
 // ---------------------------------------------------------------------------
 // Async pipeline (eventual consistency) — exercises the real stream -> SQS ->
 // worker path. These assert effects that land *after* the synchronous write.
@@ -2635,6 +2851,51 @@ async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
         submissions[0].status,
         models::ScoreSubmissionStatus::Pending
     ));
+}
+
+#[tokio::test]
+async fn non_playing_owner_can_finish_a_match_without_waiting_on_confirmation() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    // Owner creates the match but never plays in it (no `creator_side_client_id`) —
+    // same as a tournament organiser who authored the tournament but isn't an
+    // entrant themselves.
+    let created = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert_eq!(created.viewer_role, Some(models::MatchPlayerRole::Owner));
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // The owner has no side of their own, so there's no side to attribute a
+    // pending submission to, or to wait on for confirmation — their authority
+    // over the match settles the result directly.
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("owner patches a score despite not being on a side");
+    assert!(matches!(updated.status, models::MatchStatus::Completed));
+    assert!(
+        updated.confirmed_score.is_some(),
+        "an admin's score is confirmed immediately, with no side to await"
+    );
+    assert!(updated.pending_score.is_none());
+
+    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
+        .await
+        .expect("list submissions");
+    assert!(
+        submissions.is_empty(),
+        "no pending submission is created for a direct admin override"
+    );
 }
 
 #[tokio::test]
@@ -6017,6 +6278,52 @@ async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
     assert_not_found(response);
 }
 
+/// Recording a match's first live event auto-promotes it `scheduled ->
+/// in_progress` (`append_live_events`'s own auto-promotion). Undoing that
+/// same event — leaving the log empty again — should reverse it: a match
+/// that never really started shouldn't linger "live" forever just because
+/// someone tapped an event and then immediately corrected it.
+#[tokio::test]
+async fn undoing_a_matchs_only_live_event_takes_it_out_of_in_progress() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert!(matches!(created.status, models::MatchStatus::Scheduled));
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    let mid_scoring = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(matches!(
+        mid_scoring.status,
+        models::MatchStatus::InProgress
+    ));
+
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+
+    let after_undo = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        matches!(after_undo.status, models::MatchStatus::Scheduled),
+        "match should fall back to scheduled once its only live event is undone, got {:?}",
+        after_undo.status
+    );
+}
+
 /// Two, then three, successful undos in a row — each one targeting the log's
 /// *real* physical tip at that point (2, then 1), not the previous undo's
 /// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split
@@ -8023,6 +8330,83 @@ async fn a_stranger_cannot_self_join_via_team_membership() {
     );
 }
 
+/// A non-playing organiser (`creator_side_client_id: None`, same shape as a
+/// series occurrence's organiser) still holds `Owner` authority but has no
+/// roster row. If they're themselves an accepted member of a team-linked
+/// side, they should see and be able to use team self-join just like any
+/// other eligible member — `viewer_role` being `Some` must not hide this
+/// (regression for the "owner of their own match can't join" bug).
+#[tokio::test]
+async fn non_playing_owner_can_self_join_via_their_own_team_membership() {
+    let (creator_config, creator) = new_user().await;
+    let team =
+        team_with_accepted_member(&creator_config, &creator_config, &creator.profile.id).await;
+
+    let created = matches_post(
+        &creator_config,
+        models::CreateMatchInput {
+            name: "Owner Self-Join".to_string(),
+            description: "".to_string(),
+            match_type: models::MatchType::Tennis,
+            starts_at: iso_offset_hours(24),
+            location: None,
+            sides: vec![
+                models::CreateMatchSideInput {
+                    client_id: "a".to_string(),
+                    team_id: Some(team.id.clone()),
+                    name: None,
+                    colour: None,
+                    max_players: None,
+                    team_join_enabled: Some(true),
+                },
+                models::CreateMatchSideInput {
+                    client_id: "b".to_string(),
+                    team_id: None,
+                    name: Some("Side B".to_string()),
+                    colour: Some("#2952D9".to_string()),
+                    max_players: None,
+                    team_join_enabled: None,
+                },
+            ],
+            invites: vec![],
+            creator_side_client_id: None,
+            score: None,
+            winner_side_id: None,
+            header_photo_asset_ids: None,
+            format: None,
+            allow_unassigned: None,
+            ranked: None,
+        },
+    )
+    .await
+    .expect("create match");
+    let side_a = created
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("side a")
+        .id
+        .clone();
+
+    let preview = matches_match_id_get(&creator_config, &created.id)
+        .await
+        .expect("get match as the non-playing owner");
+    assert_eq!(preview.viewer_role, Some(models::MatchPlayerRole::Owner));
+    assert_eq!(preview.viewer_team_join_side_ids, Some(vec![side_a.clone()]));
+
+    let joined = matches_match_id_join_post(
+        &creator_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("owner self-joins via their own team membership");
+    assert_eq!(side_id_for_user(&joined, &creator.profile.id), side_a);
+}
+
 #[tokio::test]
 async fn team_self_join_requires_the_sides_own_opt_in() {
     let (creator_config, _creator) = new_user().await;
@@ -8165,6 +8549,57 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
             .unwrap()
             .side_id,
         None
+    );
+}
+
+/// A creator who doesn't play (`creator_side_client_id: None`, as
+/// `create_match_input` always builds) still gets `Owner` authority over the
+/// match — via an entry in the match's `authority` map, not a roster row.
+/// They never appear in `players`, and `viewer_role` reports `Owner` directly
+/// (not `None`, which would hide the edit affordance client-side — see
+/// `agon_ui`'s `members.ts::myMatchRole`), so the server and client agree
+/// without the client needing to know the authority map exists.
+#[tokio::test]
+async fn a_non_playing_creator_owns_the_match_without_a_roster_row() {
+    let (config, creator) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    assert_eq!(created.viewer_role, Some(models::MatchPlayerRole::Owner));
+    assert!(
+        !created
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == creator.profile.id)),
+        "a non-playing creator must not get a roster row"
+    );
+
+    // Owner authority actually works: the creator can edit the match despite
+    // never joining its roster.
+    let updated = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            name: Some("Renamed By Non-Playing Owner".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("non-playing owner can edit");
+    assert_eq!(updated.name, "Renamed By Non-Playing Owner");
+
+    // A re-fetch by anyone else sees no trace of the organizer on the roster.
+    let fetched = matches_match_id_get(&_invitee_config, &created.id)
+        .await
+        .expect("fetch as the invitee");
+    assert!(
+        !fetched
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == creator.profile.id))
     );
 }
 
@@ -8472,7 +8907,9 @@ async fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
     )
     .await
     .expect("create ranked match");
-    accept_match_invitation(&opponent_config, &scheduled.id).await;
+    accept_invitation(&opponent_config, &scheduled.id)
+        .await
+        .expect("the opponent accepts");
     let side_a = scheduled.sides[0].id.clone();
     let side_b = scheduled.sides[1].id.clone();
     let scored = matches_match_id_patch(
@@ -8766,5 +9203,386 @@ async fn the_sport_of_a_ranked_match_cannot_be_changed() {
         &matches_match_id_get(&config, &created.id)
             .await
             .expect("re-read the match"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ranked matches — who can be in one, now that nobody has to agree to be rated
+// ---------------------------------------------------------------------------
+
+fn ranked_joinable_match_input(side_b_max: Option<i32>) -> models::CreateMatchInput {
+    let mut input = joinable_match_input(None, None, side_b_max);
+    input.ranked = Some(true);
+    input
+}
+
+/// A join link onto `match_id` scoped to `side_ids`, or to any side if `None`.
+async fn join_link_for(
+    config: &Configuration,
+    match_id: &str,
+    side_ids: Option<Vec<String>>,
+) -> models::JoinLink {
+    let scope = match side_ids {
+        Some(ids) => sides_scope(ids),
+        None => any_side_scope(),
+    };
+    matches_match_id_join_links_post(
+        config,
+        match_id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(scope),
+        },
+    )
+    .await
+    .expect("create join link")
+}
+
+/// Join `match_id` through a link's `token`, or through team membership if
+/// `None`.
+async fn join_match(
+    config: &Configuration,
+    match_id: &str,
+    token: Option<&str>,
+) -> Result<models::Match, openapi::apis::Error<MatchesMatchIdJoinPostError>> {
+    matches_match_id_join_post(
+        config,
+        match_id,
+        models::JoinMatchInput {
+            token: token.map(str::to_string),
+            side_id: None,
+        },
+    )
+    .await
+}
+
+/// Join `match_id`'s waitlist through a link's `token` (or, with `None`, a
+/// pending invitation or team membership).
+async fn join_waitlist(
+    config: &Configuration,
+    match_id: &str,
+    token: Option<&str>,
+) -> Result<models::WaitlistEntry, openapi::apis::Error<MatchesMatchIdWaitlistJoinPostError>> {
+    matches_match_id_waitlist_join_post(
+        config,
+        match_id,
+        models::JoinMatchInput {
+            token: token.map(str::to_string),
+            side_id: None,
+        },
+    )
+    .await
+}
+
+/// The id of `config`'s own invitation to `match_id`, found in their inbox.
+async fn match_invitation_id(config: &Configuration, match_id: &str) -> String {
+    users_me_invitations_get(config, None, None, None)
+        .await
+        .expect("inbox")
+        .items
+        .into_iter()
+        .find(|i| {
+            matches!(&*i.context, models::InvitationContext::Match(ctx) if ctx.match_id == match_id)
+        })
+        .expect("match invitation in inbox")
+        .invitation
+        .id
+}
+
+/// Accept `config`'s own invitation to `match_id` by id.
+async fn accept_invitation(
+    config: &Configuration,
+    match_id: &str,
+) -> Result<models::Invitation, openapi::apis::Error<InvitationsInvitationIdRespondPostError>> {
+    let invitation_id = match_invitation_id(config, match_id).await;
+    invitations_invitation_id_respond_post(
+        config,
+        &invitation_id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+}
+
+/// Whether a linked user has a row on `match_`'s roster. A waitlisted player
+/// doesn't: the waitlist is kept apart from the roster.
+fn is_on_roster(match_: &models::Match, user_id: &str) -> bool {
+    match_
+        .players
+        .iter()
+        .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == user_id))
+}
+
+/// The user ids on `match_id`'s waitlist, longest-waiting first.
+async fn waitlisted_user_ids(config: &Configuration, match_id: &str) -> Vec<String> {
+    matches_match_id_waitlist_get(config, match_id)
+        .await
+        .expect("list waitlist")
+        .into_iter()
+        .map(|entry| entry.user_id)
+        .collect()
+}
+
+/// Every way into a ranked match is open to anybody with an account, first
+/// time, no question asked and nothing to tick. This is the whole of the
+/// change: creating one, joining by link and accepting an invitation to one
+/// each used to be a 422 until the caller had agreed to be rated.
+#[tokio::test]
+async fn anybody_with_an_account_can_get_into_a_ranked_match() {
+    let (config, _owner) = new_user().await;
+    let (joiner_config, joiner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+
+    let mut input = ranked_joinable_match_input(None);
+    input.invites = vec![invite_users("a", &[&invitee.profile.id])];
+    let created = matches_post(&config, input)
+        .await
+        .expect("a brand-new account creates a ranked match it plays in");
+
+    accept_invitation(&invitee_config, &created.id)
+        .await
+        .expect("a brand-new account accepts an invitation to it");
+    let link = join_link_for(&config, &created.id, None).await;
+    join_match(&joiner_config, &created.id, Some(&link.token))
+        .await
+        .expect("a brand-new account joins it by link");
+
+    let after = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert!(after.ranked);
+    assert!(is_on_roster(&after, &joiner.profile.id));
+    assert!(is_on_roster(&after, &invitee.profile.id));
+}
+
+/// Adding somebody to a ranked match without asking them is still refused for
+/// a guest, and no longer refused for anyone else. A guest on a side can't be
+/// rated at all — Weng-Lin sums a side's beliefs, so their part of the result
+/// would be credited to their team-mates — which makes it a "this could never
+/// be rated" rule rather than a consent one.
+#[tokio::test]
+async fn a_ranked_match_only_takes_added_players_with_an_account() {
+    let (config, owner) = new_user().await;
+    let (_friend_config, friend) = new_user().await;
+    let created = matches_post(&config, ranked_joinable_match_input(None))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let add = |user_id: Option<String>, display_name: Option<String>| {
+        matches_match_id_patch(
+            &config,
+            &created.id,
+            models::UpdateMatchInput {
+                added_players: Some(vec![models::AddMatchPlayerInput {
+                    user_id,
+                    display_name,
+                    side_id: Some(side_b.clone()),
+                }]),
+                ..Default::default()
+            },
+        )
+    };
+
+    assert_status_with_content(
+        add(None, Some("Ringer".to_string())).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "without an Agon account",
+    );
+    let unchanged = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        unchanged.players.len(),
+        created.players.len(),
+        "the refused add wrote no player"
+    );
+
+    let added = add(Some(friend.profile.id.clone()), None)
+        .await
+        .expect("a linked user is added directly, having agreed to nothing");
+    assert!(is_on_roster(&added, &friend.profile.id));
+}
+
+/// `added_players` is judged against the `ranked` the request leaves the match
+/// with, not the one it found. Switching to ranked and adding a guest in one
+/// PATCH is refused whole (the match stays friendly); switching back to
+/// friendly and adding one is fine, since the guest joins a friendly.
+#[tokio::test]
+async fn added_players_are_judged_against_the_ranked_flag_the_request_leaves() {
+    let (config, owner) = new_user().await;
+    let created = matches_post(&config, joinable_match_input(None, None, None))
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let switch_and_add_guest = |ranked: bool| {
+        matches_match_id_patch(
+            &config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(ranked),
+                added_players: Some(vec![models::AddMatchPlayerInput {
+                    user_id: None,
+                    display_name: Some("Ringer".to_string()),
+                    side_id: Some(side_b.clone()),
+                }]),
+                ..Default::default()
+            },
+        )
+    };
+
+    assert_status_with_content(
+        switch_and_add_guest(true).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "without an Agon account",
+    );
+    let refused = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert!(!refused.ranked, "the switch was refused along with the add");
+    assert_eq!(refused.players.len(), created.players.len());
+
+    let friendly = switch_and_add_guest(false)
+        .await
+        .expect("a friendly takes a guest");
+    assert!(!friendly.ranked);
+}
+
+/// A match can only become ranked once everyone in a spot has an account,
+/// which is the one thing left that would stop it rating. A pending invitee
+/// doesn't count — they hold no spot — and the switch goes through once the
+/// guest is gone.
+#[tokio::test]
+async fn switching_to_ranked_needs_everyone_in_a_spot_to_have_an_account() {
+    let (owner_config, owner) = new_user().await;
+    let (player_config, player) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let mut input = joinable_match_input(None, None, None);
+    input.invites = vec![invite_users("a", &[&invitee.profile.id])];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b.clone()])).await;
+    join_match(&player_config, &created.id, Some(&link.token))
+        .await
+        .expect("takes a spot on side b");
+
+    let switch = || {
+        matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+    };
+
+    let with_guest = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            added_players: Some(vec![models::AddMatchPlayerInput {
+                user_id: None,
+                display_name: Some("Ringer".to_string()),
+                side_id: Some(side_b),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a friendly takes a guest");
+    let guest_player_id = with_guest
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::External(guest) => Some(guest.id.clone()),
+            models::Member::User(_) => None,
+        })
+        .expect("the guest is on the roster");
+
+    assert_status_with_content(
+        switch().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no Agon account",
+    );
+    assert!(
+        !matches_match_id_get(&owner_config, &created.id)
+            .await
+            .expect("get match")
+            .ranked,
+        "the refusal left it friendly"
+    );
+
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            removed_player_ids: Some(vec![guest_player_id]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("remove the guest");
+    let ranked = switch().await.expect("now it can be rated");
+    assert!(ranked.ranked);
+    assert!(is_on_roster(&ranked, &player.profile.id));
+    assert_eq!(
+        invitation_status_for(&ranked, &invitee.profile.id),
+        Some(&models::InvitationStatus::Pending),
+        "a pending invitee holds no spot and blocks nothing"
+    );
+}
+
+/// The status of `user_id`'s invitation as `match_` shows it, if they have one.
+fn invitation_status_for<'a>(
+    match_: &'a models::Match,
+    user_id: &str,
+) -> Option<&'a models::InvitationStatus> {
+    match_.players.iter().find_map(|p| match &*p.member {
+        models::Member::User(u) if u.user_id == user_id => {
+            u.invitation.as_ref().map(|inv| &inv.status)
+        }
+        _ => None,
+    })
+}
+
+/// Moving somebody in off a ranked match's waitlist asks nothing of them. It
+/// used to check they had opted in, because an admin can't consent on
+/// another player's behalf; nobody has to consent now, so the move-in is the
+/// same on a ranked match as on any other.
+#[tokio::test]
+async fn a_waiting_player_is_moved_in_off_a_ranked_matchs_waitlist() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, ranked_joinable_match_input(Some(1)))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b.clone()])).await;
+    let (filler_config, _filler) = new_user().await;
+    join_match(&filler_config, &created.id, Some(&link.token))
+        .await
+        .expect("fills side b's only spot");
+    let (waiter_config, waiter) = new_user().await;
+    join_waitlist(&waiter_config, &created.id, Some(&link.token))
+        .await
+        .expect("onto the waitlist");
+    matches_match_id_leave_post(&filler_config, &created.id)
+        .await
+        .expect("the filler leaves, freeing the spot");
+
+    matches_match_id_waitlist_user_id_move_in_post(&owner_config, &created.id, &waiter.profile.id)
+        .await
+        .expect("move the waiter in");
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(side_id_for_user(&after, &waiter.profile.id), side_b);
+    assert!(
+        waitlisted_user_ids(&owner_config, &created.id)
+            .await
+            .is_empty()
     );
 }

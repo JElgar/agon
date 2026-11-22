@@ -4,8 +4,9 @@ import { Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
+import { offersWaitlist } from '@/lib/waitlist'
 import { sideDisplayName } from '@/lib/members'
+import { useJoinMatch } from '@/hooks/useJoinMatch'
 
 type Match = components['schemas']['Match']
 
@@ -33,22 +34,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
   const effectiveSideId = forcedSideId ?? sideId
   const canSubmit = needsPick ? match.allow_unassigned || !!effectiveSideId : true
 
-  const join = useMutation({
-    mutationFn: async (): Promise<'joined' | RosterConflict> => {
-      const { error, response } = await fetchClient.POST('/matches/{match_id}/join', {
-        params: { path: { match_id: match.id } },
-        body: { side_id: effectiveSideId },
-      })
-      if (response.status === 409) return error as RosterConflict
-      if (error) throw new Error('Failed to join')
-      return 'joined'
-    },
-    onSuccess: (result) => {
-      if (result !== 'joined') return
-      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-    },
-  })
+  const join = useJoinMatch(match.id)
 
   // Offered when `join` hit a full match/side — queues for the exact same
   // side the join attempt itself targeted.
@@ -152,7 +138,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
               <Button
                 size="sm"
                 disabled={join.isPending || !canSubmit}
-                onClick={() => join.mutate()}
+                onClick={() => join.mutate({ side_id: effectiveSideId })}
               >
                 {join.isPending ? 'Joining…' : 'Join'}
               </Button>

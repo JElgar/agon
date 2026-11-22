@@ -6,6 +6,7 @@ import { ChevronLeft, Clock } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { isSetsSport, sportIcon, type MatchType } from '@/lib/sports'
+import { canBeRanked, placementFor, ratingFor } from '@/lib/rating'
 import { colourFromName, defaultSideColour, nameFromColour } from '@/lib/sideColours'
 import { suggestMatchName } from '@/lib/matchName'
 import { cricketFormatLabel, type MatchFormat } from '@/lib/matchFormat'
@@ -15,11 +16,13 @@ import { SportPicker } from '@/components/agon/SportPicker'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { Avatar } from '@/components/agon/Avatar'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import type { TaggedPlayer } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { CARD, FormSection, Segmented, Stepper, ToggleRow } from '@/components/agon/logmatch/parts'
+import { HowItCounts } from '@/components/agon/logmatch/HowItCounts'
 import { FormatPresets } from '@/components/agon/logmatch/FormatPresets'
 import { RacketPlayers, type RacketFormat } from '@/components/agon/logmatch/RacketPlayers'
 import { TeamSideCard, type SideKind } from '@/components/agon/logmatch/TeamSideCard'
@@ -27,15 +30,33 @@ import { SetsScoreEditor } from '@/components/agon/logmatch/SetsScoreEditor'
 import { formatDefaultHint, playedSets, type SetRow } from '@/lib/logMatch'
 import { cn } from '@/lib/utils'
 import { ROSTER_IDENTITY_MAX_PLAYERS, rosterIdentityName } from '@/lib/members'
-import { toDateTimeLocal } from '@/lib/datetime'
+import { MAX_START_HOURS_IN_PAST, isTooFarInPast, shortDate, toDateTimeLocal } from '@/lib/datetime'
+import { countOccurrencesThrough, occurrenceDate } from '@/lib/seriesOccurrences'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
+import { currentUserQuery } from '@/hooks/useCurrentUser'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
-type UserProfile = components['schemas']['UserProfile']
+type CreateMatchSeriesInput = components['schemas']['CreateMatchSeriesInput']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
 type TeamListItem = components['schemas']['TeamListItem']
+
+type SeriesFrequency = 'weekly' | 'fortnightly' | 'monthly' | 'yearly'
+type SeriesEndMode = 'after' | 'on_date' | 'never'
+
+const FREQUENCY_OPTIONS: { value: SeriesFrequency; label: string }[] = [
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'fortnightly', label: 'Fortnightly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+]
+
+const END_MODE_OPTIONS: { value: SeriesEndMode; label: string }[] = [
+  { value: 'after', label: 'After N matches' },
+  { value: 'on_date', label: 'On a date' },
+  { value: 'never', label: 'Never' },
+]
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
  *  football/cricket/netball score editors (built for a real match's roster)
@@ -166,7 +187,26 @@ export function LogMatchPage() {
   const [sideATeamJoinEnabled, setSideATeamJoinEnabled] = useState(true)
   const [sideBTeamJoinEnabled, setSideBTeamJoinEnabled] = useState(true)
   const [allowUnassigned, setAllowUnassigned] = useState(true)
+  // Friendly by default, like `CreateMatchInput.ranked` itself.
+  const [ranked, setRanked] = useState(false)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
+
+  // Switching to ranked after a guest was already tagged (e.g. the organiser
+  // goes back to step 1 and changes their mind) would otherwise leave a
+  // guest sitting on a side that can no longer add one — drop them rather
+  // than let the match reach step 3 only to be refused at submit.
+  useEffect(() => {
+    if (!ranked) return
+    setSideA((prev) => prev.filter((p) => p.kind !== 'external'))
+    setSideB((prev) => prev.filter((p) => p.kind !== 'external'))
+  }, [ranked])
+
+  const [repeatEnabled, setRepeatEnabled] = useState(false)
+  const [frequency, setFrequency] = useState<SeriesFrequency>('weekly')
+  const [endMode, setEndMode] = useState<SeriesEndMode>('after')
+  const [endAfterCount, setEndAfterCount] = useState('10')
+  const [endOnDate, setEndOnDate] = useState('')
+  const [showAllOccurrences, setShowAllOccurrences] = useState(false)
 
   const [sets, setSets] = useState<SetRow[]>([
     { a: '', b: '' },
@@ -247,20 +287,17 @@ export function LogMatchPage() {
     setStartsAt(next === 'scheduled' ? defaultScheduledAt() : defaultCompletedAt())
   }
 
-  const me = useQuery({
-    queryKey: ['users-me'],
-    queryFn: async (): Promise<UserProfile | null> => {
-      const { data } = await fetchClient.GET('/users/me')
-      return data?.profile ?? null
-    },
-  })
-  const currentUserId = me.data?.id
+  // The whole `/users/me` response, not just the profile: the "how it counts"
+  // section below needs `rating_placements` as well as the id. Shares its
+  // cache entry with every other reader of `currentUserQuery`.
+  const me = useQuery(currentUserQuery)
+  const currentUserId = me.data?.profile.id
 
   // Seed the current user onto side A once; removing yourself sticks.
   const [seededSelf, setSeededSelf] = useState(false)
   useEffect(() => {
     if (seededSelf || !me.data) return
-    const self = me.data
+    const self = me.data.profile
     setSideA((prev) =>
       prev.some((p) => p.kind === 'user' && p.id === self.id)
         ? prev
@@ -274,11 +311,32 @@ export function LogMatchPage() {
     const ts = new Date(startsAt).getTime()
     if (Number.isNaN(ts)) return 'Pick a valid date and time'
     if (mode === 'completed' && ts > Date.now()) return 'A match that has been played must be in the past'
-    if (mode === 'scheduled' && ts <= Date.now()) return 'An upcoming match must be in the future'
+    if (mode === 'scheduled') {
+      if (isTooFarInPast(startsAt)) {
+        return `An upcoming match can't start more than ${MAX_START_HOURS_IN_PAST} hours in the past`
+      }
+    }
     return null
   }, [startsAt, mode])
 
-  const step1Error = !sport ? 'Pick a sport' : !name.trim() ? 'Give the match a name' : timeError
+  // Guests tagged onto a side, who the server won't let a ranked match
+  // contain (`mapping::ranked_guest_invites_reason`). The same set
+  // `buildInvites` sends as `invited_externals`, which is what that refusal
+  // reads — this flow only ever puts a player on a side, so there is no
+  // invited-but-unassigned guest for the two to disagree about.
+  const rankedGuests = ranked ? [...sideA, ...sideB].filter((p) => p.kind === 'external') : []
+
+  // Blocks the step rather than failing at submit. `HowItCounts` renders the
+  // explanation and names them; this is only the gate, which is why the
+  // message is the short form — step 0 shows its errors inline by the field
+  // they belong to, and this string is what the final step summarises.
+  const step1Error = !sport
+    ? 'Pick a sport'
+    : !name.trim()
+      ? 'Give the match a name'
+      : rankedGuests.length > 0
+        ? "A ranked match can't include guests without an Agon account"
+        : timeError
 
   const maxError = (label: string, max: string, count: number): string | null => {
     if (!max.trim()) return null
@@ -294,7 +352,89 @@ export function LogMatchPage() {
   const sideALabel = resolvedSideName(sideA, sideAIdentity ? sideAName : '', linkedA, sideACap) ?? 'Your side'
   const sideBLabel = resolvedSideName(sideB, sideBIdentity ? sideBName : '', linkedB, sideBCap) ?? 'Opposition'
 
+  // A series template only supports team-linked sides, with no players or
+  // invites (see `CreateMatchSeriesSideInput`) — racket sports don't have
+  // team sides at all, and a series can only ever be upcoming.
+  const canRepeat = sport !== null && !racket && mode === 'scheduled'
+  useEffect(() => {
+    if (!canRepeat && repeatEnabled) setRepeatEnabled(false)
+  }, [canRepeat, repeatEnabled])
+
+  // Repeat is decided on step 1, before sides exist, so lock both sides to
+  // "Existing team" the moment it's turned on rather than letting the user
+  // reach step 2 with a one-off side that a series can't accept.
+  useEffect(() => {
+    if (repeatEnabled) {
+      setSideAKind('team')
+      setSideBKind('team')
+    }
+  }, [repeatEnabled])
+
+  const weekdayName = useMemo(() => {
+    const d = new Date(startsAt)
+    return Number.isNaN(d.getTime()) ? '' : formatDate(d, 'EEEE')
+  }, [startsAt])
+
+  const seriesError = useMemo((): string | null => {
+    if (!repeatEnabled) return null
+    if (endMode === 'never') return null
+    if (endMode === 'after') {
+      const n = Number(endAfterCount)
+      if (!endAfterCount.trim() || !Number.isInteger(n) || n < 1 || n > 99) {
+        return 'Enter how many matches the series should run for (1–99)'
+      }
+      return null
+    }
+    if (!endOnDate) return 'Pick the date the series ends on'
+    if (new Date(endOnDate).getTime() < new Date(startsAt).setHours(0, 0, 0, 0)) {
+      return 'The end date must be on or after the first match'
+    }
+    return null
+  }, [repeatEnabled, endMode, endAfterCount, endOnDate, startsAt])
+
+  // A preview of the dates the series will actually create — computed the
+  // same way the server does (`agon_core::series::occurrence_date`), so it
+  // reflects the recurrence rule immediately rather than only after
+  // submitting. `total` (occurrences including this one) is known for a
+  // bounded series and `null` for `Never`, which has no finite list to show
+  // "all" of. Index 0 is this match's own `starts_at`, already shown by the
+  // date field above, so the preview starts from index 1 — "what's next
+  // after this one".
+  const seriesPreview = useMemo(() => {
+    if (!repeatEnabled || seriesError) return null
+    const first = new Date(startsAt)
+    if (Number.isNaN(first.getTime())) return null
+    const weekday = first.getDay()
+
+    let total: number | null = null
+    if (endMode === 'after') {
+      const n = Number(endAfterCount)
+      total = n
+    } else if (endMode === 'on_date' && endOnDate) {
+      const end = new Date(endOnDate)
+      if (Number.isNaN(end.getTime())) return null
+      total = countOccurrencesThrough(first, frequency, weekday, end)
+    }
+
+    const remaining = total !== null ? total - 1 : 3
+    if (remaining <= 0) return null
+    const count = showAllOccurrences ? remaining : Math.min(3, remaining)
+    const dates = Array.from({ length: count }, (_, i) => occurrenceDate(first, frequency, weekday, i + 1))
+    return { dates, remaining }
+  }, [repeatEnabled, seriesError, startsAt, frequency, endMode, endAfterCount, endOnDate, showAllOccurrences])
+
+  useEffect(() => {
+    setShowAllOccurrences(false)
+  }, [frequency, endMode, endAfterCount, endOnDate, startsAt])
+
   const step2Error = useMemo((): string | null => {
+    if (repeatEnabled) {
+      if (!sideATeam) return 'Pick a team for your side'
+      if (!sideBTeam) return 'Pick a team for the opposition'
+      if (needsName(sideAIdentity, linkedA, sideAName, sideACap)) return 'Give your side a name'
+      if (needsName(sideBIdentity, linkedB, sideBName, sideBCap)) return 'Give the opposition a name'
+      return null
+    }
     if (sideA.length === 0) return 'Add at least one player to your side'
     if (racket) {
       if (sideB.length === 0) return racketFormat === 'singles' ? 'Invite an opponent' : 'Add at least one opponent'
@@ -308,7 +448,7 @@ export function LogMatchPage() {
       return 'Name the opposition or invite a player'
     return maxError('Your side', sideAMaxPlayers, sideA.length) ?? maxError('Opposition', sideBMaxPlayers, sideB.length)
   }, [
-    sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
+    repeatEnabled, sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
     sideAIdentity, sideAName, linkedA, sideACap, sideBIdentity, sideBName, linkedB, sideBCap,
     sideAMaxPlayers, sideBMaxPlayers,
   ])
@@ -324,7 +464,12 @@ export function LogMatchPage() {
     return null
   }, [mode, isFootball, isCricket, isNetball, detailBuilt, racket, sets, pointsA, pointsB])
 
-  const stepError = step === 0 ? step1Error : step === 1 ? step2Error : (step1Error ?? step2Error ?? scoreError)
+  const stepError =
+    step === 0
+      ? (step1Error ?? seriesError)
+      : step === 1
+        ? step2Error
+        : (step1Error ?? seriesError ?? step2Error ?? scoreError)
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -336,6 +481,18 @@ export function LogMatchPage() {
       addPendingMatch(queryClient, created)
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate('/feed')
+    },
+  })
+
+  const seriesMutation = useMutation({
+    mutationFn: async (body: CreateMatchSeriesInput) => {
+      const { data, error } = await fetchClient.POST('/match-series', { body })
+      if (error || !data) throw new Error(typeof error === 'string' ? error : 'Failed to create the series')
+      return data
+    },
+    onSuccess: async (created) => {
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/match-series/${created.series.id}`)
     },
   })
 
@@ -417,8 +574,51 @@ export function LogMatchPage() {
     }
   }
 
+  const seriesSideInput = (
+    clientId: string,
+    identity: boolean,
+    customName: string,
+    colour: string,
+    team: TeamListItem,
+    maxPlayers: string,
+  ): CreateMatchSeriesInput['sides'][number] => ({
+    client_id: clientId,
+    team_id: team.id,
+    name: identity ? customName.trim() || undefined : undefined,
+    colour: identity ? colour : undefined,
+    max_players: maxPlayers.trim() ? Number(maxPlayers) : undefined,
+  })
+
+  const buildSeriesBody = (): CreateMatchSeriesInput => {
+    const ends =
+      endMode === 'after'
+        ? { type: 'AfterN', count: Number(endAfterCount) }
+        : endMode === 'on_date'
+          ? { type: 'OnDate', date: endOnDate }
+          : { type: 'Never' }
+    return {
+      match_type: sport!,
+      name: name.trim(),
+      description: '',
+      location: location?.text.trim() ? { ...location, text: location.text.trim() } : undefined,
+      starts_at: new Date(startsAt).toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      frequency,
+      weekday: new Date(startsAt).getDay(),
+      ends: ends as unknown as CreateMatchSeriesInput['ends'],
+      sides: [
+        seriesSideInput(SIDE_A, sideAIdentity, sideAName, sideAColour, linkedA!, sideAMaxPlayers),
+        seriesSideInput(SIDE_B, sideBIdentity, sideBName, sideBColour, linkedB!, sideBMaxPlayers),
+      ],
+    }
+  }
+
   const handleSubmit = () => {
     if (!sport || stepError) return
+    if (repeatEnabled) {
+      seriesMutation.mutate(buildSeriesBody())
+      return
+    }
     const body: CreateMatchInput = {
       name: name.trim(),
       description: '',
@@ -436,6 +636,10 @@ export function LogMatchPage() {
     if (format) body.format = format
     if (location?.text.trim()) body.location = { ...location, text: location.text.trim() }
     body.allow_unassigned = allowUnassigned
+    // Only sent when the sport has a ladder — `ranked: true` on a ladderless
+    // one is a 400, and this flag can outlive a sport change in the form
+    // (the section that sets it stops being rendered, the state stays).
+    if (ranked && canBeRanked(sport)) body.ranked = true
     const scored = buildScore()
     if (scored) {
       body.score = scored.score
@@ -450,12 +654,21 @@ export function LogMatchPage() {
   const whenLabel = Number.isNaN(startsDate.getTime()) ? '' : formatDate(startsDate, 'EEE d MMM · HH:mm')
 
   const goBack = () => (step === 0 ? navigate('/feed') : setStep(step - 1))
-  const submitLabel =
-    mode === 'completed'
+  const submitLabel = repeatEnabled
+    ? 'Create series'
+    : mode === 'completed'
       ? 'Post match'
       : invitedUserCount > 0
         ? `Create and send ${invitedUserCount} ${invitedUserCount === 1 ? 'invite' : 'invites'}`
         : 'Create match'
+  const submitPending = repeatEnabled ? seriesMutation.isPending : mutation.isPending
+  const submitErrorMessage = repeatEnabled
+    ? seriesMutation.isError
+      ? (seriesMutation.error as Error).message
+      : null
+    : mutation.isError
+      ? (mutation.error as Error).message
+      : null
 
   const summaryChip = (
     <div className="flex items-center justify-between gap-3">
@@ -473,7 +686,7 @@ export function LogMatchPage() {
   )
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-xl flex-col gap-[18px]">
+    <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-[18px] md:mb-0 md:min-h-0">
       <header className="-ml-2 flex items-center gap-1">
         <button
           type="button"
@@ -511,6 +724,89 @@ export function LogMatchPage() {
             </div>
           </FormSection>
 
+          {canRepeat && (
+            <FormSection title="Repeat" aside="Optional">
+              <div className={cn(CARD, 'gap-3')}>
+                <ToggleRow
+                  label="Make this a recurring match"
+                  hint={weekdayName ? `Repeats every ${weekdayName}` : undefined}
+                  checked={repeatEnabled}
+                  onChange={setRepeatEnabled}
+                />
+                {repeatEnabled && (
+                  <>
+                    <p className="-mt-1 text-xs text-muted-foreground">
+                      A recurring match can only be between two existing teams — no one-off sides or invited
+                      players, since each generated match fills its own roster separately.
+                    </p>
+                    <Segmented label="Frequency" options={FREQUENCY_OPTIONS} value={frequency} onChange={setFrequency} />
+                    <Segmented label="Ends" options={END_MODE_OPTIONS} value={endMode} onChange={setEndMode} />
+                    {endMode === 'after' ? (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Number of matches</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={99}
+                          inputMode="numeric"
+                          value={endAfterCount}
+                          onChange={(e) => setEndAfterCount(e.target.value)}
+                          className="h-10 w-20 rounded-xl border bg-card text-center font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    ) : endMode === 'on_date' ? (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Last match on</span>
+                        <input
+                          type="date"
+                          value={endOnDate}
+                          onChange={(e) => setEndOnDate(e.target.value)}
+                          min={toDateTimeLocal(new Date(startsAt)).slice(0, 10)}
+                          className="h-10 rounded-xl border bg-card px-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Keeps generating matches indefinitely.</p>
+                    )}
+                    {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
+                    {seriesPreview && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-baseline justify-between px-1">
+                          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                            Next up
+                          </span>
+                          {!showAllOccurrences && seriesPreview.remaining > 3 && (
+                            <button
+                              type="button"
+                              onClick={() => setShowAllOccurrences(true)}
+                              className="text-xs font-bold text-primary"
+                            >
+                              Show all {seriesPreview.remaining + 1}
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-col rounded-2xl border bg-card px-3">
+                          {seriesPreview.dates.map((date, i) => (
+                            <div
+                              key={date.toISOString()}
+                              className={cn(
+                                'flex items-center gap-2.5 py-2.5 text-sm font-semibold',
+                                i > 0 && 'border-t',
+                              )}
+                            >
+                              <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden />
+                              {shortDate(date.toISOString())}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </FormSection>
+          )}
+
           <FormSection title="Where" htmlFor="match-location">
             <LocationField id="match-location" value={location} onChange={setLocation} />
           </FormSection>
@@ -525,6 +821,17 @@ export function LogMatchPage() {
               className="h-12 rounded-[14px] border bg-card px-3.5 text-[15px] font-semibold outline-none placeholder:font-normal placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
             />
           </FormSection>
+
+          {sport && canBeRanked(sport) && (
+            <HowItCounts
+              sport={sport}
+              ranked={ranked}
+              onChange={setRanked}
+              seriesMode={repeatEnabled}
+              rating={ratingFor(me.data?.profile.ratings, sport)}
+              placement={placementFor(me.data?.rating_placements, sport)}
+            />
+          )}
         </>
       )}
 
@@ -540,6 +847,7 @@ export function LogMatchPage() {
               onSideAChange={setSideA}
               onSideBChange={setSideB}
               currentUserId={currentUserId}
+              ranked={ranked}
             />
           ) : (
             <>
@@ -569,6 +877,8 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideAMaxPlayers}
                 onMaxPlayersChange={setSideAMaxPlayers}
+                seriesMode={repeatEnabled}
+                ranked={ranked}
               />
               <TeamSideCard
                 title="Opposition"
@@ -596,6 +906,8 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideBMaxPlayers}
                 onMaxPlayersChange={setSideBMaxPlayers}
+                seriesMode={repeatEnabled}
+                ranked={ranked}
               />
             </>
           )}
@@ -623,6 +935,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideAIdentity ? sideAColour : undefined}
                 players={sideA}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
               <span className="text-xs font-bold text-muted-foreground">v</span>
               <SideSummary
@@ -631,6 +944,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideBIdentity ? sideBColour : undefined}
                 players={sideB}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
             </div>
           </section>
@@ -640,20 +954,24 @@ export function LogMatchPage() {
             <span>No score yet. You can score it live from the match page when it starts, or add the result afterwards.</span>
           </div>
 
-          <FormSection title="Who can join">
-            <div className={cn(CARD, 'py-1.5')}>
-              <ToggleRow
-                label="Join without picking a side"
-                hint="For people who use a join link"
-                checked={allowUnassigned}
-                onChange={setAllowUnassigned}
-              />
-            </div>
-          </FormSection>
+          {!repeatEnabled && (
+            <FormSection title="Who can join">
+              <div className={cn(CARD, 'py-1.5')}>
+                <ToggleRow
+                  label="Join without picking a side"
+                  hint="For people who use a join link"
+                  checked={allowUnassigned}
+                  onChange={setAllowUnassigned}
+                />
+              </div>
+            </FormSection>
+          )}
 
-          <FormSection title="Header images" aside="Optional">
-            <MultiImageUploadField purpose="match_header" label="Add header images" onChange={setHeaderAssetIds} />
-          </FormSection>
+          {!repeatEnabled && (
+            <FormSection title="Header images" aside="Optional">
+              <MultiImageUploadField purpose="match_header" label="Add header images" onChange={setHeaderAssetIds} />
+            </FormSection>
+          )}
         </>
       )}
 
@@ -669,6 +987,9 @@ export function LogMatchPage() {
                   team_id: linkedA?.id,
                   team_join_enabled: false,
                   player_count: 0,
+                  open_join_enabled: false,
+                  open_joined_count: 0,
+                  side_admin_user_ids: [],
                 }
                 const sideBObj: MatchSide = {
                   id: SIDE_B,
@@ -676,6 +997,9 @@ export function LogMatchPage() {
                   team_id: linkedB?.id,
                   team_join_enabled: false,
                   player_count: 0,
+                  open_join_enabled: false,
+                  open_joined_count: 0,
+                  side_admin_user_ids: [],
                 }
                 const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
                 const Editor = isFootball ? FootballScoreFields : isCricket ? CricketScoreFields : NetballScoreFields
@@ -732,9 +1056,9 @@ export function LogMatchPage() {
         </>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 border-t bg-card/95 px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mx-0 md:rounded-2xl md:border">
+      <PinnedActionBar className="flex flex-col gap-2 border-t pb-[max(16px,env(safe-area-inset-bottom))] md:mx-0 md:rounded-2xl md:border">
         {stepError && step > 0 && <p className="text-xs text-muted-foreground">{stepError}</p>}
-        {mutation.isError && <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>}
+        {submitErrorMessage && <p className="text-sm text-destructive">{submitErrorMessage}</p>}
         {step < 2 ? (
           <Button
             className="h-13 rounded-2xl text-base"
@@ -748,13 +1072,13 @@ export function LogMatchPage() {
           <Button
             className="h-13 rounded-2xl text-base"
             size="lg"
-            disabled={!!stepError || mutation.isPending}
+            disabled={!!stepError || submitPending}
             onClick={handleSubmit}
           >
-            {mutation.isPending ? 'Posting…' : submitLabel}
+            {submitPending ? 'Posting…' : submitLabel}
           </Button>
         )}
-      </div>
+      </PinnedActionBar>
     </div>
   )
 }
@@ -766,21 +1090,27 @@ function SideSummary({
   colour,
   players,
   currentUserId,
+  seriesMode,
 }: {
   label: string
   team: TeamListItem | null
   colour?: string
   players: TaggedPlayer[]
   currentUserId?: string
+  /** A series has no roster at creation time — each generated match fills
+   *  its own, so the usual in/invited/guest counts don't apply. */
+  seriesMode?: boolean
 }) {
   const inCount = players.filter((p) => p.kind === 'user' && p.id === currentUserId).length
   const invited = players.filter((p) => p.kind === 'user' && p.id !== currentUserId).length
   const guests = players.filter((p) => p.kind === 'external').length
-  const counts = [
-    inCount > 0 && `${inCount} in`,
-    invited > 0 && `${invited} invited`,
-    guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
-  ].filter(Boolean)
+  const counts = seriesMode
+    ? []
+    : [
+        inCount > 0 && `${inCount} in`,
+        invited > 0 && `${invited} invited`,
+        guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
+      ].filter(Boolean)
   return (
     <div className="flex min-w-0 flex-col items-center gap-1.5 text-center">
       {team ? (
@@ -795,7 +1125,9 @@ function SideSummary({
         </span>
       )}
       <span className="max-w-full truncate text-sm font-bold">{label}</span>
-      <span className="text-xs text-muted-foreground">{counts.join(' · ') || 'No players yet'}</span>
+      <span className="text-xs text-muted-foreground">
+        {seriesMode ? 'Joins each match' : counts.join(' · ') || 'No players yet'}
+      </span>
     </div>
   )
 }

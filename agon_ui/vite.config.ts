@@ -81,6 +81,29 @@ export default defineConfig(({ mode }) => {
             urlPattern: /\/assets\/runtime-env.*\.js$/,
             handler: 'NetworkOnly',
           },
+          // Cache API reads so a page that already fetched something once
+          // can still show it offline (e.g. a cold reload with no
+          // connection). NetworkFirst: prefer a live response whenever one
+          // comes back, falling through to the last cached response only
+          // when the network fails. GET-only — writes (POST/PUT/DELETE) are
+          // never intercepted, so they always hit the network and fail
+          // outright when offline rather than silently no-op'ing.
+          {
+            urlPattern: /^\/api\//,
+            method: 'GET',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'api-cache',
+              networkTimeoutSeconds: 10,
+              cacheableResponse: {
+                statuses: [0, 200],
+              },
+              expiration: {
+                maxEntries: 300,
+                maxAgeSeconds: 60 * 60 * 24 * 7,
+              },
+            },
+          },
         ],
       }
     })

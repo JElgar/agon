@@ -1,7 +1,20 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Share, UserPlus } from 'lucide-react'
+import {
+  CalendarPlus,
+  ChevronLeft,
+  Link2,
+  MailOpen,
+  MoreHorizontal,
+  Navigation,
+  Pencil,
+  Radio,
+  Repeat,
+  Share,
+  Trophy,
+  UserPlus,
+} from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -12,6 +25,8 @@ import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
+import { RankedBadge } from '@/components/agon/RankedBadge'
+import { EloBadge } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -36,21 +51,27 @@ import {
   memberAvatarUrl,
   memberName,
   myPendingInvitation,
+  mySideAdminSideId,
   mySideId,
   orderSidesForViewer,
   sideDisplayName,
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
-import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { useMatchQuery } from '@/hooks/useMatch'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
+import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
+import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
+import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
+import { SideAdminsEditor } from '@/components/agon/SideAdminsEditor'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
@@ -100,7 +121,6 @@ import {
 import { netballLiveLabel, netballRulesSummary } from '@/components/agon/netball/netballMeta'
 import { RosterTab, SetsCard } from '@/components/agon/sets/SetsMatchView'
 import { singlesPlayers } from '@/components/agon/sets/singles'
-import { sportLabel as sportName } from '@/lib/sports'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -158,17 +178,7 @@ export function MatchDetailPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
 
-  const query = useQuery({
-    queryKey: ['match', matchId],
-    enabled: !!matchId,
-    queryFn: async (): Promise<Match> => {
-      const { data, error } = await fetchClient.GET('/matches/{match_id}', {
-        params: { path: { match_id: matchId! } },
-      })
-      if (error || !data) throw new Error('Failed to load match')
-      return data
-    },
-  })
+  const query = useMatchQuery(matchId)
 
   if (query.isLoading) {
     return (
@@ -209,7 +219,6 @@ function MatchDetail({
   currentUserId?: string
   onBack: () => void
 }) {
-  const [editingDetails, setEditingDetails] = useState(false)
   const [editingResult, setEditingResult] = useState(false)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
@@ -226,6 +235,10 @@ function MatchDetail({
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
   // the one action left to them.
   const canEdit = canManageMatch(match, currentUserId)
+  // Narrower than `canEdit`: configure ringer settings/invite for just this
+  // one side, if the viewer holds `side_admin` on it — see
+  // `mySideAdminSideId`'s doc comment.
+  const sideAdminSideId = canEdit ? undefined : mySideAdminSideId(match, currentUserId)
   const iAmOwner = isMatchOwner(match, currentUserId)
   const iAmParticipant = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
@@ -235,7 +248,8 @@ function MatchDetail({
   // The viewer's own side, when they're playing, reads first in the
   // calendar entry's "A vs B" — mirrors the feed card (`MatchCard`). The page
   // itself keeps the stored side order so each side's kit colour is stable.
-  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const myMatchSideId = mySideId(match, currentUserId)
+  const orderedSides = orderSidesForViewer(match.sides, myMatchSideId)
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
@@ -302,7 +316,6 @@ function MatchDetail({
 
   const isCricket = match.match_type === 'cricket'
   const isNetball = match.match_type === 'netball'
-  const sportLabel = sportName(match.match_type)
   const cricketFmt = cricketFormat(match.format)
   const matchView: 'finished' | 'live' | 'scheduled' | 'cancelled' = cancelled
     ? 'cancelled'
@@ -343,7 +356,12 @@ function MatchDetail({
           : { [kitSideA.id]: 'Lost', [kitSideB.id]: 'Won' }
       : undefined
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
-  const metaTeamSide = match.sides.find((s) => s.team_name)
+  // Only the viewer's own side, and only when it's team-linked — shown next
+  // to the match title. An unassigned viewer, or a side with no team, means
+  // there's nothing meaningful to show there, so the row falls back to just
+  // the date/time.
+  const mySide = match.sides.find((s) => s.id === myMatchSideId)
+  const metaTeamSide = mySide?.team_name ? mySide : undefined
 
   const moreMenu = (variant: 'overlay' | 'plain' | 'outlined') => (
     <DropdownMenu>
@@ -377,7 +395,7 @@ function MatchDetail({
           </DropdownMenuItem>
         )}
         {canEdit && !cancelled && (
-          <DropdownMenuItem onSelect={() => setEditingDetails(true)}>
+          <DropdownMenuItem onSelect={() => navigate(`/matches/${match.id}/edit`)}>
             <Pencil className="size-4" /> Edit match details
           </DropdownMenuItem>
         )}
@@ -411,27 +429,36 @@ function MatchDetail({
   )
 
   // Roster admin under every redesigned Players tab.
+  const canInvite = canEdit || sideAdminSideId != null
   const playersFooter = (
     <>
-      {canEdit && !cancelled && (
+      {canInvite && !cancelled && (
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
-            <Pencil className="size-4" /> Edit roster
-          </Button>
+          {canEdit && (
+            <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
+              <Pencil className="size-4" /> Edit roster
+            </Button>
+          )}
           {!inviting && (
             <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
               <UserPlus className="size-4" /> Invite players
             </Button>
           )}
-          <MatchJoinLinksDialog match={match}>
-            <Button variant="outline" className="gap-1.5 rounded-full">
-              <Link2 className="size-4" /> Join links
-            </Button>
-          </MatchJoinLinksDialog>
+          {canEdit && (
+            <MatchJoinLinksDialog match={match}>
+              <Button variant="outline" className="gap-1.5 rounded-full">
+                <Link2 className="size-4" /> Join links
+              </Button>
+            </MatchJoinLinksDialog>
+          )}
         </div>
       )}
-      {canEdit && !cancelled && inviting && (
-        <InvitePlayers match={match} onDone={() => setInviting(false)} />
+      {canInvite && !cancelled && inviting && (
+        <InvitePlayers
+          match={match}
+          onDone={() => setInviting(false)}
+          restrictedSideId={canEdit ? undefined : sideAdminSideId}
+        />
       )}
       {!cancelled && (
         <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
@@ -448,9 +475,8 @@ function MatchDetail({
           canEdit={canEdit}
           onBack={onBack}
           onShare={() => shareMatch(match)}
-          onEdit={() => setEditingDetails(true)}
+          onEdit={() => navigate(`/matches/${match.id}/edit`)}
         />
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
       </div>
     )
   }
@@ -469,10 +495,43 @@ function MatchDetail({
           )
         )}
         <span className="truncate text-sm text-muted-foreground">
-          {metaTeamSide?.team_name ?? sportLabel} · {scheduledDateTime(match.starts_at)}
+          {metaTeamSide ? `${metaTeamSide.team_name} · ` : ''}
+          {scheduledDateTime(match.starts_at)}
         </span>
+        {/* The board puts a "Rating change" card further down with one row
+            per player. That still isn't here, and deliberately: only the
+            viewer's own movement is served, because a participant still in
+            placements would otherwise have theirs read off somebody else's
+            screen. What the payload can answer is this pair — whether the
+            result counts, and what it did to you.
+
+            The delta is absent, not zero, whenever there is nothing to show:
+            a friendly, a match you didn't play, one not rated yet, or your
+            own rating on this ladder still being in placements. */}
+        {match.ranked && <RankedBadge />}
+        {typeof match.viewer_rating_delta === 'number' && (
+          <EloBadge delta={match.viewer_rating_delta} />
+        )}
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
+      {match.series_id && (
+        <Link
+          to={`/match-series/${match.series_id}`}
+          className="inline-flex w-fit items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        >
+          <Repeat className="size-3.5" />
+          Part of a recurring series
+        </Link>
+      )}
+      {match.tournament && (
+        <Link
+          to={`/tournaments/${match.tournament.tournament_id}`}
+          className="inline-flex w-fit items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        >
+          <Trophy className="size-3.5" />
+          {match.tournament.tournament_name} · Round {match.tournament.round + 1}
+        </Link>
+      )}
       {match.location && (
         <MatchLocation location={match.location} showDirections={matchView !== 'finished'} className="mt-1" />
       )}
@@ -520,7 +579,7 @@ function MatchDetail({
         )
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
-      {!cancelled && <JoinLinkBanner match={match} />}
+      {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )
@@ -580,6 +639,25 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+      {(canEdit || sideAdminSideId != null) && !cancelled && (
+        <MatchOpenJoinEditor match={match} canManage={canEdit} restrictedSideId={sideAdminSideId} />
+      )}
+      {canEdit && !cancelled && (
+        <div className="rounded-xl border bg-card p-4">
+          <p className="mb-2 text-sm font-medium">Side admins</p>
+          <div className="flex flex-col divide-y">
+            {match.sides.map((side, i) => (
+              <div key={side.id}>
+                <p className="pt-2 text-xs text-muted-foreground first:pt-0">
+                  {sideDisplayName(side) ?? `Side ${i + 1}`}
+                </p>
+                <SideAdminsEditor match={match} side={side} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>
@@ -631,7 +709,7 @@ function MatchDetail({
     (editingRoster ? (
       <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
     ) : !isLiveSport ? (
-      <RosterTab match={match} currentUserId={currentUserId} result={sideResults} footer={playersFooter} layout={layout} />
+      <RosterTab match={match} currentUserId={currentUserId} result={sideResults} footer={playersFooter} layout={layout} canManage={canEdit} />
     ) : isNetball ? (
       <NetballPlayersTab
         match={match}
@@ -642,6 +720,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ) : isCricket ? (
       <CricketPlayersTab
@@ -652,6 +731,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ) : (
       <FootballPlayersTab
@@ -663,6 +743,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ))
   const primaryAction =
@@ -677,6 +758,8 @@ function MatchDetail({
       >
         <Pencil className="size-5" /> Add result
       </button>
+    ) : !cancelled && matchView !== 'finished' && openJoinEligible(match, currentUserId) ? (
+      <OpenJoinAction match={match} />
     ) : !isLiveSport ? (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (
@@ -742,7 +825,6 @@ function MatchDetail({
             <MatchHeaderCarousel photos={match.header_photos} hero />
           </div>
         )}
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
         {titleBlock}
 
         <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-6">
@@ -822,7 +904,6 @@ function MatchDetail({
         </div>
       )}
 
-      {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
 
       {matchTab === 'summary' ? (
         <>

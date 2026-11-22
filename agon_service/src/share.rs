@@ -30,15 +30,15 @@
 //! token/id in the URL is the only credential a visitor (human or crawler)
 //! has before signing in, same as the acceptance flow itself.
 
-use agon_core::dao::{self, match_ops::effective_max_players, records::InvitationContextRecord};
+use agon_services_core::dao::{
+    self, match_ops::effective_max_players, records::InvitationContextRecord,
+};
 use poem::{
     IntoResponse, Route, get, handler,
     web::{Data, Html, Path},
 };
 
-use crate::{
-    Api, Match, MatchSide, MatchType, Member, assets::Assets, mapping, sign_match_headers,
-};
+use crate::{Api, Match, MatchSide, Member, assets::Assets, mapping, sign_match_headers};
 
 /// The web app's public base URL (`AGON_UI_URL`, trimmed of a trailing
 /// slash), used to build the SPA URL a preview page bounces a real visitor
@@ -159,7 +159,13 @@ async fn match_card(
     target_url: &str,
 ) -> Option<PreviewCard> {
     let agg = dao.get_match(match_id).await.ok()??;
-    let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+    let raw = mapping::match_from_records(
+        &agg.match_,
+        &agg.sides,
+        &agg.players,
+        false,
+        &std::collections::HashMap::new(),
+    );
     let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
     Some(PreviewCard {
@@ -182,7 +188,13 @@ async fn invite_card(
     match &rec.context {
         InvitationContextRecord::Match { match_id, .. } => {
             let agg = dao.get_match(match_id).await.ok()??;
-            let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+            let raw = mapping::match_from_records(
+                &agg.match_,
+                &agg.sides,
+                &agg.players,
+                false,
+                &std::collections::HashMap::new(),
+            );
             let mut m = Api.hydrate_match(dao, raw).await.ok()?;
             sign_match_headers(assets, &mut m);
 
@@ -272,7 +284,13 @@ async fn join_card(
         return None;
     };
     let agg = dao.get_match(match_id).await.ok()??;
-    let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+    let raw = mapping::match_from_records(
+        &agg.match_,
+        &agg.sides,
+        &agg.players,
+        false,
+        &std::collections::HashMap::new(),
+    );
     let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
 
@@ -378,25 +396,12 @@ fn match_title(m: &Match) -> String {
 /// state at all), the creator's own description tacked on when they wrote one.
 fn match_blurb(m: &Match) -> String {
     let when = m.starts_at.format("%a %-d %b, %H:%M UTC");
-    let heading = format!("{} · {when}", sport_label(&m.match_type));
+    let heading = format!("{} · {when}", mapping::match_type_label(&m.match_type));
     let description = m.description.trim();
     if description.is_empty() {
         heading
     } else {
         format!("{heading} — {description}")
-    }
-}
-
-fn sport_label(t: &MatchType) -> &'static str {
-    match t {
-        MatchType::Tennis => "Tennis",
-        MatchType::Badminton => "Badminton",
-        MatchType::Squash => "Squash",
-        MatchType::TableTennis => "Table Tennis",
-        MatchType::Football => "Football",
-        MatchType::Cricket => "Cricket",
-        MatchType::Netball => "Netball",
-        MatchType::Other => "Match",
     }
 }
 

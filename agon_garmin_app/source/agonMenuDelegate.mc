@@ -34,7 +34,13 @@ function buildMainMenu() as WatchUi.Menu2 {
         menu.addItem(new WatchUi.MenuItem("Kick-off", null, :period_kick_off, {}));
     } else if (period == FootballScore.PERIOD_KICK_OFF) {
         menu.addItem(new WatchUi.MenuItem("Goal", null, :goal, {}));
-        menu.addItem(new WatchUi.MenuItem("Half-time", null, :period_half_time, {}));
+        // A 1-half match has no half-time break to offer — straight to
+        // full-time, same as agon_ui's `nextPeriodForPhase`.
+        if (getApp().matchContext.numHalves <= 1) {
+            menu.addItem(new WatchUi.MenuItem("Full-time", null, :period_full_time, {}));
+        } else {
+            menu.addItem(new WatchUi.MenuItem("Half-time", null, :period_half_time, {}));
+        }
     } else if (period == FootballScore.PERIOD_HALF_TIME) {
         menu.addItem(new WatchUi.MenuItem("2nd half kick-off", null, :period_second_half, {}));
     } else if (period == FootballScore.PERIOD_SECOND_HALF) {

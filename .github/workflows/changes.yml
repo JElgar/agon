@@ -8,8 +8,11 @@ on:
         description: 'agon_worker (or a shared agon_core/workspace-manifest) changed'
         value: ${{ jobs.changes.outputs.worker }}
       ui:
-        description: 'agon_ui changed'
+        description: 'agon_ui (or the agon_core it runs as wasm) changed'
         value: ${{ jobs.changes.outputs.ui }}
+      garmin:
+        description: 'agon_garmin_app changed'
+        value: ${{ jobs.changes.outputs.garmin }}
 
 jobs:
   changes:
@@ -18,6 +21,7 @@ jobs:
       service: ${{ steps.filter.outputs.service }}
       worker: ${{ steps.filter.outputs.worker }}
       ui: ${{ steps.filter.outputs.ui }}
+      garmin: ${{ steps.filter.outputs.garmin }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,3 +46,7 @@ jobs:
               - 'agon_worker/**'
             ui:
               - 'agon_ui/**'
+              - 'agon_core/**'
+              - 'agon_core_wasm/**'
+            garmin:
+              - 'agon_garmin_app/**'

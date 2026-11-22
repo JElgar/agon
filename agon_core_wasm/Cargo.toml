@@ -1,0 +1,19 @@
+[package]
+name = "agon_core_wasm"
+version = "0.1.0"
+edition = "2024"
+
+# The browser's bindings to `agon_core`, built with wasm-bindgen into
+# `agon_ui/src/wasm/agon_core` (gitignored) by `npm run build:wasm`. A thin
+# shim: the TypeScript types come from `agon_core` itself (its `wasm`
+# feature, enabled only here), so `agon_core` stays free of binding code for
+# the backend and for mobile.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agon_core = { path = "../agon_core", features = ["wasm"] }
+# Pinned exactly: the `wasm-bindgen` CLI that generates the JS glue must be
+# this same version (see agon_ui's `build:wasm` script and build-ui.yml).
+wasm-bindgen = "=0.2.100"

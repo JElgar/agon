@@ -90,6 +90,16 @@ pub struct GenerateSeriesOccurrence {
     pub description: String,
     pub location: Option<agon_services_core::dao::records::LocationRecord>,
     pub sides: Vec<agon_services_core::dao::records::SeriesSideRecord>,
+    /// User ids holding `Admin` authority on the series
+    /// (`SeriesRecord::authority`) at the time this occurrence is
+    /// generated — copied onto the occurrence's own `authority` as `Admin`,
+    /// alongside `created_by_user_id`'s `Owner` entry, so a series admin is
+    /// also an admin of every match the series creates. Read fresh per
+    /// occurrence (the workflow re-fetches the series each generation
+    /// cycle), so admins added after a given occurrence was generated don't
+    /// retroactively apply to it — same template-field semantics as `name`/
+    /// `sides`/etc.
+    pub admin_user_ids: Vec<String>,
 }
 
 #[activities]
@@ -182,11 +192,22 @@ impl AgonActivities {
         }
         // Mirrors `create_match_series`'s own authority entry: the series
         // organiser never plays in the template, so without this they'd have
-        // no authority over any occurrence.
-        let authority = std::collections::HashMap::from([(
+        // no authority over any occurrence. Series admins (`input.
+        // admin_user_ids`) get the same `Admin` authority on the occurrence
+        // they hold on the series itself.
+        let mut authority = std::collections::HashMap::from([(
             input.created_by_user_id.clone(),
             agon_services_core::dao::records::MatchPlayerRole::Owner,
         )]);
+        for admin_uid in &input.admin_user_ids {
+            if *admin_uid == input.created_by_user_id {
+                continue;
+            }
+            authority.insert(
+                admin_uid.clone(),
+                agon_services_core::dao::records::MatchPlayerRole::Admin,
+            );
+        }
 
         let match_record = agon_services_core::dao::records::MatchRecord {
             id: match_id.clone(),

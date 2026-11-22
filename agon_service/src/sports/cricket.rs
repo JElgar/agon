@@ -17,8 +17,9 @@ use agon_services_core::sports::cricket::{
     CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,
     CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
     CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, CricketScoreInningsRecord, CricketScoreRecord, CricketStatsRecord,
-    InningsEndReasonRecord, NextBallContextRecord, OversRecord,
+    CricketMatchStatsRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    CricketScoreRecord, CricketStatsRecord, InningsEndReasonRecord, NextBallContextRecord,
+    OversRecord,
 };
 
 use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts_opt};
@@ -30,6 +31,7 @@ impl Sport for Cricket {
     type Format = CricketFormat;
     type LiveEvent = CricketLiveEvent;
     type PlayerStats = CricketPlayerStats;
+    type MatchStats = CricketMatchStats;
 
     fn new_score() -> CricketScore {
         CricketScore {
@@ -459,6 +461,20 @@ impl Sport for Cricket {
                     reason: innings_end_reason_from_record(&e.reason),
                 })
             }
+        }
+    }
+
+    fn match_stats_from_record(rec: &CricketMatchStatsRecord) -> CricketMatchStats {
+        CricketMatchStats {
+            runs: rec.runs,
+            wickets: rec.wickets,
+            fours: rec.fours,
+            sixes: rec.sixes,
+            balls_faced: rec.balls_faced,
+            dismissals: rec.dismissals,
+            catches: rec.catches,
+            runs_conceded: rec.runs_conceded,
+            balls_bowled: rec.balls_bowled,
         }
     }
 
@@ -1162,6 +1178,23 @@ pub struct BestBowlingFigures {
     pub runs_conceded: i32,
     pub overs: Overs,
     pub match_id: String,
+}
+
+/// Cricket counters summed over a set of matches, for a team or a player.
+/// Same meaning as the `CricketPlayerStats` counters of the same name;
+/// `balls_bowled` is legal balls, each match's counted in its own over
+/// length.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct CricketMatchStats {
+    pub runs: u64,
+    pub wickets: u64,
+    pub fours: u64,
+    pub sixes: u64,
+    pub balls_faced: u64,
+    pub dismissals: u64,
+    pub catches: u64,
+    pub runs_conceded: u64,
+    pub balls_bowled: u64,
 }
 
 /// Lifetime cricket stats: the common counters plus a batting/bowling summary

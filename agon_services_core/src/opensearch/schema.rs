@@ -10,6 +10,8 @@
 
 use serde_json::{Value, json};
 
+use crate::sports::MatchStatsRecord;
+
 /// One logical index.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexDef {
@@ -51,7 +53,7 @@ fn settings() -> Value {
 /// One document per match. See [`crate::opensearch::docs::MatchDoc`].
 pub const MATCHES: IndexDef = IndexDef {
     name: "matches",
-    version: 2,
+    version: 3,
     body: matches_body,
 };
 
@@ -60,11 +62,6 @@ fn matches_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
-            // A side's sport counters (goals, assists, runs, wickets, ...)
-            // vary by sport, same reasoning as `match_stats.stats` below.
-            "dynamic_templates": [
-                { "side_stat_counters": { "path_match": "sides.stats.*", "mapping": { "type": "long" } } }
-            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
@@ -93,7 +90,7 @@ fn matches_body() -> Value {
                         "conceded": { "type": "integer" },
                         "player_ids": { "type": "keyword" },
                         "player_count": { "type": "integer" },
-                        "stats": { "type": "object", "dynamic": true }
+                        "stats": sport_stats_mapping()
                     }
                 },
                 "indexed_at": { "type": "date" }
@@ -106,7 +103,7 @@ fn matches_body() -> Value {
 /// [`crate::opensearch::docs::PlayerStatDoc`].
 pub const MATCH_STATS: IndexDef = IndexDef {
     name: "match_stats",
-    version: 1,
+    version: 2,
     body: match_stats_body,
 };
 
@@ -115,11 +112,6 @@ fn match_stats_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
-            // Sport counters (goals, assists, runs, wickets, ...) vary by sport
-            // and grow over time, so `stats` takes any key, always as a long.
-            "dynamic_templates": [
-                { "stat_counters": { "path_match": "stats.*", "mapping": { "type": "long" } } }
-            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "user_id": { "type": "keyword" },
@@ -138,11 +130,28 @@ fn match_stats_body() -> Value {
                 "won": { "type": "integer" },
                 "drawn": { "type": "integer" },
                 "lost": { "type": "integer" },
-                "stats": { "type": "object", "dynamic": true },
+                "stats": sport_stats_mapping(),
                 "indexed_at": { "type": "date" }
             }
         }
     })
+}
+
+/// A `stats` object ([`MatchStatsRecord`]): one sub-object per modeled
+/// sport, each with that sport's own counters
+/// (`SportRecord::MATCH_STATS_FIELDS`).
+fn sport_stats_mapping() -> Value {
+    let sports: serde_json::Map<String, Value> = MatchStatsRecord::all_fields()
+        .into_iter()
+        .map(|(sport, fields)| {
+            let counters: serde_json::Map<String, Value> = fields
+                .iter()
+                .map(|f| (f.to_string(), json!({ "type": "long" })))
+                .collect();
+            (sport.to_string(), json!({ "properties": counters }))
+        })
+        .collect();
+    json!({ "properties": sports })
 }
 
 /// One document per user. See [`crate::opensearch::docs::UserDoc`]. Backs
@@ -180,9 +189,22 @@ mod tests {
 
     #[test]
     fn physical_and_alias_names_include_prefix_and_version() {
-        assert_eq!(MATCHES.physical(""), "matches_v2");
+        assert_eq!(MATCHES.physical(""), "matches_v3");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
-        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v1");
+        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v2");
+    }
+
+    #[test]
+    fn stats_are_mapped_per_sport_with_each_sports_own_counters() {
+        let stats = &(MATCH_STATS.body)()["mappings"]["properties"]["stats"]["properties"];
+        assert_eq!(stats["football"]["properties"]["assists"]["type"], "long");
+        assert_eq!(stats["cricket"]["properties"]["wickets"]["type"], "long");
+        assert!(stats["cricket"]["properties"].get("assists").is_none());
+        let sides = &(MATCHES.body)()["mappings"]["properties"]["sides"]["properties"];
+        assert_eq!(
+            sides["stats"]["properties"]["football"]["properties"]["clean_sheets"]["type"],
+            "long"
+        );
     }
 
     #[test]

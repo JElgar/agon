@@ -25,8 +25,8 @@ use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, Enum, Object, OpenApi};
 use tracing::error;
 
-use crate::mapping::{dao_internal, match_type_tag, parse_ts};
-use crate::{AuthSchema, MatchType, Photo, require_uid};
+use crate::mapping::{dao_internal, match_stats_from_record, match_type_tag, parse_ts};
+use crate::{AuthSchema, MatchType, Photo, SportMatchStats, require_uid};
 
 /// The OpenSearch client, if `OPENSEARCH_URL` is set. Without it these
 /// endpoints answer 503.
@@ -104,24 +104,14 @@ pub struct TeamRecord {
     pub lost: u64,
     pub points_for: u64,
     pub points_against: u64,
-    /// Football only, and absent for every other sport. A clean sheet is
-    /// only recorded for football (`MatchSideDoc::clean_sheet`), so a `0`
-    /// here on a cricket team would read as "never kept one" when the
-    /// honest answer is that the idea doesn't apply.
-    pub clean_sheets: Option<u64>,
-    /// The sport's own breakdown, e.g. `{"runs": 940, "wickets": 38}` for a
-    /// cricket team or `{"goals": 61, "assists": 40}` for football — the
-    /// same per-match counters `agon_core`'s sport contribution types
-    /// already compute, summed across these matches. Zero totals are left
-    /// out, and it's empty for a sport with no stats record yet (tennis,
-    /// badminton, squash, table tennis).
-    pub stats: std::collections::BTreeMap<String, u64>,
+    /// The sport's own counters for the team over these matches, e.g.
+    /// `stats.football` (goals, assists, clean sheets) or `stats.cricket`
+    /// (runs, wickets, catches, ...).
+    pub stats: SportMatchStats,
 }
 
 impl TeamRecord {
-    /// `counts` as the wire shape. `clean_sheets` is kept only for football;
-    /// see the field.
-    fn new(r: RecordCounts, is_football: bool) -> Self {
+    fn new(r: RecordCounts) -> Self {
         Self {
             played: r.played,
             won: r.won,
@@ -129,8 +119,7 @@ impl TeamRecord {
             lost: r.lost,
             points_for: r.points_for,
             points_against: r.points_against,
-            clean_sheets: is_football.then_some(r.clean_sheets),
-            stats: r.stats,
+            stats: match_stats_from_record(&r.stats),
         }
     }
 }
@@ -142,8 +131,8 @@ pub struct TeamSquadRecord {
     /// Points scored in them, by both sides — the same per-sport meaning
     /// `TeamRecord::points_for` has.
     pub points: u64,
-    /// See `TeamRecord::stats` — same breakdown, both sides' totals.
-    pub stats: std::collections::BTreeMap<String, u64>,
+    /// See `TeamRecord::stats`: both sides' totals.
+    pub stats: SportMatchStats,
 }
 
 /// Which overview the team gets.
@@ -291,8 +280,8 @@ pub struct TeamLeaderboardRow {
     pub lost: u64,
     /// `won / played`, from 5 appearances. Absent below that.
     pub win_rate: Option<f64>,
-    /// Sport counters, e.g. `goals`, `assists`. Zero totals are left out.
-    pub stats: std::collections::BTreeMap<String, u64>,
+    /// The sport's own counters for this player, e.g. `stats.football`.
+    pub stats: SportMatchStats,
 }
 
 /// `GET /teams/{team_id}/leaderboard`.
@@ -469,7 +458,6 @@ impl TeamStatsApi {
             }
         };
         let tag = match_type_tag(&sport);
-        let is_football = matches!(sport, MatchType::Football);
         let (records, recent, next, fetched_sports) = tokio::try_join!(
             ts::team_records(os, &team_id, tag, year, &now),
             ts::recent_results(os, &team_id, tag, LAST_N),
@@ -501,14 +489,14 @@ impl TeamStatsApi {
             year,
             years: records.years,
             layout: layout(records.ext_last_12_months),
-            record: TeamRecord::new(records.ext, is_football),
-            league: TeamRecord::new(records.league, is_football),
-            cup: TeamRecord::new(records.cup, is_football),
-            friendly: TeamRecord::new(records.friendly, is_football),
+            record: TeamRecord::new(records.ext),
+            league: TeamRecord::new(records.league),
+            cup: TeamRecord::new(records.cup),
+            friendly: TeamRecord::new(records.friendly),
             squad: TeamSquadRecord {
                 games: records.squad.games,
                 points: records.squad.points,
-                stats: records.squad.stats,
+                stats: match_stats_from_record(&records.squad.stats),
             },
             form,
             streak,
@@ -589,7 +577,7 @@ impl TeamStatsApi {
                     won: r.won,
                     drawn: r.drawn,
                     lost: r.lost,
-                    stats: r.stats,
+                    stats: match_stats_from_record(&r.stats),
                 }
             })
             .collect();
@@ -642,10 +630,13 @@ mod tests {
         }
     }
 
-    /// A clean sheet is a football idea. Every other sport gets no field at
-    /// all rather than a zero, which would read as "never kept one".
+    /// A cricket record carries cricket's counters and nothing of
+    /// football's (no clean sheets).
     #[test]
-    fn clean_sheets_are_football_only() {
+    fn a_record_carries_only_its_sports_counters() {
+        use agon_services_core::sports::MatchStatsRecord;
+        use agon_services_core::sports::cricket::CricketMatchStatsRecord;
+
         let counts = RecordCounts {
             played: 4,
             won: 2,
@@ -653,21 +644,19 @@ mod tests {
             lost: 1,
             points_for: 240,
             points_against: 198,
-            clean_sheets: 0,
-            stats: std::collections::BTreeMap::from([("wickets".to_string(), 7)]),
+            stats: MatchStatsRecord {
+                cricket: Some(CricketMatchStatsRecord {
+                    wickets: 7,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
         };
 
-        let football = TeamRecord::new(counts.clone(), true);
-        assert_eq!(football.clean_sheets, Some(0));
-
-        let cricket = TeamRecord::new(counts, false);
-        assert_eq!(cricket.clean_sheets, None);
-        // The score itself is per-sport and always present: these are runs.
+        let cricket = TeamRecord::new(counts);
         assert_eq!(cricket.points_for, 240);
-        assert_eq!(
-            cricket.stats,
-            std::collections::BTreeMap::from([("wickets".to_string(), 7)])
-        );
+        assert_eq!(cricket.stats.football, None);
+        assert_eq!(cricket.stats.cricket.map(|c| c.wickets), Some(7));
     }
 
     #[test]

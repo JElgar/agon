@@ -187,6 +187,26 @@ impl SportRecord for Netball {
             ..NetballStatsRecord::default()
         }
     }
+
+    type MatchStatsRecord = NetballMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &["goals"];
+
+    fn match_stats(c: &NetballStatsRecord, _conceded: u64) -> NetballMatchStatsRecord {
+        NetballMatchStatsRecord { goals: c.goals }
+    }
+
+    fn add_match_stats(totals: &mut NetballMatchStatsRecord, o: &NetballMatchStatsRecord) {
+        totals.goals += o.goals;
+    }
+}
+
+/// One match's netball counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetballMatchStatsRecord {
+    /// Goals scored, counted as in [`NetballStatsRecord::goals`].
+    #[serde(default)]
+    pub goals: u64,
 }
 
 crate::personal_bests!(NetballStatsRecord {});

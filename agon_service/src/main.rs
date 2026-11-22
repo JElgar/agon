@@ -582,6 +582,15 @@ macro_rules! define_score_and_match_type {
             $( pub $gkey: Option<GenericPlayerStats>, )*
             pub other: Option<GenericPlayerStats>,
         }
+
+        /// A sport's own counters summed over a set of matches, for a team
+        /// or a player: one field per modeled sport, only the sport asked
+        /// about set. Every field is absent for a sport without its own
+        /// counters (tennis, badminton, squash, table tennis).
+        #[derive(Object, Debug, Clone, PartialEq, Eq, Default)]
+        pub struct SportMatchStats {
+            $( pub(crate) $key: Option<<agon_services_core::sports::$key::$variant as crate::sports::Sport>::MatchStats>, )+
+        }
     };
 }
 agon_services_core::for_each_sport!(define_score_and_match_type);

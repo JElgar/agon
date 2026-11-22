@@ -13,19 +13,23 @@
 //! of the external record (`ext` = league + cup + friendly), form and last 10,
 //! but they do count on the leaderboard (`all`), per the in-house rule.
 //!
+//! **Sport-specific counters.** Each sport's own counters (football goals,
+//! assists and clean sheets; cricket runs, wickets, catches, ...) are read
+//! from `stats.<sport>` with that sport's fields
+//! (`SportRecord::MATCH_STATS_FIELDS`), into its own type.
+//!
 //! **Points, not goals.** A side's stored `score` is whatever that sport
 //! counts — goals in football and netball, runs in cricket, points or sets
 //! elsewhere (`super::docs::side_points`). The fields here are named for
 //! that, so a cricket team's record doesn't report its runs under a football
 //! word.
 
-use std::collections::BTreeMap;
-
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::client::{OpenSearchClient, OpenSearchResult};
 use super::schema::{MATCH_STATS, MATCHES};
+use crate::sports::MatchStatsRecord;
 
 /// Upper bound on distinct players in one leaderboard slice. A team's roster
 /// plus ringers over its whole history is far below this.
@@ -42,12 +46,9 @@ pub struct RecordCounts {
     pub lost: u64,
     pub points_for: u64,
     pub points_against: u64,
-    pub clean_sheets: u64,
-    /// Sport counters, e.g. `runs`/`wickets`/`catches` for cricket or
-    /// `goals`/`assists` for football — the side-level breakdown from
-    /// `sides.stats`, summed across these matches. Zero totals are left
-    /// out. `clean_sheets` isn't in here: it has its own field above.
-    pub stats: BTreeMap<String, u64>,
+    /// The sport's own counters for this team's side, summed across these
+    /// matches (e.g. football clean sheets, cricket wickets).
+    pub stats: MatchStatsRecord,
 }
 
 impl RecordCounts {
@@ -58,10 +59,7 @@ impl RecordCounts {
         self.lost += o.lost;
         self.points_for += o.points_for;
         self.points_against += o.points_against;
-        self.clean_sheets += o.clean_sheets;
-        for (k, v) in &o.stats {
-            *self.stats.entry(k.clone()).or_default() += v;
-        }
+        self.stats.add(&o.stats);
     }
 }
 
@@ -71,8 +69,8 @@ impl RecordCounts {
 pub struct SquadCounts {
     pub games: u64,
     pub points: u64,
-    /// See [`RecordCounts::stats`] — same breakdown, both sides' totals.
-    pub stats: BTreeMap<String, u64>,
+    /// See [`RecordCounts::stats`]: both sides' totals.
+    pub stats: MatchStatsRecord,
 }
 
 /// A team's record in one sport, per kind, optionally for one year.
@@ -98,14 +96,8 @@ pub struct TeamRecords {
 /// One request: the query selects this team's confirmed matches in the
 /// sport; `years` and `recent_ext` ignore the year filter; `scoped` applies
 /// it and splits by kind, then reads this team's side(s) through the nested
-/// `sides`.
-pub fn team_records_query(
-    team_id: &str,
-    sport: &str,
-    year: Option<i32>,
-    now: &str,
-    stat_keys: &[String],
-) -> Value {
+/// `sides`, summing `sport`'s own counters.
+pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &str) -> Value {
     let scoped_filter = match year {
         Some(y) => json!({ "term": { "year": y } }),
         None => json!({ "match_all": {} }),
@@ -117,17 +109,10 @@ pub fn team_records_query(
     );
     ours_aggs.insert("pf".into(), json!({ "sum": { "field": "sides.score" } }));
     ours_aggs.insert("pa".into(), json!({ "sum": { "field": "sides.conceded" } }));
-    // Folded into `sides.stats` as a 1/0 counter (see
-    // `docs::build_match_docs`): not a player's contribution, so it isn't
-    // summed from `match_stats` like the sport counters below.
-    ours_aggs.insert(
-        "clean_sheets".into(),
-        json!({ "sum": { "field": "sides.stats.clean_sheets" } }),
-    );
-    for k in stat_keys {
+    for f in MatchStatsRecord::fields(sport) {
         ours_aggs.insert(
-            format!("stat:{k}"),
-            json!({ "sum": { "field": format!("sides.stats.{k}") } }),
+            format!("stat:{f}"),
+            json!({ "sum": { "field": format!("sides.stats.{sport}.{f}") } }),
         );
     }
     json!({
@@ -161,19 +146,13 @@ pub fn team_records_query(
     })
 }
 
-/// `ours`'s `stat:<key>` sums, nonzero only — same convention as
-/// [`parse_leaderboard`].
-fn side_stats(ours: &Value, stat_keys: &[String]) -> BTreeMap<String, u64> {
-    stat_keys
-        .iter()
-        .map(|k| (k.clone(), sum(&ours[format!("stat:{k}")])))
-        .filter(|(_, v)| *v > 0)
-        .collect()
+/// `sport`'s counters from an aggregation's `stat:<field>` sums.
+fn sport_stats(agg: &Value, sport: &str) -> MatchStatsRecord {
+    MatchStatsRecord::from_sums(sport, |f| sum(&agg[format!("stat:{f}")]))
 }
 
-/// Read a [`team_records_query`] response. `stat_keys` must be the same list
-/// the query was built with.
-pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
+/// Read a [`team_records_query`] response for `sport`.
+pub fn parse_team_records(resp: &Value, sport: &str) -> TeamRecords {
     let aggs = &resp["aggregations"];
     let mut out = TeamRecords {
         years: buckets(&aggs["years"])
@@ -192,7 +171,7 @@ pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
                     games: count(&kind["doc_count"]),
                     // Both sides are this team, so this sums both scores.
                     points: sum(&ours["pf"]),
-                    stats: side_stats(ours, stat_keys),
+                    stats: sport_stats(ours, sport),
                 };
             }
             Some(k @ ("league" | "cup" | "friendly")) => {
@@ -201,8 +180,7 @@ pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
                     played: count(&ours["doc_count"]),
                     points_for: sum(&ours["pf"]),
                     points_against: sum(&ours["pa"]),
-                    clean_sheets: sum(&ours["clean_sheets"]),
-                    stats: side_stats(ours, stat_keys),
+                    stats: sport_stats(ours, sport),
                     ..Default::default()
                 };
                 for o in buckets(&ours["outcome"]) {
@@ -227,32 +205,6 @@ pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
     out
 }
 
-/// The sport counter names (`sides.stats.*`, minus `clean_sheets` which has
-/// its own dedicated field) the `matches` index holds so far, read from its
-/// mapping — same idea as [`parse_stat_keys`], one level down through the
-/// nested `sides` object.
-pub fn parse_side_stat_keys(mapping: &Value) -> Vec<String> {
-    let mut keys: Vec<String> = mapping
-        .as_object()
-        .into_iter()
-        .flat_map(|indices| indices.values())
-        .filter_map(|idx| {
-            idx["mappings"]["properties"]["sides"]["properties"]["stats"]["properties"].as_object()
-        })
-        .flat_map(|props| props.keys().cloned())
-        .filter(|k| k != "clean_sheets")
-        .collect();
-    keys.sort();
-    keys.dedup();
-    keys
-}
-
-/// See [`parse_side_stat_keys`].
-pub async fn side_stat_keys(os: &OpenSearchClient) -> OpenSearchResult<Vec<String>> {
-    let mapping = os.get_mapping(&MATCHES.alias(os.prefix())).await?;
-    Ok(parse_side_stat_keys(&mapping))
-}
-
 /// A team's record in `sport`, per kind. `year` limits the per-kind counts to
 /// one year; `years` and `ext_last_12_months` always cover everything.
 pub async fn team_records(
@@ -262,14 +214,13 @@ pub async fn team_records(
     year: Option<i32>,
     now: &str,
 ) -> OpenSearchResult<TeamRecords> {
-    let stat_keys = side_stat_keys(os).await?;
     let resp = os
         .search(
             &MATCHES.alias(os.prefix()),
-            team_records_query(team_id, sport, year, now, &stat_keys),
+            team_records_query(team_id, sport, year, now),
         )
         .await?;
-    Ok(parse_team_records(&resp, &stat_keys))
+    Ok(parse_team_records(&resp, sport))
 }
 
 // ── Sports ──────────────────────────────────────────────────────────────────
@@ -550,19 +501,17 @@ pub struct LeaderboardRow {
     pub won: u64,
     pub drawn: u64,
     pub lost: u64,
-    /// Sport counters, e.g. `goals`, `assists`. Zero totals are left out.
-    pub stats: BTreeMap<String, u64>,
+    /// The sport's own counters, summed (e.g. football goals and assists).
+    pub stats: MatchStatsRecord,
 }
 
-/// The `match_stats` query behind [`leaderboard`]. `stat_keys` are the
-/// counters to total (see [`stat_keys`]): a dynamic map can't be summed
-/// without naming its keys.
+/// The `match_stats` query behind [`leaderboard`], summing W/D/L and
+/// `sport`'s own counters per player.
 pub fn leaderboard_query(
     team_id: &str,
     sport: &str,
     scope: &LeaderboardScope,
     year: Option<i32>,
-    stat_keys: &[String],
 ) -> Value {
     let mut filter = vec![
         json!({ "term": { "team_id": team_id } }),
@@ -580,10 +529,10 @@ pub fn leaderboard_query(
     for f in ["played", "won", "drawn", "lost"] {
         sums.insert(f.into(), json!({ "sum": { "field": f } }));
     }
-    for k in stat_keys {
+    for f in MatchStatsRecord::fields(sport) {
         sums.insert(
-            format!("stat:{k}"),
-            json!({ "sum": { "field": format!("stats.{k}") } }),
+            format!("stat:{f}"),
+            json!({ "sum": { "field": format!("stats.{sport}.{f}") } }),
         );
     }
     json!({
@@ -599,16 +548,12 @@ pub fn leaderboard_query(
 
 /// Read a [`leaderboard_query`] response. Rows come back most games first;
 /// callers re-sort for their view.
-pub fn parse_leaderboard(resp: &Value, stat_keys: &[String]) -> Vec<LeaderboardRow> {
+pub fn parse_leaderboard(resp: &Value, sport: &str) -> Vec<LeaderboardRow> {
     let mut rows: Vec<LeaderboardRow> = buckets(&resp["aggregations"]["players"])
         .iter()
         .filter_map(|b| {
             let user_id = b["key"].as_str()?.to_string();
-            let stats = stat_keys
-                .iter()
-                .map(|k| (k.clone(), sum(&b[format!("stat:{k}")])))
-                .filter(|(_, v)| *v > 0)
-                .collect();
+            let stats = sport_stats(b, sport);
             Some(LeaderboardRow {
                 user_id,
                 played: sum(&b["played"]),
@@ -628,28 +573,6 @@ pub fn parse_leaderboard(resp: &Value, stat_keys: &[String]) -> Vec<LeaderboardR
     rows
 }
 
-/// The counter names (`stats.*`) the `match_stats` index holds so far, read
-/// from its mapping. New counters appear through the dynamic template the
-/// first time a document carries them.
-pub fn parse_stat_keys(mapping: &Value) -> Vec<String> {
-    let mut keys: Vec<String> = mapping
-        .as_object()
-        .into_iter()
-        .flat_map(|indices| indices.values())
-        .filter_map(|idx| idx["mappings"]["properties"]["stats"]["properties"].as_object())
-        .flat_map(|props| props.keys().cloned())
-        .collect();
-    keys.sort();
-    keys.dedup();
-    keys
-}
-
-/// See [`parse_stat_keys`].
-pub async fn stat_keys(os: &OpenSearchClient) -> OpenSearchResult<Vec<String>> {
-    let mapping = os.get_mapping(&MATCH_STATS.alias(os.prefix())).await?;
-    Ok(parse_stat_keys(&mapping))
-}
-
 /// Per-player totals for `team_id` in `sport` over `scope` (and `year`).
 pub async fn leaderboard(
     os: &OpenSearchClient,
@@ -658,14 +581,13 @@ pub async fn leaderboard(
     scope: &LeaderboardScope,
     year: Option<i32>,
 ) -> OpenSearchResult<Vec<LeaderboardRow>> {
-    let keys = stat_keys(os).await?;
     let resp = os
         .search(
             &MATCH_STATS.alias(os.prefix()),
-            leaderboard_query(team_id, sport, scope, year, &keys),
+            leaderboard_query(team_id, sport, scope, year),
         )
         .await?;
-    Ok(parse_leaderboard(&resp, &keys))
+    Ok(parse_leaderboard(&resp, sport))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -686,21 +608,14 @@ fn sum(agg: &Value) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sports::cricket::CricketMatchStatsRecord;
+    use crate::sports::football::FootballMatchStatsRecord;
 
     fn kind_bucket(kind: &str, docs: u64, ours: Value) -> Value {
         json!({ "key": kind, "doc_count": docs, "sides": { "doc_count": docs * 2, "ours": ours } })
     }
 
-    fn ours(
-        n: u64,
-        w: u64,
-        d: u64,
-        l: u64,
-        pf: f64,
-        pa: f64,
-        cs: u64,
-        stats: &[(&str, f64)],
-    ) -> Value {
+    fn ours(n: u64, w: u64, d: u64, l: u64, pf: f64, pa: f64, stats: &[(&str, f64)]) -> Value {
         let mut outcomes = Vec::new();
         for (k, c) in [("won", w), ("drawn", d), ("lost", l)] {
             if c > 0 {
@@ -711,8 +626,7 @@ mod tests {
             "doc_count": n,
             "outcome": { "buckets": outcomes },
             "pf": { "value": pf },
-            "pa": { "value": pa },
-            "clean_sheets": { "value": cs as f64 }
+            "pa": { "value": pa }
         });
         for (k, s) in stats {
             v[format!("stat:{k}")] = json!({ "value": s });
@@ -722,18 +636,17 @@ mod tests {
 
     #[test]
     fn records_split_by_kind_and_sum_into_ext() {
-        let keys = vec!["assists".to_string(), "goals".to_string()];
         let resp = json!({ "aggregations": {
             "years": { "buckets": [{ "key": 2026, "doc_count": 9 }, { "key": 2025, "doc_count": 3 }] },
             "recent_ext": { "doc_count": 7 },
             "scoped": { "doc_count": 12, "by_kind": { "buckets": [
-                kind_bucket("league", 5, ours(5, 3, 1, 1, 9.0, 4.0, 2, &[("goals", 9.0), ("assists", 0.0)])),
-                kind_bucket("friendly", 3, ours(3, 1, 0, 2, 4.0, 6.0, 0, &[("goals", 4.0), ("assists", 3.0)])),
+                kind_bucket("league", 5, ours(5, 3, 1, 1, 9.0, 4.0, &[("goals", 9.0), ("assists", 0.0), ("clean_sheets", 2.0)])),
+                kind_bucket("friendly", 3, ours(3, 1, 0, 2, 4.0, 6.0, &[("goals", 4.0), ("assists", 3.0), ("clean_sheets", 0.0)])),
                 // Squad: both sides are ours, so pf already covers both scores.
                 kind_bucket("squad", 4, json!({ "doc_count": 8, "pf": { "value": 21.0 }, "stat:goals": { "value": 21.0 } })),
             ] } }
         } });
-        let r = parse_team_records(&resp, &keys);
+        let r = parse_team_records(&resp, "football");
         assert_eq!(r.years, vec![2026, 2025]);
         assert_eq!(r.ext_last_12_months, 7);
         assert_eq!(
@@ -745,35 +658,76 @@ mod tests {
                 lost: 1,
                 points_for: 9,
                 points_against: 4,
-                clean_sheets: 2,
-                // `assists` is zero here, so it's left out, same as the
-                // leaderboard's convention.
-                stats: BTreeMap::from([("goals".to_string(), 9)]),
+                stats: MatchStatsRecord {
+                    football: Some(FootballMatchStatsRecord {
+                        goals: 9,
+                        assists: 0,
+                        clean_sheets: 2,
+                    }),
+                    ..Default::default()
+                },
             }
         );
         assert_eq!(r.cup, RecordCounts::default());
         assert_eq!(r.ext.played, 8);
         assert_eq!(r.ext.won, 4);
         assert_eq!(r.ext.points_against, 10);
-        // Both kinds' goals and assists sum into the external record.
+        // Both kinds' counters sum into the external record.
         assert_eq!(
-            r.ext.stats,
-            BTreeMap::from([("goals".to_string(), 13), ("assists".to_string(), 3)])
+            r.ext.stats.football,
+            Some(FootballMatchStatsRecord {
+                goals: 13,
+                assists: 3,
+                clean_sheets: 2,
+            })
         );
+        assert_eq!(r.squad.games, 4);
+        assert_eq!(r.squad.points, 21);
+        assert_eq!(r.squad.stats.football.map(|f| f.goals), Some(21));
+    }
+
+    #[test]
+    fn cricket_records_read_cricket_counters() {
+        let q = team_records_query("t1", "cricket", None, "2026-11-15T00:00:00Z");
+        let aggs = &q["aggs"]["scoped"]["aggs"]["by_kind"]["aggs"]["sides"]["aggs"]["ours"]["aggs"];
         assert_eq!(
-            r.squad,
-            SquadCounts {
-                games: 4,
-                points: 21,
-                stats: BTreeMap::from([("goals".to_string(), 21)]),
-            }
+            aggs["stat:wickets"],
+            json!({ "sum": { "field": "sides.stats.cricket.wickets" } })
+        );
+        assert!(aggs.get("stat:goals").is_none(), "no football counters");
+
+        let resp = json!({ "aggregations": {
+            "years": { "buckets": [] },
+            "recent_ext": { "doc_count": 1 },
+            "scoped": { "doc_count": 1, "by_kind": { "buckets": [
+                kind_bucket("friendly", 1, ours(1, 1, 0, 0, 180.0, 140.0, &[("runs", 170.0), ("wickets", 9.0), ("catches", 4.0)])),
+            ] } }
+        } });
+        let r = parse_team_records(&resp, "cricket");
+        assert_eq!(r.friendly.stats.football, None);
+        assert_eq!(
+            r.friendly.stats.cricket,
+            Some(CricketMatchStatsRecord {
+                runs: 170,
+                wickets: 9,
+                catches: 4,
+                ..Default::default()
+            })
         );
     }
 
     #[test]
+    fn a_generic_sport_has_no_counters_to_read() {
+        let q = team_records_query("t1", "tennis", None, "2026-11-15T00:00:00Z");
+        let ours = q["aggs"]["scoped"]["aggs"]["by_kind"]["aggs"]["sides"]["aggs"]["ours"]["aggs"]
+            .as_object()
+            .unwrap();
+        assert!(ours.keys().all(|k| !k.starts_with("stat:")));
+    }
+
+    #[test]
     fn records_query_applies_year_only_to_the_scoped_counts() {
-        let keys = vec!["goals".to_string()];
-        let q = team_records_query("t1", "football", Some(2025), "2026-11-15T00:00:00Z", &keys);
+        let q = team_records_query("t1", "football", Some(2025), "2026-11-15T00:00:00Z");
         assert_eq!(
             q["aggs"]["scoped"]["filter"],
             json!({ "term": { "year": 2025 } })
@@ -785,22 +739,10 @@ mod tests {
         );
         assert_eq!(
             q["aggs"]["scoped"]["aggs"]["by_kind"]["aggs"]["sides"]["aggs"]["ours"]["aggs"]["stat:goals"],
-            json!({ "sum": { "field": "sides.stats.goals" } })
+            json!({ "sum": { "field": "sides.stats.football.goals" } })
         );
-        let q = team_records_query("t1", "football", None, "2026-11-15T00:00:00Z", &keys);
+        let q = team_records_query("t1", "football", None, "2026-11-15T00:00:00Z");
         assert_eq!(q["aggs"]["scoped"]["filter"], json!({ "match_all": {} }));
-    }
-
-    #[test]
-    fn side_stat_keys_come_from_the_matches_mapping_and_exclude_clean_sheets() {
-        let mapping = json!({ "matches_v2": { "mappings": { "properties": {
-            "sides": { "properties": { "stats": { "properties": {
-                "goals": { "type": "long" },
-                "assists": { "type": "long" },
-                "clean_sheets": { "type": "long" }
-            } } } }
-        } } } });
-        assert_eq!(parse_side_stat_keys(&mapping), vec!["assists", "goals"]);
     }
 
     /// The sport list is ordered by how much the team plays each one, and
@@ -889,28 +831,25 @@ mod tests {
 
     #[test]
     fn leaderboard_query_filters_scope_and_sums_named_stats() {
-        let keys = vec!["assists".to_string(), "goals".to_string()];
         let q = leaderboard_query(
             "hw",
             "football",
             &LeaderboardScope::Tournament("tour1".into()),
             Some(2026),
-            &keys,
         );
         let filters = q["query"]["bool"]["filter"].to_string();
         assert!(filters.contains(r#""tournament_id":"tour1""#));
         assert!(filters.contains(r#""year":2026"#));
         assert_eq!(
             q["aggs"]["players"]["aggs"]["stat:goals"],
-            json!({ "sum": { "field": "stats.goals" } })
+            json!({ "sum": { "field": "stats.football.goals" } })
         );
-        let q = leaderboard_query("hw", "football", &LeaderboardScope::All, None, &keys);
+        let q = leaderboard_query("hw", "football", &LeaderboardScope::All, None);
         assert_eq!(q["query"]["bool"]["filter"].as_array().unwrap().len(), 2);
     }
 
     #[test]
-    fn leaderboard_rows_drop_zero_stats_and_sort_by_games() {
-        let keys = vec!["assists".to_string(), "goals".to_string()];
+    fn leaderboard_rows_read_the_sports_counters_and_sort_by_games() {
         let resp = json!({ "aggregations": { "players": { "buckets": [
             { "key": "u2", "doc_count": 3, "played": { "value": 3.0 }, "won": { "value": 1.0 },
               "drawn": { "value": 0.0 }, "lost": { "value": 2.0 },
@@ -919,20 +858,10 @@ mod tests {
               "drawn": { "value": 1.0 }, "lost": { "value": 0.0 },
               "stat:goals": { "value": 6.0 }, "stat:assists": { "value": 0.0 } }
         ] } } });
-        let rows = parse_leaderboard(&resp, &keys);
+        let rows = parse_leaderboard(&resp, "football");
         assert_eq!(rows[0].user_id, "u1");
-        assert_eq!(rows[0].stats, BTreeMap::from([("goals".to_string(), 6)]));
-        assert_eq!(rows[1].stats, BTreeMap::from([("assists".to_string(), 2)]));
+        assert_eq!(rows[0].stats.football.as_ref().map(|f| f.goals), Some(6));
+        assert_eq!(rows[1].stats.football.as_ref().map(|f| f.assists), Some(2));
         assert_eq!(rows[1].lost, 2);
-    }
-
-    #[test]
-    fn stat_keys_come_from_the_mapping() {
-        let mapping = json!({ "match_stats_v1": { "mappings": { "properties": {
-            "user_id": { "type": "keyword" },
-            "stats": { "properties": { "goals": { "type": "long" }, "assists": { "type": "long" } } }
-        } } } });
-        assert_eq!(parse_stat_keys(&mapping), vec!["assists", "goals"]);
-        assert!(parse_stat_keys(&json!({ "match_stats_v1": { "mappings": {} } })).is_empty());
     }
 }

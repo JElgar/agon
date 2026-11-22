@@ -156,6 +156,21 @@ pub struct FootballStatsRecord {
     pub best_goal_contributions: Option<BestFigureRecord>,
 }
 
+/// One match's football counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FootballMatchStatsRecord {
+    #[serde(default)]
+    pub goals: u64,
+    #[serde(default)]
+    pub assists: u64,
+    /// `1` when the side conceded nothing. A player gets their side's, so a
+    /// player total is the clean sheets they played in, and a side total
+    /// is the clean sheets the side kept.
+    #[serde(default)]
+    pub clean_sheets: u64,
+}
+
 /// Football: the marker type its sport traits are implemented for.
 pub struct Football;
 
@@ -201,6 +216,35 @@ impl SportRecord for Football {
             best_goals: best(goals),
             best_goal_contributions: best(goals + assists),
             ..FootballStatsRecord::default()
+        }
+    }
+
+    type MatchStatsRecord = FootballMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &["goals", "assists", "clean_sheets"];
+
+    fn match_stats(c: &FootballStatsRecord, conceded: u64) -> FootballMatchStatsRecord {
+        FootballMatchStatsRecord {
+            goals: c.goals,
+            assists: c.assists,
+            clean_sheets: u64::from(conceded == 0),
+        }
+    }
+
+    fn add_match_stats(totals: &mut FootballMatchStatsRecord, o: &FootballMatchStatsRecord) {
+        totals.goals += o.goals;
+        totals.assists += o.assists;
+        totals.clean_sheets += o.clean_sheets;
+    }
+
+    /// A clean sheet is the side's, once, however many of its players
+    /// shared it.
+    fn side_match_stats(
+        players: FootballMatchStatsRecord,
+        conceded: u64,
+    ) -> FootballMatchStatsRecord {
+        FootballMatchStatsRecord {
+            clean_sheets: u64::from(conceded == 0),
+            ..players
         }
     }
 }

@@ -10,8 +10,8 @@ use poem_openapi::{Enum, Object, Union};
 use agon_services_core::sports::netball::Netball;
 use agon_services_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
-    NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
-    NetballScoreRecord, NetballStatsRecord,
+    NetballLiveEventRecord, NetballMatchStatsRecord, NetballPeriodEventRecord, NetballPeriodRecord,
+    NetballPositionRecord, NetballScoreRecord, NetballStatsRecord,
 };
 
 use crate::GenericPlayerStats;
@@ -23,6 +23,7 @@ impl Sport for Netball {
     type Format = NetballFormat;
     type LiveEvent = NetballLiveEvent;
     type PlayerStats = NetballPlayerStats;
+    type MatchStats = NetballMatchStats;
 
     fn new_score() -> NetballScore {
         NetballScore {
@@ -285,6 +286,10 @@ impl Sport for Netball {
             goals: rec.goals as i32,
         }
     }
+
+    fn match_stats_from_record(rec: &NetballMatchStatsRecord) -> NetballMatchStats {
+        NetballMatchStats { goals: rec.goals }
+    }
 }
 
 // ---- API types ----------------------------------------------------------
@@ -543,6 +548,13 @@ pub struct NetballPlayerStats {
     /// Goals scored (career total) — successful shots, so a two-point-zone
     /// goal counts once here even though it's worth two on the scoreboard.
     pub goals: i32,
+}
+
+/// Netball counters summed over a set of matches, for a team or a player.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct NetballMatchStats {
+    /// Goals scored, counted as in `NetballPlayerStats::goals`.
+    pub goals: u64,
 }
 
 // ---- Record mapping helpers ---------------------------------------------

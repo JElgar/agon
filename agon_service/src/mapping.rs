@@ -259,6 +259,15 @@ macro_rules! define_sport_dispatch {
             }
         }
 
+        /// Map a stored `MatchStatsRecord` to the public `SportMatchStats`.
+        pub fn match_stats_from_record(
+            stats: &agon_services_core::sports::MatchStatsRecord,
+        ) -> crate::SportMatchStats {
+            crate::SportMatchStats {
+                $( $key: stats.$key.as_ref().map(<agon_services_core::sports::$key::$variant as Sport>::match_stats_from_record), )+
+            }
+        }
+
         /// Every side id a score references — what a submitted score is
         /// validated against (each must be one of the match's own sides).
         pub fn score_side_ids(score: &Score) -> Vec<&str> {

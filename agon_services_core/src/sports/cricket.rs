@@ -417,6 +417,70 @@ impl SportRecord for Cricket {
         });
         stats
     }
+
+    type MatchStatsRecord = CricketMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &[
+        "runs",
+        "wickets",
+        "fours",
+        "sixes",
+        "balls_faced",
+        "dismissals",
+        "catches",
+        "runs_conceded",
+        "balls_bowled",
+    ];
+
+    fn match_stats(c: &CricketStatsRecord, _conceded: u64) -> CricketMatchStatsRecord {
+        CricketMatchStatsRecord {
+            runs: c.runs,
+            wickets: c.wickets,
+            fours: c.fours,
+            sixes: c.sixes,
+            balls_faced: c.balls_faced,
+            dismissals: c.dismissals,
+            catches: c.catches,
+            runs_conceded: c.runs_conceded,
+            balls_bowled: c.balls_bowled,
+        }
+    }
+
+    fn add_match_stats(totals: &mut CricketMatchStatsRecord, o: &CricketMatchStatsRecord) {
+        totals.runs += o.runs;
+        totals.wickets += o.wickets;
+        totals.fours += o.fours;
+        totals.sixes += o.sixes;
+        totals.balls_faced += o.balls_faced;
+        totals.dismissals += o.dismissals;
+        totals.catches += o.catches;
+        totals.runs_conceded += o.runs_conceded;
+        totals.balls_bowled += o.balls_bowled;
+    }
+}
+
+/// One match's cricket counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side. Same meaning as the
+/// [`CricketStatsRecord`] counters of the same name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CricketMatchStatsRecord {
+    #[serde(default)]
+    pub runs: u64,
+    #[serde(default)]
+    pub wickets: u64,
+    #[serde(default)]
+    pub fours: u64,
+    #[serde(default)]
+    pub sixes: u64,
+    #[serde(default)]
+    pub balls_faced: u64,
+    #[serde(default)]
+    pub dismissals: u64,
+    #[serde(default)]
+    pub catches: u64,
+    #[serde(default)]
+    pub runs_conceded: u64,
+    #[serde(default)]
+    pub balls_bowled: u64,
 }
 
 crate::personal_bests!(CricketStatsRecord {

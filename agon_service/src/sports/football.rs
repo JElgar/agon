@@ -13,9 +13,9 @@ use agon_core::football as scoring;
 use agon_services_core::sports::football::Football;
 use agon_services_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballScoreRecord, FootballStatsRecord,
-    FootballSubstitutionEventRecord,
+    FootballGoalEventRecord, FootballLiveEventRecord, FootballMatchStatsRecord,
+    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
+    FootballScoreRecord, FootballStatsRecord, FootballSubstitutionEventRecord,
 };
 
 use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts, parse_ts_opt};
@@ -27,6 +27,7 @@ impl Sport for Football {
     type Format = scoring::Format;
     type LiveEvent = scoring::LiveEvent;
     type PlayerStats = FootballPlayerStats;
+    type MatchStats = FootballMatchStats;
 
     fn new_score() -> FootballScore {
         FootballScore {
@@ -334,6 +335,14 @@ impl Sport for Football {
                 .map(best_figure_from_record),
         }
     }
+
+    fn match_stats_from_record(rec: &FootballMatchStatsRecord) -> FootballMatchStats {
+        FootballMatchStats {
+            goals: rec.goals,
+            assists: rec.assists,
+            clean_sheets: rec.clean_sheets,
+        }
+    }
 }
 
 // ---- API types ----------------------------------------------------------
@@ -365,6 +374,16 @@ pub struct FootballPlayerStats {
     /// Most goals + assists combined in a single match — a more complete
     /// "best game" than assists alone.
     pub best_goal_contributions: Option<BestFigure>,
+}
+
+/// Football counters summed over a set of matches, for a team or a player.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct FootballMatchStats {
+    pub goals: u64,
+    pub assists: u64,
+    /// For a team, the clean sheets it kept. For a player, the clean
+    /// sheets they played in.
+    pub clean_sheets: u64,
 }
 
 // ---- Record mapping helpers ---------------------------------------------

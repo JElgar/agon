@@ -147,7 +147,10 @@ async fn team_stats_reads_against_opensearch() {
             // A Simple score carries no counters; give u1 a goal per game so
             // the stat sums are exercised.
             if row.user_id == "u1" {
-                row.stats.insert("goals".into(), 1);
+                row.stats
+                    .football
+                    .get_or_insert_with(Default::default)
+                    .goals = 1;
             }
             ops.push(BulkOp::index(&os.write_index(&MATCH_STATS), &row.doc_id(), row).unwrap());
         }
@@ -169,7 +172,10 @@ async fn team_stats_reads_against_opensearch() {
         (3, 1, 1, 1)
     );
     assert_eq!((r.friendly.points_for, r.friendly.points_against), (3, 4));
-    assert_eq!(r.friendly.clean_sheets, 1);
+    assert_eq!(
+        r.friendly.stats.football.as_ref().map(|f| f.clean_sheets),
+        Some(1)
+    );
     assert_eq!(r.ext, r.friendly, "no league or cup games");
     assert_eq!((r.squad.games, r.squad.points), (1, 6));
     // m1 is more than 12 months before NOW; m2 and m3 are inside.
@@ -201,9 +207,6 @@ async fn team_stats_reads_against_opensearch() {
     assert_eq!(next.match_id, "m5");
     assert_eq!(next.opponent.unwrap().team_id.as_deref(), Some("leyton"));
 
-    // Stat keys come from the mapping once a row has carried them.
-    assert_eq!(ts::stat_keys(&os).await.unwrap(), vec!["goals"]);
-
     // Leaderboard, all: u1 played all four (squad included) and scored 4.
     let all = ts::leaderboard(&os, "hw", "football", &LeaderboardScope::All, None)
         .await
@@ -213,7 +216,7 @@ async fn team_stats_reads_against_opensearch() {
         (all[0].played, all[0].won, all[0].drawn, all[0].lost),
         (4, 2, 1, 1)
     );
-    assert_eq!(all[0].stats.get("goals"), Some(&4));
+    assert_eq!(all[0].stats.football.as_ref().map(|f| f.goals), Some(4));
     assert!(
         all.iter().all(|r| r.user_id != "u9"),
         "Bow's player isn't on HW's board"

@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::dao::records::{MatchFormatRecord, ScoreRecord};
 
@@ -187,6 +187,30 @@ pub trait SportRecord {
         format: Option<&Self::FormatRecord>,
         match_id: &str,
     ) -> Self::StatsRecord;
+
+    /// One match's counters in this sport, for one player or summed for a
+    /// side: what the stats store (OpenSearch) keeps so team and player
+    /// totals can be summed. Counters only: played/won/drawn/lost come from
+    /// the outcome, and personal bests aren't summable.
+    type MatchStatsRecord: RecordType + Default + Eq;
+
+    /// Every field of [`SportRecord::MatchStatsRecord`], as serialized. The
+    /// stats store maps and sums exactly these.
+    const MATCH_STATS_FIELDS: &'static [&'static str];
+
+    /// One player's counters, from their [`SportRecord::contribution`].
+    /// `conceded` is what the other sides scored against theirs.
+    fn match_stats(contribution: &Self::StatsRecord, conceded: u64) -> Self::MatchStatsRecord;
+
+    /// Adds `other` into `totals`.
+    fn add_match_stats(totals: &mut Self::MatchStatsRecord, other: &Self::MatchStatsRecord);
+
+    /// A side's counters, from the sum of its players'. Override for a
+    /// counter that belongs to the side as a whole rather than to the sum
+    /// of its players.
+    fn side_match_stats(players: Self::MatchStatsRecord, _conceded: u64) -> Self::MatchStatsRecord {
+        players
+    }
 }
 
 macro_rules! define_contribution {
@@ -221,6 +245,150 @@ macro_rules! define_contribution {
                 _ => SportContribution::default(),
             }
         }
+
+        /// One match's counters in its sport, as the stats store keeps them:
+        /// one field per modeled sport, only the match's own sport set
+        /// (the same layout as `UserStatsRecord`). Empty for a generic sport.
+        #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct MatchStatsRecord {
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $key: Option<<$key::$variant as SportRecord>::MatchStatsRecord>,
+            )+
+        }
+
+        impl MatchStatsRecord {
+            /// The counters the user holding `player_ids` earned from a
+            /// confirmed `score` in `sport`. `conceded` is what the other
+            /// sides scored against theirs.
+            pub fn for_player(
+                sport: &str,
+                score: &ScoreRecord,
+                player_ids: &[&str],
+                format: Option<&MatchFormatRecord>,
+                match_id: &str,
+                conceded: u64,
+            ) -> Self {
+                let mut out = Self::default();
+                match (sport, score) {
+                    $(
+                        ($tag, ScoreRecord::$variant(score)) => {
+                            #[allow(unreachable_patterns)]
+                            let format = match format {
+                                Some(MatchFormatRecord::$variant(f)) => Some(f),
+                                _ => None,
+                            };
+                            let c = <$key::$variant as SportRecord>::contribution(
+                                score, player_ids, format, match_id,
+                            );
+                            out.$key = Some(<$key::$variant as SportRecord>::match_stats(&c, conceded));
+                        }
+                    )+
+                    _ => {}
+                }
+                out
+            }
+
+            /// Adds `other` into this, sport by sport.
+            pub fn add(&mut self, other: &Self) {
+                $(
+                    if let Some(o) = &other.$key {
+                        <$key::$variant as SportRecord>::add_match_stats(
+                            self.$key.get_or_insert_with(Default::default),
+                            o,
+                        );
+                    }
+                )+
+            }
+
+            /// A side's counters in `sport`, from its players' summed.
+            /// `None` for a generic sport.
+            pub fn for_side(sport: &str, players: Self, conceded: u64) -> Self {
+                let mut out = players;
+                match sport {
+                    $(
+                        $tag => {
+                            let totals = out.$key.take().unwrap_or_default();
+                            out.$key = Some(<$key::$variant as SportRecord>::side_match_stats(totals, conceded));
+                        }
+                    )+
+                    _ => {}
+                }
+                out
+            }
+
+            /// The counter fields `sport` keeps, under `stats.<sport>`.
+            /// Empty for a generic sport.
+            pub fn fields(sport: &str) -> &'static [&'static str] {
+                match sport {
+                    $( $tag => <$key::$variant as SportRecord>::MATCH_STATS_FIELDS, )+
+                    _ => &[],
+                }
+            }
+
+            /// Every modeled sport's tag and its counter fields.
+            pub fn all_fields() -> Vec<(&'static str, &'static [&'static str])> {
+                vec![$( ($tag, <$key::$variant as SportRecord>::MATCH_STATS_FIELDS), )+]
+            }
+
+            /// `sport`'s counters, from the summed value of each of its
+            /// [`MatchStatsRecord::fields`]. Empty for a generic sport.
+            pub fn from_sums(sport: &str, sum: impl Fn(&str) -> u64) -> Self {
+                let mut out = Self::default();
+                match sport {
+                    $(
+                        $tag => {
+                            let fields: serde_json::Map<String, serde_json::Value> =
+                                <$key::$variant as SportRecord>::MATCH_STATS_FIELDS
+                                    .iter()
+                                    .map(|f| (f.to_string(), sum(f).into()))
+                                    .collect();
+                            out.$key = serde_json::from_value(fields.into()).ok();
+                        }
+                    )+
+                    _ => {}
+                }
+                out
+            }
+        }
     };
 }
 for_each_sport!(define_contribution);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `MATCH_STATS_FIELDS` is what the stats store maps and sums, so it
+    /// must name every field the type serializes, no more and no fewer.
+    #[test]
+    fn match_stats_fields_name_every_serialized_field() {
+        for (sport, fields) in MatchStatsRecord::all_fields() {
+            let one = MatchStatsRecord::from_sums(sport, |_| 1);
+            let value = serde_json::to_value(&one).unwrap();
+            let mut serialized: Vec<&str> = value[sport]
+                .as_object()
+                .unwrap_or_else(|| panic!("{sport} parses from its own fields"))
+                .keys()
+                .map(String::as_str)
+                .collect();
+            serialized.sort();
+            let mut declared = fields.to_vec();
+            declared.sort();
+            assert_eq!(serialized, declared, "{sport}");
+            assert!(
+                value[sport].as_object().unwrap().values().all(|v| v == 1),
+                "{sport}: every declared field reads back"
+            );
+        }
+    }
+
+    #[test]
+    fn a_generic_sport_has_no_match_stats() {
+        assert!(MatchStatsRecord::fields("tennis").is_empty());
+        assert_eq!(
+            MatchStatsRecord::for_side("tennis", MatchStatsRecord::default(), 0),
+            MatchStatsRecord::default()
+        );
+    }
+}

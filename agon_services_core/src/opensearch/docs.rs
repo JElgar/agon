@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::dao::match_ops::MatchAggregate;
 use crate::dao::records::{ScoreRecord, TournamentFormatRecord, TournamentRecord};
+use crate::sports::MatchStatsRecord;
 
 /// What kind of match this is. Decides where it counts on the team pages: the
 /// team record covers league, cup and friendly; squad games are counted on
@@ -153,14 +154,13 @@ pub struct SideDoc {
     /// Account holders who took a spot on this side.
     pub player_ids: Vec<String>,
     pub player_count: u32,
-    /// This side's sport counters, e.g. `{"goals": 2, "assists": 1}` for
-    /// football or `{"runs": 140, "wickets": 4, "catches": 2}` for cricket —
-    /// the sum of every account holder's [`PlayerStatDoc::stats`] on this
-    /// side, plus `clean_sheets` (`1`, football only, when this side
-    /// conceded nothing — not attributable to any one player, so it isn't in
-    /// any `PlayerStatDoc`). Empty (and omitted) until the score is confirmed.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub stats: BTreeMap<String, u64>,
+    /// This side's counters in the match's sport (`stats.football`,
+    /// `stats.cricket`, ...): its account holders' [`PlayerStatDoc::stats`]
+    /// summed, with side-level counters such as football's clean sheet set
+    /// by the sport (`SportRecord::side_match_stats`). Omitted until the
+    /// score is confirmed, and for a generic sport.
+    #[serde(skip_serializing_if = "no_stats")]
+    pub stats: MatchStatsRecord,
 }
 
 /// One match (index `matches`).
@@ -219,8 +219,10 @@ pub struct PlayerStatDoc {
     pub won: u32,
     pub drawn: u32,
     pub lost: u32,
-    /// Sport counters, e.g. `{"goals": 2, "assists": 1}`.
-    pub stats: BTreeMap<String, u64>,
+    /// This player's counters in the match's sport (`stats.football`,
+    /// `stats.cricket`, ...). Omitted for a generic sport.
+    #[serde(skip_serializing_if = "no_stats")]
+    pub stats: MatchStatsRecord,
     pub indexed_at: String,
 }
 
@@ -228,6 +230,10 @@ impl PlayerStatDoc {
     pub fn doc_id(&self) -> String {
         player_doc_id(&self.match_id, &self.user_id)
     }
+}
+
+fn no_stats(stats: &MatchStatsRecord) -> bool {
+    *stats == MatchStatsRecord::default()
 }
 
 pub fn player_doc_id(match_id: &str, user_id: &str) -> String {
@@ -272,7 +278,13 @@ pub fn build_match_docs(
     let confirmed = m.confirmed_score.as_ref();
     let winner = confirmed.and_then(|c| c.winner_side_id.clone());
     let points = confirmed.map(|c| side_points(&c.score)).unwrap_or_default();
-    let is_football = m.match_type == "football";
+    let conceded_by = |side_id: &str| -> u64 {
+        points
+            .iter()
+            .filter(|(id, _)| id.as_str() != side_id)
+            .map(|(_, p)| *p)
+            .sum()
+    };
 
     let outcome_for = |side_id: &str| -> Option<Outcome> {
         confirmed.map(|_| match &winner {
@@ -333,12 +345,13 @@ pub fn build_match_docs(
                         .collect::<BTreeSet<_>>()
                         .into_iter()
                         .collect();
-                    let contribution = crate::sports::contribution(
+                    let stats = MatchStatsRecord::for_player(
                         &m.match_type,
                         &cs.score,
                         &player_ids,
                         m.format.as_ref(),
                         &m.id,
+                        conceded_by(side_id),
                     );
                     PlayerStatDoc {
                         match_id: m.id.clone(),
@@ -358,7 +371,7 @@ pub fn build_match_docs(
                         won: u32::from(outcome == Outcome::Won),
                         drawn: u32::from(outcome == Outcome::Drawn),
                         lost: u32::from(outcome == Outcome::Lost),
-                        stats: contribution.counters.into_iter().collect(),
+                        stats,
                         indexed_at: now.to_string(),
                     }
                 })
@@ -369,12 +382,12 @@ pub fn build_match_docs(
     // Each side's counters are the sum of its account holders' own (already
     // computed above), so a side's cricket wickets or football assists never
     // drift from the player rows they're built from.
-    let mut side_stats: BTreeMap<&str, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut side_stats: BTreeMap<&str, MatchStatsRecord> = BTreeMap::new();
     for p in &players {
-        let totals = side_stats.entry(p.side_id.as_str()).or_default();
-        for (name, value) in &p.stats {
-            *totals.entry(name.clone()).or_default() += value;
-        }
+        side_stats
+            .entry(p.side_id.as_str())
+            .or_default()
+            .add(&p.stats);
     }
 
     let sides: Vec<SideDoc> = agg
@@ -382,25 +395,21 @@ pub fn build_match_docs(
         .iter()
         .map(|s| {
             let score = points.get(&s.side_id).copied();
-            let conceded = confirmed.map(|_| {
-                points
-                    .iter()
-                    .filter(|(id, _)| **id != s.side_id)
-                    .map(|(_, p)| *p)
-                    .sum::<u64>()
-            });
+            let conceded = confirmed.map(|_| conceded_by(&s.side_id));
             let side_players: Vec<String> = roster
                 .get(s.side_id.as_str())
                 .into_iter()
                 .flatten()
                 .map(|u| u.to_string())
                 .collect();
-            let mut stats = side_stats.remove(s.side_id.as_str()).unwrap_or_default();
-            // Not a player's contribution (nobody "did" a clean sheet), so
-            // it's folded in here rather than summed from `players` above.
-            if is_football && conceded == Some(0) {
-                stats.insert("clean_sheets".to_string(), 1);
-            }
+            let stats = match conceded {
+                Some(conceded) => MatchStatsRecord::for_side(
+                    &m.match_type,
+                    side_stats.remove(s.side_id.as_str()).unwrap_or_default(),
+                    conceded,
+                ),
+                None => MatchStatsRecord::default(),
+            };
             SideDoc {
                 side_id: s.side_id.clone(),
                 team_id: s.team_id.clone(),
@@ -666,7 +675,10 @@ mod tests {
             (a_side.outcome, a_side.score, a_side.conceded),
             (Some("won"), Some(3), Some(1))
         );
-        assert!(!a_side.stats.contains_key("clean_sheets"));
+        assert_eq!(
+            a_side.stats.football.as_ref().map(|f| f.clean_sheets),
+            Some(0)
+        );
         assert_eq!(docs.match_doc.kind, MatchKind::Friendly);
         assert_eq!(docs.players.len(), 2);
         let u1 = docs.players.iter().find(|p| p.user_id == "u1").unwrap();
@@ -696,7 +708,9 @@ mod tests {
 
     #[test]
     fn side_stats_sum_their_players_contributions() {
-        use crate::sports::football::{FootballGoalEventRecord, FootballScoreRecord};
+        use crate::sports::football::{
+            FootballGoalEventRecord, FootballMatchStatsRecord, FootballScoreRecord,
+        };
 
         let mut a = agg(
             vec![side("a", Some("hw")), side("b", Some("lo"))],
@@ -751,14 +765,24 @@ mod tests {
             .unwrap();
         // u1 scored once (1 goal, 0 assists), u2 scored once and assisted
         // once (1 goal, 1 assist): the side's total is both players'
-        // summed, plus a clean sheet (conceded nothing) folded in alongside.
+        // summed. Both played in the clean sheet, but the side kept one.
         assert_eq!(
-            a_side.stats,
-            BTreeMap::from([
-                ("goals".to_string(), 2),
-                ("assists".to_string(), 1),
-                ("clean_sheets".to_string(), 1),
-            ])
+            a_side.stats.football,
+            Some(FootballMatchStatsRecord {
+                goals: 2,
+                assists: 1,
+                clean_sheets: 1,
+            })
+        );
+        assert_eq!(a_side.stats.cricket, None);
+        let u2 = docs.players.iter().find(|p| p.user_id == "u2").unwrap();
+        assert_eq!(
+            u2.stats.football,
+            Some(FootballMatchStatsRecord {
+                goals: 1,
+                assists: 1,
+                clean_sheets: 1,
+            })
         );
         let b_side = docs
             .match_doc
@@ -766,7 +790,14 @@ mod tests {
             .iter()
             .find(|s| s.side_id == "b")
             .unwrap();
-        assert!(b_side.stats.is_empty());
+        assert_eq!(
+            b_side.stats.football,
+            Some(FootballMatchStatsRecord::default())
+        );
+
+        let doc = to_value(&docs.match_doc);
+        assert_eq!(doc["sides"][0]["stats"]["football"]["goals"], 2);
+        assert!(doc["sides"][0]["stats"].get("cricket").is_none());
     }
 
     #[test]

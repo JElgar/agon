@@ -14,7 +14,7 @@ here can be rebuilt from it at any time.
 
 | Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, clean sheet | team records, goals for/against, form, head-to-head, match lists |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, sport counters under `sides.stats.*` (its players' `match_stats.stats` summed, plus `clean_sheets` for football — not a player's contribution, so it's set directly rather than summed) | team records, goals for/against, form, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 

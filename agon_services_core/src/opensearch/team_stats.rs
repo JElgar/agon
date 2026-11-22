@@ -120,7 +120,11 @@ pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &s
                                 "outcome": { "terms": { "field": "sides.outcome", "size": 5 } },
                                 "gf": { "sum": { "field": "sides.score" } },
                                 "ga": { "sum": { "field": "sides.conceded" } },
-                                "clean_sheets": { "filter": { "term": { "sides.clean_sheet": true } } }
+                                // Folded into `sides.stats` as a 1/0 counter
+                                // (see `docs::build_match_docs`): not a
+                                // player's contribution, so it isn't summed
+                                // from `match_stats` like the sport counters.
+                                "clean_sheets": { "sum": { "field": "sides.stats.clean_sheets" } }
                             }
                         } }
                     } }
@@ -158,7 +162,7 @@ pub fn parse_team_records(resp: &Value) -> TeamRecords {
                     played: count(&ours["doc_count"]),
                     points_for: sum(&ours["gf"]),
                     points_against: sum(&ours["ga"]),
-                    clean_sheets: count(&ours["clean_sheets"]["doc_count"]),
+                    clean_sheets: sum(&ours["clean_sheets"]),
                     ..Default::default()
                 };
                 for o in buckets(&ours["outcome"]) {
@@ -632,7 +636,7 @@ mod tests {
             "outcome": { "buckets": outcomes },
             "gf": { "value": gf },
             "ga": { "value": ga },
-            "clean_sheets": { "doc_count": cs }
+            "clean_sheets": { "value": cs as f64 }
         })
     }
 

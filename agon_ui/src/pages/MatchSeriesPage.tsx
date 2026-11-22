@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
+import { ChevronLeft, ChevronRight, MoreHorizontal, Play, Square } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { sportIcon } from '@/lib/sports'
 import { scheduledDateTime } from '@/lib/datetime'
 import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
@@ -142,12 +143,15 @@ export function MatchSeriesPage() {
 }
 
 /**
- * The series' pause/resume/end controls — `PATCH /match-series/:id`,
- * shown to the series' owner or an admin (`series.admin_user_ids`).
- * Pausing stops new occurrences from being generated
- * (existing ones are untouched) and can be resumed; ending is permanent and
- * cancels the series' not-yet-started scheduled occurrences, so it goes
- * through the same two-step confirm as `MatchDetailPage`'s `CancelMatch`.
+ * The series' stop/resume/end controls — `PATCH /match-series/:id`, shown
+ * to the series' owner or an admin (`series.admin_user_ids`). Stopping
+ * (pausing) just stops new occurrences from being generated — existing ones
+ * are untouched — and is the one action surfaced inline, since it's the
+ * common case and fully reversible. Resuming a stopped series and ending it
+ * outright are both rarer, so they live in the overflow menu; ending is
+ * also permanent and cancels the series' not-yet-started scheduled
+ * occurrences, so it goes through the same two-step confirm as
+ * `MatchDetailPage`'s `CancelMatch`.
  */
 function SeriesActions({ series }: { series: MatchSeries }) {
   const queryClient = useQueryClient()
@@ -168,7 +172,7 @@ function SeriesActions({ series }: { series: MatchSeries }) {
     },
   })
 
-  const canPauseOrResume = series.status === 'active' || series.status === 'generating' || series.status === 'paused'
+  const isStopped = series.status === 'paused'
 
   if (confirmingEnd) {
     return (
@@ -200,32 +204,36 @@ function SeriesActions({ series }: { series: MatchSeries }) {
 
   return (
     <div className="mt-1 flex gap-2">
-      {canPauseOrResume && (
+      {!isStopped && (
         <Button
           variant="outline"
           size="sm"
           disabled={updateStatus.isPending}
-          onClick={() => updateStatus.mutate(series.status === 'paused' ? 'active' : 'paused')}
+          onClick={() => updateStatus.mutate('paused')}
         >
-          {series.status === 'paused' ? (
-            <>
-              <Play className="size-3.5" /> Resume
-            </>
-          ) : (
-            <>
-              <Pause className="size-3.5" /> Pause
-            </>
-          )}
+          <Square className="size-3.5" /> Stop
         </Button>
       )}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-destructive hover:text-destructive"
-        onClick={() => setConfirmingEnd(true)}
-      >
-        End series
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="size-8" aria-label="More series options">
+            <MoreHorizontal className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-48">
+          {isStopped && (
+            <DropdownMenuItem disabled={updateStatus.isPending} onSelect={() => updateStatus.mutate('active')}>
+              <Play className="size-4" /> Resume series
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => setConfirmingEnd(true)}
+          >
+            End series
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }

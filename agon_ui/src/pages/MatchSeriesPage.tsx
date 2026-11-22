@@ -58,7 +58,10 @@ export function MatchSeriesPage() {
 
   const series = seriesQuery.data
   const currentUserId = useCurrentUserId()
-  const isCreator = !!series && !!currentUserId && series.created_by_user_id === currentUserId
+  const canManageSeries =
+    !!series &&
+    !!currentUserId &&
+    (series.created_by_user_id === currentUserId || series.admin_user_ids.includes(currentUserId))
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl">
@@ -100,7 +103,7 @@ export function MatchSeriesPage() {
                 {series.status === 'generating' ? seriesGeneratingLabel(series) : seriesStatusLabel(series.status)}
               </span>
             </div>
-            {isCreator && series.status !== 'ended' && <SeriesActions series={series} />}
+            {canManageSeries && series.status !== 'ended' && <SeriesActions series={series} />}
           </div>
 
           <section className="flex flex-col gap-2.5">
@@ -139,8 +142,9 @@ export function MatchSeriesPage() {
 }
 
 /**
- * The series creator's pause/resume/end controls — `PATCH
- * /match-series/:id`. Pausing stops new occurrences from being generated
+ * The series' pause/resume/end controls — `PATCH /match-series/:id`,
+ * shown to the series' owner or an admin (`series.admin_user_ids`).
+ * Pausing stops new occurrences from being generated
  * (existing ones are untouched) and can be resumed; ending is permanent and
  * cancels the series' not-yet-started scheduled occurrences, so it goes
  * through the same two-step confirm as `MatchDetailPage`'s `CancelMatch`.

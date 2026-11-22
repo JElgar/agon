@@ -115,8 +115,8 @@ pub fn team_records_query(
         "outcome".into(),
         json!({ "terms": { "field": "sides.outcome", "size": 5 } }),
     );
-    ours_aggs.insert("gf".into(), json!({ "sum": { "field": "sides.score" } }));
-    ours_aggs.insert("ga".into(), json!({ "sum": { "field": "sides.conceded" } }));
+    ours_aggs.insert("pf".into(), json!({ "sum": { "field": "sides.score" } }));
+    ours_aggs.insert("pa".into(), json!({ "sum": { "field": "sides.conceded" } }));
     // Folded into `sides.stats` as a 1/0 counter (see
     // `docs::build_match_docs`): not a player's contribution, so it isn't
     // summed from `match_stats` like the sport counters below.
@@ -191,7 +191,7 @@ pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
                 out.squad = SquadCounts {
                     games: count(&kind["doc_count"]),
                     // Both sides are this team, so this sums both scores.
-                    points: sum(&ours["gf"]),
+                    points: sum(&ours["pf"]),
                     stats: side_stats(ours, stat_keys),
                 };
             }
@@ -199,8 +199,8 @@ pub fn parse_team_records(resp: &Value, stat_keys: &[String]) -> TeamRecords {
                 let mut rec = RecordCounts {
                     // One side per external match is ours.
                     played: count(&ours["doc_count"]),
-                    points_for: sum(&ours["gf"]),
-                    points_against: sum(&ours["ga"]),
+                    points_for: sum(&ours["pf"]),
+                    points_against: sum(&ours["pa"]),
                     clean_sheets: sum(&ours["clean_sheets"]),
                     stats: side_stats(ours, stat_keys),
                     ..Default::default()
@@ -696,8 +696,8 @@ mod tests {
         w: u64,
         d: u64,
         l: u64,
-        gf: f64,
-        ga: f64,
+        pf: f64,
+        pa: f64,
         cs: u64,
         stats: &[(&str, f64)],
     ) -> Value {
@@ -710,8 +710,8 @@ mod tests {
         let mut v = json!({
             "doc_count": n,
             "outcome": { "buckets": outcomes },
-            "gf": { "value": gf },
-            "ga": { "value": ga },
+            "pf": { "value": pf },
+            "pa": { "value": pa },
             "clean_sheets": { "value": cs as f64 }
         });
         for (k, s) in stats {
@@ -729,8 +729,8 @@ mod tests {
             "scoped": { "doc_count": 12, "by_kind": { "buckets": [
                 kind_bucket("league", 5, ours(5, 3, 1, 1, 9.0, 4.0, 2, &[("goals", 9.0), ("assists", 0.0)])),
                 kind_bucket("friendly", 3, ours(3, 1, 0, 2, 4.0, 6.0, 0, &[("goals", 4.0), ("assists", 3.0)])),
-                // Squad: both sides are ours, so gf already covers both scores.
-                kind_bucket("squad", 4, json!({ "doc_count": 8, "gf": { "value": 21.0 }, "stat:goals": { "value": 21.0 } })),
+                // Squad: both sides are ours, so pf already covers both scores.
+                kind_bucket("squad", 4, json!({ "doc_count": 8, "pf": { "value": 21.0 }, "stat:goals": { "value": 21.0 } })),
             ] } }
         } });
         let r = parse_team_records(&resp, &keys);

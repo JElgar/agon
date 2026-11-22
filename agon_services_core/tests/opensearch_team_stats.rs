@@ -168,10 +168,10 @@ async fn team_stats_reads_against_opensearch() {
         ),
         (3, 1, 1, 1)
     );
-    assert_eq!((r.friendly.goals_for, r.friendly.goals_against), (3, 4));
+    assert_eq!((r.friendly.points_for, r.friendly.points_against), (3, 4));
     assert_eq!(r.friendly.clean_sheets, 1);
     assert_eq!(r.ext, r.friendly, "no league or cup games");
-    assert_eq!((r.squad.games, r.squad.goals), (1, 6));
+    assert_eq!((r.squad.games, r.squad.points), (1, 6));
     // m1 is more than 12 months before NOW; m2 and m3 are inside.
     assert_eq!(r.ext_last_12_months, 2);
 

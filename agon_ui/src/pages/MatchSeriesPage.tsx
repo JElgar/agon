@@ -1,12 +1,25 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, MoreHorizontal, Play, Square } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { sportIcon } from '@/lib/sports'
 import { scheduledDateTime } from '@/lib/datetime'
 import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+
+type SeriesAction = 'stop' | 'resume' | 'end'
 
 /** A series' cadence hasn't finished generating occurrences while its
  *  `status` is `generating` — poll until it flips to `active`. */
@@ -53,6 +66,28 @@ export function MatchSeriesPage() {
   })
 
   const series = seriesQuery.data
+  const currentUserId = useCurrentUserId()
+  const canManageSeries =
+    !!series &&
+    !!currentUserId &&
+    (series.created_by_user_id === currentUserId || series.admin_user_ids.includes(currentUserId))
+
+  const queryClient = useQueryClient()
+  const [pendingAction, setPendingAction] = useState<SeriesAction | null>(null)
+  const updateStatus = useMutation({
+    mutationFn: async (status: components['schemas']['MatchSeriesStatus']) => {
+      const { error } = await fetchClient.PATCH('/match-series/{series_id}', {
+        params: { path: { series_id: seriesId! } },
+        body: { status },
+      })
+      if (error) throw new Error('Failed to update this series')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match-series', seriesId] })
+      queryClient.invalidateQueries({ queryKey: ['match-series', seriesId, 'occurrences'] })
+      setPendingAction(null)
+    },
+  })
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl">
@@ -61,6 +96,12 @@ export function MatchSeriesPage() {
           <ChevronLeft className="size-5" />
         </Button>
         <h1 className="font-display text-xl font-extrabold md:text-2xl">Recurring match</h1>
+        {series && canManageSeries && series.status !== 'ended' && (
+          <SeriesMenu
+            isStopped={series.status === 'paused'}
+            onSelect={(action) => setPendingAction(action)}
+          />
+        )}
       </div>
 
       {seriesQuery.isLoading && (
@@ -127,7 +168,124 @@ export function MatchSeriesPage() {
           </section>
         </>
       )}
+
+      <SeriesActionDialog
+        action={pendingAction}
+        pending={updateStatus.isPending}
+        isError={updateStatus.isError}
+        onOpenChange={(open) => !open && setPendingAction(null)}
+        onConfirm={() => {
+          if (pendingAction === 'stop') updateStatus.mutate('paused')
+          else if (pendingAction === 'resume') updateStatus.mutate('active')
+          else if (pendingAction === 'end') updateStatus.mutate('ended')
+        }}
+      />
     </div>
+  )
+}
+
+/**
+ * The series' header overflow menu — shown to the series' owner or an admin
+ * (`series.admin_user_ids`), always in the same top-right spot regardless of
+ * status. Each item just requests a `SeriesAction`; `SeriesActionDialog`
+ * owns the actual confirm + `PATCH /match-series/:id` call.
+ */
+function SeriesMenu({
+  isStopped,
+  onSelect,
+}: {
+  isStopped: boolean
+  onSelect: (action: SeriesAction) => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="ml-auto" aria-label="Series options">
+          <MoreHorizontal className="size-5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        {isStopped ? (
+          <DropdownMenuItem onSelect={() => onSelect('resume')}>
+            <Play className="size-4" /> Resume series
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={() => onSelect('stop')}>
+            <Square className="size-4" /> Stop series
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => onSelect('end')}>
+          End series
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+const ACTION_COPY: Record<SeriesAction, { title: string; description: string; confirmLabel: string; pendingLabel: string; destructive: boolean }> = {
+  stop: {
+    title: 'Stop this series?',
+    description: "No new matches will be created until you resume it. Matches already scheduled aren't affected, and you can resume at any time.",
+    confirmLabel: 'Stop series',
+    pendingLabel: 'Stopping…',
+    destructive: false,
+  },
+  resume: {
+    title: 'Resume this series?',
+    description: 'New matches will start being created again on the usual schedule.',
+    confirmLabel: 'Resume series',
+    pendingLabel: 'Resuming…',
+    destructive: false,
+  },
+  end: {
+    title: 'End this series?',
+    description:
+      "No more matches will be created, and any already-scheduled ones that haven't started yet will be cancelled. This can't be undone.",
+    confirmLabel: 'Yes, end it',
+    pendingLabel: 'Ending…',
+    destructive: true,
+  },
+}
+
+/** One shared confirm dialog for all three series actions — which action is
+ *  open (if any) is owned by the caller, so there's only ever one dialog in
+ *  the tree regardless of which menu item triggered it. */
+function SeriesActionDialog({
+  action,
+  pending,
+  isError,
+  onOpenChange,
+  onConfirm,
+}: {
+  action: SeriesAction | null
+  pending: boolean
+  isError: boolean
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  const copy = action ? ACTION_COPY[action] : null
+  return (
+    <Dialog open={!!action} onOpenChange={(open) => !pending && onOpenChange(open)}>
+      <DialogContent className="max-w-sm">
+        {copy && (
+          <>
+            <DialogHeader>
+              <DialogTitle>{copy.title}</DialogTitle>
+              <DialogDescription>{copy.description}</DialogDescription>
+            </DialogHeader>
+            {isError && <p className="text-sm text-destructive">Something went wrong. Please try again.</p>}
+            <DialogFooter>
+              <Button variant="outline" disabled={pending} onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button variant={copy.destructive ? 'destructive' : 'default'} disabled={pending} onClick={onConfirm}>
+                {pending ? copy.pendingLabel : copy.confirmLabel}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -139,4 +297,3 @@ function SeriesSportIcon({ type }: { type: string }) {
     </span>
   )
 }
-

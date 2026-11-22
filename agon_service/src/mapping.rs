@@ -805,6 +805,12 @@ pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
             .iter()
             .map(match_series_side_from_record)
             .collect(),
+        admin_user_ids: rec
+            .authority
+            .iter()
+            .filter(|(_, role)| **role == MatchPlayerRoleRecord::Admin)
+            .map(|(uid, _)| uid.clone())
+            .collect(),
         status: match_series_status_from_str(&rec.status),
         occurrences_generated: rec.occurrences_generated,
         created_at: parse_ts(&rec.created_at),
@@ -1873,7 +1879,6 @@ pub fn switch_to_ranked_reason(in_a_spot: &UnratablePlayers) -> Option<String> {
     }
     None
 }
-
 /// Build the feed's `FeedMatch` from a match summary (meta + sides, no
 /// players) and the viewer's already-resolved `known_participants` — the
 /// feed's equivalent of [`match_from_records`], but never touches the
@@ -2908,5 +2913,268 @@ mod tests {
         for placing in &placements {
             assert!(!published.contains(&placing.ladder), "{}", placing.ladder);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ranked matches: the ladder, and the lock on changing the flag
+    // -----------------------------------------------------------------------
+
+    /// A ranked squash match nobody has played yet, starting at `starts_at`.
+    fn scheduled_match(starts_at: &str) -> MatchRecord {
+        MatchRecord {
+            id: "m1".to_string(),
+            created_by_user_id: "u1".to_string(),
+            name: "Tuesday".to_string(),
+            description: String::new(),
+            match_type: "squash".to_string(),
+            status: "scheduled".to_string(),
+            starts_at: starts_at.to_string(),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: None,
+            series_id: None,
+            sides: HashMap::new(),
+            header_photos: Vec::new(),
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            ranked: true,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    /// The "now" the lock tests judge against: midday on the day the fixtures
+    /// are scheduled.
+    fn lock_now() -> chrono::DateTime<chrono::Utc> {
+        parse_ts("2026-06-01T12:00:00.000Z")
+    }
+
+    /// The flag is free to change right up to the start. Anything stricter
+    /// would stop an organiser correcting a mis-click on a match nobody has
+    /// played yet, which is the only time the choice is genuinely free.
+    #[test]
+    fn ranked_is_open_until_the_match_starts() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T18:00:00.000Z"), lock_now()),
+            None
+        );
+    }
+
+    /// The bug the lock exists to prevent: play the game, see the result, and
+    /// only *then* decide whether it counts. Once `starts_at` has passed the
+    /// outcome may be known, so the choice is closed even with no score typed
+    /// in.
+    #[test]
+    fn ranked_locks_once_the_match_has_started() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T09:00:00.000Z"), lock_now()),
+            Some("the match has already started")
+        );
+    }
+
+    /// Nothing stops a match being scored before its scheduled start, so the
+    /// clock alone isn't enough: a submitted score closes the choice by itself.
+    #[test]
+    fn ranked_locks_on_a_submitted_score_even_before_the_start_time() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.pending_score = Some(PendingScoreRecord {
+            submission_id: "s1".to_string(),
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+            confirmations: Vec::new(),
+        });
+        assert_eq!(
+            ranked_lock_reason(&m, lock_now()),
+            Some("a score has already been submitted")
+        );
+    }
+
+    /// What a check on `confirmed_score`/`pending_score` alone would miss: a
+    /// dispute *clears* `pending_score`, so a scored-then-disputed match has
+    /// neither field set. Without the status arm the lock would reopen on
+    /// exactly the match whose result everybody has already seen.
+    #[test]
+    fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        assert_eq!(
+            ranked_lock_reason(&m, lock_now()),
+            Some("the match is no longer scheduled")
+        );
+    }
+
+    /// **Regression.** The first version of this lock read the stored record
+    /// alone, which let a single PATCH walk through it and close it behind
+    /// itself: `{ score, ranked: false }` on a match still stored `scheduled`
+    /// with a future start recorded the result *and* de-ranked it. That is the
+    /// "log the game, see that you lost, then de-rank it" bug itself, and it
+    /// needs no trickery — playing before the scheduled slot is ordinary.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
+        let scheduled = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(
+            ranked_lock_reason(&scheduled, lock_now()),
+            None,
+            "the stored state alone still says the flag is open, which is the trap"
+        );
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled,
+                "scheduled",
+                "2026-06-01T18:00:00.000Z",
+                true,
+                lock_now()
+            ),
+            Some("this request submits a score")
+        );
+    }
+
+    /// The same hole reached without a `score`: starting, completing or
+    /// cancelling the match in the same call. Mirrors the stored status arm,
+    /// so a PATCH can't reach in one step a state it couldn't reach in two.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_moves_the_status_on() {
+        for status in ["in_progress", "completed", "cancelled"] {
+            assert_eq!(
+                ranked_lock_reason_for_update(
+                    &scheduled_match("2026-06-01T18:00:00.000Z"),
+                    status,
+                    "2026-06-01T18:00:00.000Z",
+                    false,
+                    lock_now()
+                ),
+                Some("this request takes the match out of scheduled"),
+                "{status}"
+            );
+        }
+    }
+
+    /// ...and the clock arm: backdating the match into the past is the same
+    /// claim as "it has already been played".
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_backdates_the_match() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-05-30T09:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            Some("this request moves the start time into the past")
+        );
+    }
+
+    /// The other direction, and why the stored record still counts: pushing
+    /// `starts_at` back into the future must not *re*open the flag on a match
+    /// that has already started. That request's resulting state is an innocent
+    /// scheduled match, so a resulting-state-only lock would let it through.
+    #[test]
+    fn ranked_cannot_be_reopened_by_rescheduling_a_started_match_into_the_future() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T09:00:00.000Z"),
+                "scheduled",
+                "2026-06-08T18:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            Some("the match has already started")
+        );
+    }
+
+    /// An ordinary edit to a match nobody has played yet leaves the flag open:
+    /// the lock must stay off until something genuinely closes it, or an
+    /// organiser could never correct a mis-click.
+    #[test]
+    fn ranked_is_still_open_on_an_unplayed_match_being_edited() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-06-02T18:00:00.000Z",
+                false,
+                lock_now()
+            ),
+            None
+        );
+    }
+
+    /// `rating_ladder` says where *this* result goes, not what the sport could
+    /// do: nothing for a friendly, even in a sport with a ladder. A ranked
+    /// match in a ladderless sport (which the API refuses to create) gets
+    /// nothing either, because nothing would rate it.
+    #[test]
+    fn a_rating_ladder_is_only_given_for_a_ranked_match() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rating_ladder(&m).as_deref(), Some("squash"));
+        m.ranked = false;
+        assert_eq!(rating_ladder(&m), None);
+        m.ranked = true;
+        m.match_type = "other".to_string();
+        assert_eq!(rating_ladder(&m), None);
+    }
+
+    /// `other` can't be ranked and every modelled sport can, checked on the
+    /// tags `MatchType` really stores. The API's check takes a stored tag
+    /// while the engine maps its own `Sport` mirror, so this is what catches
+    /// the two drifting apart — a tag the engine didn't recognise would read
+    /// as `other` and quietly become unrankable.
+    #[test]
+    fn only_a_sport_without_a_ladder_is_unrankable() {
+        for sport in [
+            MatchType::Tennis,
+            MatchType::Badminton,
+            MatchType::Squash,
+            MatchType::TableTennis,
+            MatchType::Football,
+            MatchType::Cricket,
+            MatchType::Netball,
+        ] {
+            let tag = match_type_tag(&sport);
+            assert_eq!(unrankable_sport_reason(tag), None, "{tag}");
+        }
+        assert!(
+            unrankable_sport_reason(match_type_tag(&MatchType::Other))
+                .is_some_and(|reason| reason.contains("no rating ladder"))
+        );
+    }
+
+    /// An invitation's match context reports whether the match is ranked
+    /// *now*, read from the match rather than the invitation: the organiser can
+    /// switch a match to ranked after inviting people, and the warning on the
+    /// accept screen has to follow. A match that can't be found reads as a
+    /// friendly instead of failing the page.
+    #[test]
+    fn an_invitation_context_reports_the_matchs_current_ranked_flag() {
+        let context = InvitationContextRecord::Match {
+            match_id: "m1".to_string(),
+            match_name: "Tuesday".to_string(),
+        };
+        let resolve = |matches: &HashMap<String, MatchRecord>| {
+            let InvitationContext::Match(ctx) = invitation_context_from_record(&context, matches)
+            else {
+                panic!("expected a match context");
+            };
+            (ctx.ranked, ctx.rating_ladder)
+        };
+
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(
+            resolve(&HashMap::from([("m1".to_string(), m.clone())])),
+            (true, Some("squash".to_string()))
+        );
+        m.ranked = false;
+        assert_eq!(
+            resolve(&HashMap::from([("m1".to_string(), m)])),
+            (false, None)
+        );
+        assert_eq!(resolve(&HashMap::new()), (false, None));
     }
 }

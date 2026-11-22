@@ -50,7 +50,7 @@ use mapping::{
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_score_from_record, match_score_to_record, match_series_from_record,
-    match_series_occurrence_from_record, match_status_str, match_type_tag,
+    match_series_occurrence_from_record, match_series_status_str, match_status_str, match_type_tag,
     matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
     notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
     ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_history_point_from_record,
@@ -1248,6 +1248,12 @@ struct MatchSeries {
     weekday: u8,
     ends: CreateMatchSeriesEndInput,
     sides: Vec<MatchSeriesSide>,
+    /// User ids holding `Admin` authority over the series (see
+    /// `SetSeriesUserRoleInput`) — alongside `created_by_user_id`, who is
+    /// always the owner and never listed here. Each is copied onto every
+    /// occurrence generated from this point on, as that match's own
+    /// `Admin`.
+    admin_user_ids: Vec<String>,
     status: MatchSeriesStatus,
     /// How many occurrences have been created so far (including the first,
     /// created synchronously). For a bounded series (`ends: OnDate`/
@@ -2137,6 +2143,59 @@ enum ListMatchSeriesOccurrencesResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// `PATCH /match-series/:id`'s input: moves a series between `Active`,
+/// `Paused`, and `Ended`. `Generating` can't be set here — it's an internal
+/// transient state `materialize_series` owns.
+#[derive(Object)]
+struct UpdateMatchSeriesInput {
+    status: MatchSeriesStatus,
+}
+
+#[derive(ApiResponse)]
+enum UpdateMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<MatchSeries>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// Only the series' owner or an admin may pause/resume/end it.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// `POST /match-series/:series_id/users/:user_id/role`'s input: grants or
+/// revokes a series admin. Only `Admin`/`Player` are accepted — mirrors
+/// `SetMatchPlayerRoleInput`.
+#[derive(Object)]
+struct SetSeriesUserRoleInput {
+    role: MatchPlayerRole,
+}
+
+#[derive(ApiResponse)]
+enum SetSeriesUserRoleResponse {
+    /// The role was changed; `GET /match-series/:id`'s `admin_user_ids`
+    /// already reflects it on the next read.
+    #[oai(status = 204)]
+    Ok,
+
+    /// Tried to set the `Owner`/`SideAdmin` role — a series has neither:
+    /// `created_by_user_id` is the permanent owner, and there's nothing for
+    /// `SideAdmin` to apply to.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the series' owner or an admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -5807,6 +5866,9 @@ impl Api {
                     max_players: s.max_players,
                 })
                 .collect(),
+            // No admins at creation — granted afterwards via `POST
+            // /match-series/:series_id/users/:user_id/role`.
+            authority: std::collections::HashMap::new(),
             // The first occurrence is created synchronously right below, so
             // it already counts as generated.
             status: "generating".to_string(),
@@ -6009,6 +6071,176 @@ impl Api {
                 next_cursor: page.next_cursor,
             },
         )))
+    }
+
+    /// Pause, resume, or end a recurring series early. Creator-only (same
+    /// authority as the series itself — there's no separate series
+    /// organizer/admin concept yet).
+    ///
+    /// `Paused` stops the series from generating any further occurrences —
+    /// `materialize_series` checks a series' status every cycle and skips
+    /// generation while it reads `"paused"`, for both bounded and indefinite
+    /// series. `Active` resumes a paused series.
+    ///
+    /// `Ended` stops the series permanently (no resuming from it) and
+    /// cancels every already-generated occurrence that hasn't started yet —
+    /// the occurrences' own matches are otherwise untouched, including ones
+    /// already in progress or completed.
+    #[oai(path = "/match-series/:series_id", method = "patch")]
+    async fn update_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+        input: Json<UpdateMatchSeriesInput>,
+    ) -> Result<UpdateMatchSeriesResponse> {
+        info!("Updating match series {series_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let series = match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(s) => s,
+            None => {
+                return Ok(UpdateMatchSeriesResponse::NotFound(PlainText(
+                    "series not found".into(),
+                )));
+            }
+        };
+        if !caller_is_series_admin(&series, &uid) {
+            return Ok(UpdateMatchSeriesResponse::Forbidden(PlainText(
+                "only the series' owner or an admin can pause, resume, or end it".into(),
+            )));
+        }
+
+        let current = series.status.as_str();
+        let target = match_series_status_str(&input.0.status);
+        if !agon_services_core::series::series_status_transition_allowed(current, target) {
+            return Ok(UpdateMatchSeriesResponse::ValidationError(PlainText(
+                format!("a series cannot move from `{current}` to `{target}`"),
+            )));
+        }
+
+        dao.update_series_status(&series_id, current, target)
+            .await
+            .map_err(dao_internal)?;
+
+        // Ending a series cancels its already-generated future occurrences —
+        // matches that haven't started yet, and are still `scheduled`
+        // (never touches one that's in progress, completed, or already
+        // cancelled).
+        if target == "ended" {
+            let now = chrono::Utc::now();
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = dao
+                    .list_series_occurrences(&series_id, cursor.as_deref(), MAX_PAGE_LIMIT)
+                    .await
+                    .map_err(dao_internal)?;
+
+                for occurrence in page.items {
+                    let starts_in_future =
+                        chrono::DateTime::parse_from_rfc3339(&occurrence.starts_at)
+                            .is_ok_and(|starts_at| starts_at.with_timezone(&chrono::Utc) > now);
+                    if !starts_in_future {
+                        continue;
+                    }
+                    let Some(agg) = dao
+                        .get_match(&occurrence.match_id)
+                        .await
+                        .map_err(dao_internal)?
+                    else {
+                        continue;
+                    };
+                    if agg.match_.status != "scheduled" {
+                        continue;
+                    }
+                    dao.update_match_meta(
+                        &occurrence.match_id,
+                        None,
+                        None,
+                        Some("cancelled"),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        &[],
+                        &[],
+                    )
+                    .await
+                    .map_err(dao_internal)?;
+                }
+
+                match page.next_cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+        }
+
+        let updated = dao
+            .get_series(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .ok_or_else(|| Error::from_string("series not found", StatusCode::NOT_FOUND))?;
+        Ok(UpdateMatchSeriesResponse::Series(Json(
+            match_series_from_record(&updated),
+        )))
+    }
+
+    /// Promote a user to series admin, or demote one back to an ordinary
+    /// (non-admin) user.
+    ///
+    /// Series-admin only (see `caller_is_series_admin`). `user_id` need not
+    /// be a player on any occurrence — a series admin doesn't have to play
+    /// in the series, same as the series' own creator. Can't be used to set
+    /// the `Owner` or `SideAdmin` roles: a series has exactly one permanent
+    /// owner (`created_by_user_id`, no transfer) and no sides of its own.
+    #[oai(path = "/match-series/:series_id/users/:user_id/role", method = "post")]
+    async fn set_series_user_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+        Path(user_id): Path<String>,
+        input: Json<SetSeriesUserRoleInput>,
+    ) -> Result<SetSeriesUserRoleResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let role = input.0.role;
+
+        let series = match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(s) => s,
+            None => {
+                return Ok(SetSeriesUserRoleResponse::NotFound(PlainText(
+                    "series not found".into(),
+                )));
+            }
+        };
+        if !caller_is_series_admin(&series, &uid) {
+            return Ok(SetSeriesUserRoleResponse::Forbidden(PlainText(
+                "only the series' owner or an admin can change a user's role".into(),
+            )));
+        }
+        if role != MatchPlayerRole::Admin && role != MatchPlayerRole::Player {
+            return Ok(SetSeriesUserRoleResponse::ValidationError(PlainText(
+                "a series only supports the admin and player roles".into(),
+            )));
+        }
+        if series.created_by_user_id == user_id {
+            return Ok(SetSeriesUserRoleResponse::ValidationError(PlainText(
+                "the series' creator is always its owner".into(),
+            )));
+        }
+
+        let new_role = match role {
+            MatchPlayerRole::Admin => Some(dao::records::MatchPlayerRole::Admin),
+            _ => None,
+        };
+        dao.set_series_user_role(&series_id, &user_id, new_role)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSeriesUserRoleResponse::Ok)
     }
 
     /// Create a tournament. Entries are added afterwards (`POST
@@ -11953,6 +12185,28 @@ fn caller_tournament_authority_role(
 fn caller_is_tournament_admin(tournament: &dao::records::TournamentRecord, uid: &str) -> bool {
     matches!(
         caller_tournament_authority_role(tournament, uid),
+        Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
+    )
+}
+
+/// The caller's authority on a series — same lookup-with-creator-fallback
+/// shape as `caller_tournament_authority_role`, over `SeriesRecord::authority`.
+fn caller_series_authority_role(
+    series: &dao::records::SeriesRecord,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    series.authority.get(uid).copied().or_else(|| {
+        (series.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+    })
+}
+
+/// Whether the caller may manage the series (pause/resume/end it, grant or
+/// revoke another admin): `Owner`/`Admin` authority, same narrower rule as
+/// `caller_is_tournament_admin` — a series has no sides of its own to
+/// delegate through either.
+fn caller_is_series_admin(series: &dao::records::SeriesRecord, uid: &str) -> bool {
+    matches!(
+        caller_series_authority_role(series, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     )
 }

@@ -109,6 +109,13 @@ pub struct TeamRecord {
     /// here on a cricket team would read as "never kept one" when the
     /// honest answer is that the idea doesn't apply.
     pub clean_sheets: Option<u64>,
+    /// The sport's own breakdown, e.g. `{"runs": 940, "wickets": 38}` for a
+    /// cricket team or `{"goals": 61, "assists": 40}` for football — the
+    /// same per-match counters `agon_core`'s sport contribution types
+    /// already compute, summed across these matches. Zero totals are left
+    /// out, and it's empty for a sport with no stats record yet (tennis,
+    /// badminton, squash, table tennis).
+    pub stats: std::collections::BTreeMap<String, u64>,
 }
 
 impl TeamRecord {
@@ -123,6 +130,7 @@ impl TeamRecord {
             points_for: r.points_for,
             points_against: r.points_against,
             clean_sheets: is_football.then_some(r.clean_sheets),
+            stats: r.stats,
         }
     }
 }
@@ -134,6 +142,8 @@ pub struct TeamSquadRecord {
     /// Points scored in them, by both sides — the same per-sport meaning
     /// `TeamRecord::points_for` has.
     pub points: u64,
+    /// See `TeamRecord::stats` — same breakdown, both sides' totals.
+    pub stats: std::collections::BTreeMap<String, u64>,
 }
 
 /// Which overview the team gets.
@@ -498,6 +508,7 @@ impl TeamStatsApi {
             squad: TeamSquadRecord {
                 games: records.squad.games,
                 points: records.squad.points,
+                stats: records.squad.stats,
             },
             form,
             streak,
@@ -643,15 +654,20 @@ mod tests {
             points_for: 240,
             points_against: 198,
             clean_sheets: 0,
+            stats: std::collections::BTreeMap::from([("wickets".to_string(), 7)]),
         };
 
-        let football = TeamRecord::new(counts, true);
+        let football = TeamRecord::new(counts.clone(), true);
         assert_eq!(football.clean_sheets, Some(0));
 
         let cricket = TeamRecord::new(counts, false);
         assert_eq!(cricket.clean_sheets, None);
         // The score itself is per-sport and always present: these are runs.
         assert_eq!(cricket.points_for, 240);
+        assert_eq!(
+            cricket.stats,
+            std::collections::BTreeMap::from([("wickets".to_string(), 7)])
+        );
     }
 
     #[test]

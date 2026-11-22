@@ -1,12 +1,16 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { sportIcon } from '@/lib/sports'
 import { scheduledDateTime } from '@/lib/datetime'
 import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+
+type MatchSeries = components['schemas']['MatchSeries']
 
 /** A series' cadence hasn't finished generating occurrences while its
  *  `status` is `generating` — poll until it flips to `active`. */
@@ -53,6 +57,8 @@ export function MatchSeriesPage() {
   })
 
   const series = seriesQuery.data
+  const currentUserId = useCurrentUserId()
+  const isCreator = !!series && !!currentUserId && series.created_by_user_id === currentUserId
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl">
@@ -94,6 +100,7 @@ export function MatchSeriesPage() {
                 {series.status === 'generating' ? seriesGeneratingLabel(series) : seriesStatusLabel(series.status)}
               </span>
             </div>
+            {isCreator && series.status !== 'ended' && <SeriesActions series={series} />}
           </div>
 
           <section className="flex flex-col gap-2.5">
@@ -127,6 +134,94 @@ export function MatchSeriesPage() {
           </section>
         </>
       )}
+    </div>
+  )
+}
+
+/**
+ * The series creator's pause/resume/end controls — `PATCH
+ * /match-series/:id`. Pausing stops new occurrences from being generated
+ * (existing ones are untouched) and can be resumed; ending is permanent and
+ * cancels the series' not-yet-started scheduled occurrences, so it goes
+ * through the same two-step confirm as `MatchDetailPage`'s `CancelMatch`.
+ */
+function SeriesActions({ series }: { series: MatchSeries }) {
+  const queryClient = useQueryClient()
+  const [confirmingEnd, setConfirmingEnd] = useState(false)
+
+  const updateStatus = useMutation({
+    mutationFn: async (status: components['schemas']['MatchSeriesStatus']) => {
+      const { error } = await fetchClient.PATCH('/match-series/{series_id}', {
+        params: { path: { series_id: series.id } },
+        body: { status },
+      })
+      if (error) throw new Error('Failed to update this series')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match-series', series.id] })
+      queryClient.invalidateQueries({ queryKey: ['match-series', series.id, 'occurrences'] })
+      setConfirmingEnd(false)
+    },
+  })
+
+  const canPauseOrResume = series.status === 'active' || series.status === 'generating' || series.status === 'paused'
+
+  if (confirmingEnd) {
+    return (
+      <div className="mt-1 rounded-xl border border-destructive/30 bg-destructive/5 p-3">
+        <p className="text-sm font-medium">End this series?</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          No more matches will be created, and any already-scheduled ones that haven't started yet will be
+          cancelled. This can't be undone.
+        </p>
+        {updateStatus.isError && (
+          <p className="mt-1 text-xs text-destructive">Something went wrong. Please try again.</p>
+        )}
+        <div className="mt-2.5 flex gap-2">
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={updateStatus.isPending}
+            onClick={() => updateStatus.mutate('ended')}
+          >
+            {updateStatus.isPending ? 'Ending…' : 'Yes, end it'}
+          </Button>
+          <Button variant="outline" size="sm" disabled={updateStatus.isPending} onClick={() => setConfirmingEnd(false)}>
+            Keep series
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-1 flex gap-2">
+      {canPauseOrResume && (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={updateStatus.isPending}
+          onClick={() => updateStatus.mutate(series.status === 'paused' ? 'active' : 'paused')}
+        >
+          {series.status === 'paused' ? (
+            <>
+              <Play className="size-3.5" /> Resume
+            </>
+          ) : (
+            <>
+              <Pause className="size-3.5" /> Pause
+            </>
+          )}
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="text-destructive hover:text-destructive"
+        onClick={() => setConfirmingEnd(true)}
+      >
+        End series
+      </Button>
     </div>
   )
 }

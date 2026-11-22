@@ -91,7 +91,6 @@ fn matches_body() -> Value {
                         "outcome": { "type": "keyword" },
                         "score": { "type": "integer" },
                         "conceded": { "type": "integer" },
-                        "clean_sheet": { "type": "boolean" },
                         "player_ids": { "type": "keyword" },
                         "player_count": { "type": "integer" },
                         "stats": { "type": "object", "dynamic": true }

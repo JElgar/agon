@@ -150,16 +150,15 @@ pub struct SideDoc {
     pub score: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conceded: Option<u64>,
-    /// Football only: conceded nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clean_sheet: Option<bool>,
     /// Account holders who took a spot on this side.
     pub player_ids: Vec<String>,
     pub player_count: u32,
     /// This side's sport counters, e.g. `{"goals": 2, "assists": 1}` for
     /// football or `{"runs": 140, "wickets": 4, "catches": 2}` for cricket —
     /// the sum of every account holder's [`PlayerStatDoc::stats`] on this
-    /// side. Empty (and omitted) until the score is confirmed.
+    /// side, plus `clean_sheets` (`1`, football only, when this side
+    /// conceded nothing — not attributable to any one player, so it isn't in
+    /// any `PlayerStatDoc`). Empty (and omitted) until the score is confirmed.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub stats: BTreeMap<String, u64>,
 }
@@ -396,6 +395,12 @@ pub fn build_match_docs(
                 .flatten()
                 .map(|u| u.to_string())
                 .collect();
+            let mut stats = side_stats.remove(s.side_id.as_str()).unwrap_or_default();
+            // Not a player's contribution (nobody "did" a clean sheet), so
+            // it's folded in here rather than summed from `players` above.
+            if is_football && conceded == Some(0) {
+                stats.insert("clean_sheets".to_string(), 1);
+            }
             SideDoc {
                 side_id: s.side_id.clone(),
                 team_id: s.team_id.clone(),
@@ -403,14 +408,9 @@ pub fn build_match_docs(
                 outcome: outcome_for(&s.side_id).map(Outcome::as_str),
                 score: confirmed.map(|_| score.unwrap_or(0)),
                 conceded,
-                clean_sheet: if is_football {
-                    conceded.map(|c| c == 0)
-                } else {
-                    None
-                },
                 player_count: side_players.len() as u32,
                 player_ids: side_players,
-                stats: side_stats.remove(s.side_id.as_str()).unwrap_or_default(),
+                stats,
             }
         })
         .collect();
@@ -666,7 +666,7 @@ mod tests {
             (a_side.outcome, a_side.score, a_side.conceded),
             (Some("won"), Some(3), Some(1))
         );
-        assert_eq!(a_side.clean_sheet, Some(false));
+        assert!(!a_side.stats.contains_key("clean_sheets"));
         assert_eq!(docs.match_doc.kind, MatchKind::Friendly);
         assert_eq!(docs.players.len(), 2);
         let u1 = docs.players.iter().find(|p| p.user_id == "u1").unwrap();
@@ -750,10 +750,15 @@ mod tests {
             .find(|s| s.side_id == "a")
             .unwrap();
         // u1 scored once (1 goal, 0 assists), u2 scored once and assisted
-        // once (1 goal, 1 assist): the side's total is both players' summed.
+        // once (1 goal, 1 assist): the side's total is both players'
+        // summed, plus a clean sheet (conceded nothing) folded in alongside.
         assert_eq!(
             a_side.stats,
-            BTreeMap::from([("goals".to_string(), 2), ("assists".to_string(), 1)])
+            BTreeMap::from([
+                ("goals".to_string(), 2),
+                ("assists".to_string(), 1),
+                ("clean_sheets".to_string(), 1),
+            ])
         );
         let b_side = docs
             .match_doc

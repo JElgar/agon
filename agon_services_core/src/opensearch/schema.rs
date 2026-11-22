@@ -71,6 +71,11 @@ fn matches_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
+            // A side's sport counters (goals, assists, runs, wickets, ...)
+            // vary by sport, same reasoning as `match_stats.stats` below.
+            "dynamic_templates": [
+                { "side_stat_counters": { "path_match": "sides.stats.*", "mapping": { "type": "long" } } }
+            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
@@ -97,9 +102,9 @@ fn matches_body() -> Value {
                         "outcome": { "type": "keyword" },
                         "score": { "type": "integer" },
                         "conceded": { "type": "integer" },
-                        "clean_sheet": { "type": "boolean" },
                         "player_ids": { "type": "keyword" },
-                        "player_count": { "type": "integer" }
+                        "player_count": { "type": "integer" },
+                        "stats": { "type": "object", "dynamic": true }
                     }
                 },
                 "indexed_at": { "type": "date" }

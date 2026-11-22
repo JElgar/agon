@@ -7,7 +7,7 @@ import {
   Link,
   useLocation,
 } from 'react-router-dom'
-import { Bell, Search } from 'lucide-react'
+import { Bell, Search, Shield } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
@@ -105,6 +105,7 @@ function hasPinnedActionBar(pathname: string): boolean {
 
 function AppShell({ onSignOut }: { onSignOut: () => void }) {
   const { data: unread } = useUnreadNotificationsCount()
+  const isAdmin = useIsAdmin()
   const location = useLocation()
   const showMobileBottomNav = !hasPinnedActionBar(location.pathname)
 
@@ -113,11 +114,20 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
       <DesktopNav unread={unread} onSignOut={onSignOut} />
       <div className="min-h-screen xl:pl-[248px]">
         {/* Mobile top bar: brand + quick links to the two nav destinations
-              that don't fit the bottom tab bar. Replaced by `TabletHeader`
-              at `md`, and by the sidebar's own nav at `xl`. */}
+              that don't fit the bottom tab bar, plus (for an admin account)
+              the only way into the admin panel below the desktop sidebar's
+              own breakpoint. Replaced by `TabletHeader` at `md`, and by the
+              sidebar's own nav at `xl`. */}
           <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden">
             <Logo />
             <div className="flex items-center gap-2">
+              {isAdmin && (
+                <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
+                  <Link to="/admin" aria-label="Admin">
+                    <Shield className="size-5" />
+                  </Link>
+                </Button>
+              )}
               <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
                 <Link to="/search" aria-label="Find people">
                   <Search className="size-5" />
@@ -183,18 +193,6 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
             path="/users/:userId/following"
             element={<FollowListPage mode="following" />}
           />
-          <Route
-            path="/admin"
-            element={
-              <AdminRoute>
-                <AdminLayout />
-              </AdminRoute>
-            }
-          >
-            <Route index element={<Navigate to="/admin/users" replace />} />
-            <Route path="users" element={<AdminUsersPage />} />
-            <Route path="matches" element={<AdminMatchesPage />} />
-          </Route>
           <Route path="*" element={<HomeRedirect />} />
           </Routes>
           </main>
@@ -275,6 +273,7 @@ function AuthenticatedApp() {
   // preview the invite/join on the logged-out screen.
   const pendingLink = usePendingLinkCapture()
   const isOnline = useOnlineStatus()
+  const location = useLocation()
 
   // Resolve the caller's Agon profile. A 404 means the Supabase account exists
   // but hasn't completed signup (no `/users` record yet) → show profile creation.
@@ -364,6 +363,24 @@ function AuthenticatedApp() {
           </div>
         </div>
       </CenteredMessage>
+    )
+  }
+
+  // The admin panel is its own full-screen layout — rendered here, outside
+  // `AppShell`'s chrome entirely, rather than nested inside `AppShell`'s own
+  // `<Routes>` (which would leave the main app's sidebar/top bar/bottom nav
+  // wrapped around it). `AdminRoute` still gates it on `useIsAdmin`.
+  if (location.pathname.startsWith('/admin')) {
+    return (
+      <AdminRoute>
+        <Routes>
+          <Route path="/admin" element={<AdminLayout />}>
+            <Route index element={<Navigate to="/admin/users" replace />} />
+            <Route path="users" element={<AdminUsersPage />} />
+            <Route path="matches" element={<AdminMatchesPage />} />
+          </Route>
+        </Routes>
+      </AdminRoute>
     )
   }
 

@@ -555,6 +555,14 @@ impl MaterializeSeries {
                     description: series.description.clone(),
                     location: series.location.clone(),
                     sides: series.sides.clone(),
+                    admin_user_ids: series
+                        .authority
+                        .iter()
+                        .filter(|(_, role)| {
+                            **role == agon_services_core::dao::records::MatchPlayerRole::Admin
+                        })
+                        .map(|(uid, _)| uid.clone())
+                        .collect(),
                 },
                 activity_opts(),
             )

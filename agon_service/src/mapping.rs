@@ -805,6 +805,12 @@ pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
             .iter()
             .map(match_series_side_from_record)
             .collect(),
+        admin_user_ids: rec
+            .authority
+            .iter()
+            .filter(|(_, role)| **role == MatchPlayerRoleRecord::Admin)
+            .map(|(uid, _)| uid.clone())
+            .collect(),
         status: match_series_status_from_str(&rec.status),
         occurrences_generated: rec.occurrences_generated,
         created_at: parse_ts(&rec.created_at),

@@ -9,9 +9,15 @@
 //!
 //! **What counts.** Only confirmed matches count towards records and
 //! leaderboards, matching lifetime stats. Squad games (both sides are this
-//! team) have no W/D/L for the team, only games and goals. They're kept out
+//! team) have no W/D/L for the team, only games and points. They're kept out
 //! of the external record (`ext` = league + cup + friendly), form and last 10,
 //! but they do count on the leaderboard (`all`), per the in-house rule.
+//!
+//! **Points, not goals.** A side's stored `score` is whatever that sport
+//! counts — goals in football and netball, runs in cricket, points or sets
+//! elsewhere (`super::docs::side_points`). The fields here are named for
+//! that, so a cricket team's record doesn't report its runs under a football
+//! word.
 
 use std::collections::BTreeMap;
 
@@ -34,8 +40,8 @@ pub struct RecordCounts {
     pub won: u64,
     pub drawn: u64,
     pub lost: u64,
-    pub goals_for: u64,
-    pub goals_against: u64,
+    pub points_for: u64,
+    pub points_against: u64,
     pub clean_sheets: u64,
 }
 
@@ -45,18 +51,18 @@ impl RecordCounts {
         self.won += o.won;
         self.drawn += o.drawn;
         self.lost += o.lost;
-        self.goals_for += o.goals_for;
-        self.goals_against += o.goals_against;
+        self.points_for += o.points_for;
+        self.points_against += o.points_against;
         self.clean_sheets += o.clean_sheets;
     }
 }
 
 /// Squad games: the team plays itself, so there's no W/D/L, only how many
-/// games and how many goals were scored in them (both sides).
+/// games and how many points were scored in them (both sides).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SquadCounts {
     pub games: u64,
-    pub goals: u64,
+    pub points: u64,
 }
 
 /// A team's record in one sport, per kind, optionally for one year.
@@ -143,15 +149,15 @@ pub fn parse_team_records(resp: &Value) -> TeamRecords {
                 out.squad = SquadCounts {
                     games: count(&kind["doc_count"]),
                     // Both sides are this team, so this sums both scores.
-                    goals: sum(&ours["gf"]),
+                    points: sum(&ours["gf"]),
                 };
             }
             Some(k @ ("league" | "cup" | "friendly")) => {
                 let mut rec = RecordCounts {
                     // One side per external match is ours.
                     played: count(&ours["doc_count"]),
-                    goals_for: sum(&ours["gf"]),
-                    goals_against: sum(&ours["ga"]),
+                    points_for: sum(&ours["gf"]),
+                    points_against: sum(&ours["ga"]),
                     clean_sheets: count(&ours["clean_sheets"]["doc_count"]),
                     ..Default::default()
                 };
@@ -193,6 +199,43 @@ pub async fn team_records(
         )
         .await?;
     Ok(parse_team_records(&resp))
+}
+
+// ── Sports ──────────────────────────────────────────────────────────────────
+
+/// The `matches` query behind [`team_sports`]: every sport this team has a
+/// match in, busiest first.
+///
+/// Deliberately **not** filtered on `confirmed`. A team that has only ever
+/// had matches scheduled still plays that sport, and a sport picker that
+/// waited for the first agreed score would leave a new team with nothing to
+/// pick. The records behind each sport are still confirmed-only; this only
+/// decides what is on the menu.
+pub fn team_sports_query(team_id: &str) -> Value {
+    json!({
+        "size": 0,
+        "track_total_hits": false,
+        "query": { "bool": { "filter": [{ "term": { "team_ids": team_id } }] } },
+        "aggs": { "sports": { "terms": { "field": "sport", "size": 50 } } }
+    })
+}
+
+/// Read a [`team_sports_query`] response: sport tags, most-played first.
+pub fn parse_team_sports(resp: &Value) -> Vec<String> {
+    buckets(&resp["aggregations"]["sports"])
+        .iter()
+        .filter_map(|b| b["key"].as_str())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Every sport this team has played or has a match scheduled in, most
+/// matches first. Empty for a team that has never been on a match side.
+pub async fn team_sports(os: &OpenSearchClient, team_id: &str) -> OpenSearchResult<Vec<String>> {
+    let resp = os
+        .search(&MATCHES.alias(os.prefix()), team_sports_query(team_id))
+        .await?;
+    Ok(parse_team_sports(&resp))
 }
 
 // ── Recent results and next match ───────────────────────────────────────────
@@ -249,8 +292,8 @@ pub struct TeamResult {
     pub tournament_id: Option<String>,
     /// `won`, `drawn` or `lost`.
     pub outcome: String,
-    pub goals_for: u64,
-    pub goals_against: u64,
+    pub points_for: u64,
+    pub points_against: u64,
     pub opponent: Option<Opponent>,
 }
 
@@ -346,8 +389,8 @@ pub fn parse_recent_results(resp: &Value, team_id: &str) -> Vec<TeamResult> {
                 starts_at: m.starts_at.clone(),
                 tournament_id: m.tournament_id.clone(),
                 outcome: ours.outcome.clone()?,
-                goals_for: ours.score.unwrap_or(0),
-                goals_against: ours.conceded.unwrap_or(0),
+                points_for: ours.score.unwrap_or(0),
+                points_against: ours.conceded.unwrap_or(0),
                 opponent,
             })
         })
@@ -615,20 +658,20 @@ mod tests {
                 won: 3,
                 drawn: 1,
                 lost: 1,
-                goals_for: 9,
-                goals_against: 4,
+                points_for: 9,
+                points_against: 4,
                 clean_sheets: 2
             }
         );
         assert_eq!(r.cup, RecordCounts::default());
         assert_eq!(r.ext.played, 8);
         assert_eq!(r.ext.won, 4);
-        assert_eq!(r.ext.goals_against, 10);
+        assert_eq!(r.ext.points_against, 10);
         assert_eq!(
             r.squad,
             SquadCounts {
                 games: 4,
-                goals: 21
+                points: 21
             }
         );
     }
@@ -647,6 +690,39 @@ mod tests {
         );
         let q = team_records_query("t1", "football", None, "2026-11-15T00:00:00Z");
         assert_eq!(q["aggs"]["scoped"]["filter"], json!({ "match_all": {} }));
+    }
+
+    /// The sport list is ordered by how much the team plays each one, and
+    /// is not confirmed-only: a team whose only football match is next
+    /// Tuesday still plays football, and a sport switcher that waited for a
+    /// first agreed score would be empty for a brand-new team.
+    #[test]
+    fn the_sports_query_is_busiest_first_and_counts_unplayed_matches() {
+        let q = team_sports_query("t1");
+        assert_eq!(
+            q["query"]["bool"]["filter"],
+            json!([{ "term": { "team_ids": "t1" } }])
+        );
+        assert!(
+            !q.to_string().contains("confirmed"),
+            "a scheduled match still says which sport the team plays"
+        );
+        // A terms agg is already ordered by doc count, descending.
+        assert_eq!(q["aggs"]["sports"]["terms"]["field"], "sport");
+
+        let resp = json!({ "aggregations": { "sports": { "buckets": [
+            { "key": "football", "doc_count": 12 },
+            { "key": "cricket", "doc_count": 3 }
+        ] } } });
+        assert_eq!(parse_team_sports(&resp), vec!["football", "cricket"]);
+    }
+
+    /// A team nobody has ever put in a match has no sports, and that is an
+    /// answer rather than an error — the caller renders a new team.
+    #[test]
+    fn a_team_with_no_matches_has_no_sports() {
+        let resp = json!({ "aggregations": { "sports": { "buckets": [] } } });
+        assert!(parse_team_sports(&resp).is_empty());
     }
 
     fn match_hit(id: &str, kind: &str, sides: Value) -> Value {
@@ -675,7 +751,7 @@ mod tests {
         let rs = parse_recent_results(&resp, "hw");
         assert_eq!(rs.len(), 3);
         assert_eq!(rs[0].outcome, "lost");
-        assert_eq!((rs[0].goals_for, rs[0].goals_against), (1, 2));
+        assert_eq!((rs[0].points_for, rs[0].points_against), (1, 2));
         assert_eq!(
             rs[0].opponent.as_ref().unwrap().name.as_deref(),
             Some("Leyton")

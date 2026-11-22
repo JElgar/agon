@@ -102,6 +102,17 @@ pub struct GenerateSeriesOccurrence {
     pub admin_user_ids: Vec<String>,
 }
 
+/// Inputs for [`AgonActivities::skip_series_occurrence`] — just enough to
+/// advance the counter, since (unlike [`GenerateSeriesOccurrence`]) nothing
+/// about the occurrence itself is ever persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkipSeriesOccurrence {
+    pub series_id: String,
+    /// Same role as `GenerateSeriesOccurrence::index`: the exact
+    /// `occurrences_generated` value this skip is conditioned on.
+    pub index: u32,
+}
+
 #[activities]
 impl AgonActivities {
     /// Fetch a series by id. `None` if it's gone (the workflow no-ops).
@@ -257,6 +268,26 @@ impl AgonActivities {
             Err(e) => return Err(activity_err(e)),
         }
 
+        self.dao
+            .bump_series_occurrences_generated(&input.series_id, input.index)
+            .await
+            .map_err(activity_err)
+    }
+
+    /// Advance a series' `occurrences_generated` past an occurrence
+    /// `materialize_series` has decided *not* to create a match for —
+    /// because its calendar slot already fell in the past while the series
+    /// was paused. Unlike `generate_series_occurrence`, this never claims an
+    /// occurrence or creates a match: the whole point is that this slot
+    /// stays empty (a gap), not backfilled once the series resumes. Reuses
+    /// the same idempotent bump `generate_series_occurrence` ends with, so a
+    /// replay/retry is a no-op the same way.
+    #[activity]
+    pub async fn skip_series_occurrence(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        input: SkipSeriesOccurrence,
+    ) -> Result<(), ActivityError> {
         self.dao
             .bump_series_occurrences_generated(&input.series_id, input.index)
             .await

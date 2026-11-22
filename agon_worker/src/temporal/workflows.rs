@@ -22,7 +22,8 @@ use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::{ActivityOptions, ContinueAsNewOptions, WorkflowContext, WorkflowResult};
 
 use super::activities::{
-    AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk,
+    AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, SkipSeriesOccurrence,
+    WriteFeedChunk,
 };
 
 /// How long before a match's `starts_at` its reminder notification fires —
@@ -297,6 +298,13 @@ fn to_std_duration(d: chrono::Duration) -> Duration {
 /// its date math pure and separate from the activity calls that use it.
 #[derive(Debug, Clone, PartialEq)]
 struct MaterializeCycle {
+    /// 0-based indices whose calendar slot already fell in the past —
+    /// because the series was paused across it — so they're never given a
+    /// match, just counted past (see [`AgonActivities::skip_series_occurrence`]).
+    /// Always a prefix of this cycle's indices (`occurrences_generated..`):
+    /// occurrence dates strictly increase with index, so once one index's
+    /// date is in the future, every later one is too.
+    skip: Vec<u32>,
     /// 0-based indices to generate this cycle, in order — enough to top the
     /// rolling window back up to `MATERIALIZE_WINDOW` not-yet-started
     /// occurrences (fewer if a bounded series' `total` is reached first, or
@@ -359,31 +367,43 @@ fn plan_materialize_cycle(
 
     // Top the window back up, one occurrence at a time, stopping early at
     // `total` for a bounded series (or if date math genuinely runs out).
+    // An index whose slot already fell in the past — because the series was
+    // paused across it — is skipped rather than generated: it still counts
+    // past (advancing `next_index`/the bounded `total`, same as a generated
+    // one would), but never gets a match, so resuming a long-paused series
+    // leaves a gap instead of backfilling every missed occurrence. Dates
+    // strictly increase with index, so skip is always a prefix of this
+    // cycle's indices — once one is in the future, every later one is too.
+    let mut skip = Vec::new();
     let mut generate = Vec::new();
     let mut next_index = occurrences_generated;
     let mut window = not_yet_started;
+    let mut date_math_broke = false;
     while window < MATERIALIZE_WINDOW && total.is_none_or(|total| next_index < total) {
-        if agon_services_core::series::occurrence_starts_at(
+        let Some(starts_at) = agon_services_core::series::occurrence_starts_at(
             first_starts_at,
             timezone,
             frequency,
             weekday,
             next_index,
-        )
-        .is_none()
-        {
+        ) else {
+            date_math_broke = true;
             break;
+        };
+        if starts_at <= now {
+            skip.push(next_index);
+        } else {
+            generate.push(next_index);
+            window += 1;
         }
-        generate.push(next_index);
         next_index += 1;
-        window += 1;
     }
 
-    let generated_after = occurrences_generated + generate.len() as u32;
-    let outcome = if total.is_some_and(|total| generated_after == total) || window == 0 {
-        // Either the bounded total is now fully generated, or nothing is
-        // pending and nothing more could be generated this cycle (date math
-        // broke) — either way, no further wake is needed.
+    let generated_after = next_index;
+    let outcome = if total.is_some_and(|total| generated_after == total) || date_math_broke {
+        // Either the bounded total is now fully generated (whether skipped,
+        // generated, or some of both), or date math broke — either way, no
+        // further wake is needed.
         MaterializeOutcome::Finish
     } else {
         let oldest_pending_index = occurrences_generated - not_yet_started;
@@ -411,7 +431,11 @@ fn plan_materialize_cycle(
         }
     };
 
-    MaterializeCycle { generate, outcome }
+    MaterializeCycle {
+        skip,
+        generate,
+        outcome,
+    }
 }
 
 /// Keep a series' rolling window of not-yet-started occurrences topped up —
@@ -528,7 +552,23 @@ impl MaterializeSeries {
             workflow_now_utc(ctx),
         );
 
-        // 5. Generate this cycle's occurrences — reuses
+        // 5. Skip anything that already fell in the past while the series
+        //    was paused — advances the counter with no match, so a later
+        //    resume doesn't backfill it. Always ordered before `generate`
+        //    (see `MaterializeCycle::skip`'s doc comment).
+        for index in cycle.skip {
+            ctx.start_activity(
+                AgonActivities::skip_series_occurrence,
+                SkipSeriesOccurrence {
+                    series_id: series_id.clone(),
+                    index,
+                },
+                activity_opts(),
+            )
+            .await?;
+        }
+
+        // 6. Generate this cycle's occurrences — reuses
         //    `generate_series_occurrence`'s claim-item scheme exactly as
         //    before; nothing about *how* one occurrence is generated
         //    changes here, only how many are generated per cycle.
@@ -569,7 +609,7 @@ impl MaterializeSeries {
             .await?;
         }
 
-        // 6. First time the window is topped up, flip "generating" ->
+        // 7. First time the window is topped up, flip "generating" ->
         //    "active" — same semantics as the one-shot version, just
         //    triggered after the first window instead of after everything.
         //    `update_series_status` is itself guarded on the series still
@@ -673,6 +713,58 @@ mod materialize_tests {
             now,
         );
         assert_eq!(cycle.generate, vec![4, 5]);
+    }
+
+    /// Resuming after a long pause must not backfill the occurrences that
+    /// were missed: an index whose slot already fell in the past gets
+    /// skipped (counted past, no match), and generation picks up from the
+    /// first future slot — a gap, not a flood of overdue matches.
+    #[test]
+    fn skips_rather_than_backfills_occurrences_missed_during_a_pause() {
+        let first = dt("2026-06-02T18:00:00Z"); // a Tuesday
+        // 4 generated (0..=3: June 2, 9, 16, 23), all already started — the
+        // series was paused across June 30, July 7 and July 14 (indices 4,
+        // 5, 6) and has just been resumed on July 20.
+        let now = dt("2026-07-20T00:00:00Z");
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            4,
+            None,
+            now,
+        );
+        assert_eq!(cycle.skip, vec![4, 5, 6]);
+        // The window tops up from the first future slot (index 7, July 21)
+        // for `MATERIALIZE_WINDOW` (4) occurrences — skipped ones don't
+        // count toward it.
+        assert_eq!(cycle.generate, vec![7, 8, 9, 10]);
+    }
+
+    /// A bounded series whose entire remaining life was missed during a
+    /// pause finishes once every index through `total` has been accounted
+    /// for — skipped or generated, it doesn't matter which; `total` counts
+    /// index positions, not matches actually created.
+    #[test]
+    fn finishes_a_bounded_series_whose_remaining_occurrences_were_all_skipped() {
+        let first = dt("2026-06-02T18:00:00Z");
+        // Bounded to 5 occurrences (indices 0..=4); 2 already generated
+        // (June 2, 9). Resumed long after even the 5th (June 30) would have
+        // happened.
+        let now = dt("2026-08-01T00:00:00Z");
+        let cycle = plan_materialize_cycle(
+            first,
+            chrono_tz::UTC,
+            "weekly",
+            chrono::Weekday::Tue,
+            2,
+            Some(5),
+            now,
+        );
+        assert_eq!(cycle.skip, vec![2, 3, 4]);
+        assert_eq!(cycle.generate, Vec::<u32>::new());
+        assert_eq!(cycle.outcome, MaterializeOutcome::Finish);
     }
 
     /// A bounded series stops generating (and the workflow finishes for

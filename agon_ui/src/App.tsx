@@ -60,6 +60,8 @@ import {
 import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 import { identifyPosthogUser } from '@/lib/posthog'
+import { PrivacyPolicyPage } from '@/pages/legal/PrivacyPolicyPage'
+import { TermsOfServicePage } from '@/pages/legal/TermsOfServicePage'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -391,14 +393,28 @@ function AuthenticatedApp() {
   )
 }
 
+/** `/privacy` and `/terms` need to be reachable with no account at all (the
+ *  Google OAuth branding review and the Garmin Connect IQ store listing both
+ *  link to them directly) — so they're routed here, outside `AuthProvider`/
+ *  `AuthenticatedApp`'s gating entirely, rather than as routes inside
+ *  `AppShell`'s `<Routes>` which only render once signed in. */
 function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
       <BrowserRouter>
         <OfflineBanner />
-        <AuthProvider>
-          <AuthenticatedApp />
-        </AuthProvider>
+        <Routes>
+          <Route path="/privacy" element={<PrivacyPolicyPage />} />
+          <Route path="/terms" element={<TermsOfServicePage />} />
+          <Route
+            path="*"
+            element={
+              <AuthProvider>
+                <AuthenticatedApp />
+              </AuthProvider>
+            }
+          />
+        </Routes>
       </BrowserRouter>
     </ThemeProvider>
   )

@@ -269,8 +269,6 @@ struct SideSource {
     team_id: Option<String>,
     name: Option<String>,
     outcome: Option<String>,
-    score: Option<u64>,
-    conceded: Option<u64>,
 }
 
 /// The `_source` fields the result and next-match queries read.
@@ -314,8 +312,6 @@ pub struct TeamResult {
     pub tournament_id: Option<String>,
     /// `won`, `drawn` or `lost`.
     pub outcome: String,
-    pub points_for: u64,
-    pub points_against: u64,
     pub opponent: Option<Opponent>,
 }
 
@@ -411,8 +407,6 @@ pub fn parse_recent_results(resp: &Value, team_id: &str) -> Vec<TeamResult> {
                 starts_at: m.starts_at.clone(),
                 tournament_id: m.tournament_id.clone(),
                 outcome: ours.outcome.clone()?,
-                points_for: ours.score.unwrap_or(0),
-                points_against: ours.conceded.unwrap_or(0),
                 opponent,
             })
         })
@@ -804,7 +798,6 @@ mod tests {
         let rs = parse_recent_results(&resp, "hw");
         assert_eq!(rs.len(), 3);
         assert_eq!(rs[0].outcome, "lost");
-        assert_eq!((rs[0].points_for, rs[0].points_against), (1, 2));
         assert_eq!(
             rs[0].opponent.as_ref().unwrap().name.as_deref(),
             Some("Leyton")

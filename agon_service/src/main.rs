@@ -834,7 +834,7 @@ struct CommentPage {
 
 /// The settled result of a match.
 #[derive(Object)]
-struct ConfirmedScore {
+pub struct ConfirmedScore {
     score: Score,
     /// Explicit winner so clients never reverse-engineer the result from sets.
     winner_side_id: Option<String>,

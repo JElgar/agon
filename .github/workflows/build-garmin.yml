@@ -1,5 +1,6 @@
 on:
   workflow_call:
+  workflow_dispatch:
 
 env:
   # The Garmin EULA's hash changes whenever the EULA text does, and

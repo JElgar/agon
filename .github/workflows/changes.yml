@@ -50,3 +50,4 @@ jobs:
               - 'agon_core_wasm/**'
             garmin:
               - 'agon_garmin_app/**'
+              - '.github/workflows/build-garmin.yml'

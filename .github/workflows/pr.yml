@@ -20,3 +20,13 @@ jobs:
     if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit
+
+  build-garmin:
+    needs: changes
+    if: needs.changes.outputs.garmin == 'true'
+    # Same-repo relative path (not `@main`, unlike build-service/build-ui
+    # above): the garmin filter also fires on edits to build-garmin.yml
+    # itself, and those only get tested here if the PR's own version of the
+    # file is what runs.
+    uses: ./.github/workflows/build-garmin.yml
+    secrets: inherit

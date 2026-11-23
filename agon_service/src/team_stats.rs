@@ -25,18 +25,21 @@ use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, Enum, Object, OpenApi};
 use tracing::error;
 
-use crate::mapping::{dao_internal, match_type_tag, parse_ts};
-use crate::{AuthSchema, MatchType, Photo, require_uid};
+use crate::mapping::{
+    confirmed_score_from_record, dao_internal, match_stats_from_record, match_type_tag, parse_ts,
+    side_result_from_record,
+};
+use crate::{
+    AuthSchema, ConfirmedScore, MatchType, Photo, SportMatchStats, SportSideResult, require_uid,
+};
 
 /// The OpenSearch client, if `OPENSEARCH_URL` is set. Without it these
 /// endpoints answer 503.
 #[derive(Clone)]
 pub struct StatsStore(pub Option<OpenSearchClient>);
 
-/// How many recent results make up `form`.
-const FORM_LEN: usize = 5;
-/// How many recent results `last10` covers.
-const LAST_N: u32 = 10;
+/// How many results `recent_results` covers.
+const RECENT_RESULTS: u32 = 10;
 /// The overview uses the standard layout once a team has played this many
 /// external matches in the last 12 months.
 const STANDARD_LAYOUT_MIN_MATCHES: u64 = 3;
@@ -96,21 +99,25 @@ pub struct TeamRecord {
     pub won: u64,
     pub drawn: u64,
     pub lost: u64,
-    pub goals_for: u64,
-    pub goals_against: u64,
-    pub clean_sheets: u64,
+    /// The team's scoreline over these matches in its sport's terms, e.g.
+    /// `result.football` (goals for and against) or `result.cricket` (runs
+    /// and wickets, for and against).
+    pub result: SportSideResult,
+    /// The sport's own counters for the team over these matches, e.g.
+    /// `stats.football` (goals, assists, clean sheets) or `stats.cricket`
+    /// (runs, wickets, catches, ...).
+    pub stats: SportMatchStats,
 }
 
-impl From<RecordCounts> for TeamRecord {
-    fn from(r: RecordCounts) -> Self {
+impl TeamRecord {
+    fn new(r: RecordCounts) -> Self {
         Self {
             played: r.played,
             won: r.won,
             drawn: r.drawn,
             lost: r.lost,
-            goals_for: r.goals_for,
-            goals_against: r.goals_against,
-            clean_sheets: r.clean_sheets,
+            result: side_result_from_record(&r.result),
+            stats: match_stats_from_record(&r.stats),
         }
     }
 }
@@ -119,8 +126,11 @@ impl From<RecordCounts> for TeamRecord {
 #[derive(Object, Debug, Clone, PartialEq, Eq)]
 pub struct TeamSquadRecord {
     pub games: u64,
-    /// Goals scored in them, by both sides.
-    pub goals: u64,
+    /// Both sides' scorelines summed, so `goals_for` (or `runs_for`) is
+    /// everything scored in these games.
+    pub result: SportSideResult,
+    /// See `TeamRecord::stats`: both sides' totals.
+    pub stats: SportMatchStats,
 }
 
 /// Which overview the team gets.
@@ -144,7 +154,7 @@ pub struct TeamOpponent {
 }
 
 /// One confirmed result, from the team's side.
-#[derive(Object, Debug, Clone, PartialEq)]
+#[derive(Object)]
 pub struct TeamResultItem {
     pub match_id: String,
     pub name: String,
@@ -153,8 +163,10 @@ pub struct TeamResultItem {
     pub starts_at: chrono::DateTime<chrono::Utc>,
     pub tournament_id: Option<String>,
     pub outcome: TeamOutcome,
-    pub goals_for: u64,
-    pub goals_against: u64,
+    /// The match's score in its sport's own shape, the same as a feed
+    /// card's `FeedMatch.confirmed_score`. Absent only if the match was
+    /// deleted after the stats store last saw it.
+    pub confirmed_score: Option<ConfirmedScore>,
     pub opponent: Option<TeamOpponent>,
 }
 
@@ -163,15 +175,6 @@ pub struct TeamResultItem {
 pub struct TeamStreak {
     pub outcome: TeamOutcome,
     pub count: u32,
-}
-
-/// Goals over the last (up to) 10 confirmed results.
-#[derive(Object, Debug, Clone, PartialEq, Eq)]
-pub struct TeamLastN {
-    /// How many results this covers (10, or fewer for a new team).
-    pub played: u32,
-    pub goals_for: u64,
-    pub goals_against: u64,
 }
 
 /// The team's next scheduled match.
@@ -191,7 +194,33 @@ pub struct TeamNextMatch {
 #[derive(Object)]
 pub struct TeamSummary {
     pub team_id: String,
+    /// The sport these records are for — the one asked for, or the team's
+    /// most-played when the request named none.
     pub sport: MatchType,
+    /// Every sport this team has a match in, most matches first, for a sport
+    /// switcher. Not affected by `sport`, and never empty when the team has
+    /// any match at all.
+    ///
+    /// It lives here rather than on `Team` deliberately, and the reason is
+    /// blast radius rather than cost. `GET /teams/:id` needs only DynamoDB
+    /// today: `OPENSEARCH_URL` being unset or the cluster being down costs
+    /// you the stats endpoints and nothing else. A sport list on `Team`
+    /// would put an OpenSearch read behind opening a team at all — and
+    /// behind `POST /teams/:id/members`, which has no business running an
+    /// aggregation to answer an add-members call.
+    ///
+    /// This response already requires OpenSearch, so it is the one place
+    /// the field is free. `years` a row below is the same pattern: the
+    /// picker's options, returned with the thing being picked.
+    ///
+    /// The limit of that reasoning is worth stating, because it is where
+    /// this stops being the right answer. Nothing here helps a *list* of
+    /// teams — `TeamListItem`, what search and "my teams" actually return —
+    /// show which sports each one plays. That genuinely would be a per-team
+    /// fan-out, and the answer then isn't this field: it's the worker
+    /// maintaining a sport set on the team record, the way it maintains
+    /// `follower_count`.
+    pub sports: Vec<MatchType>,
     /// The year the records cover, or absent for all time.
     pub year: Option<i32>,
     /// Every year the team has a confirmed match in this sport, newest
@@ -204,12 +233,12 @@ pub struct TeamSummary {
     pub cup: TeamRecord,
     pub friendly: TeamRecord,
     pub squad: TeamSquadRecord,
-    /// The last 5 confirmed results against other teams, newest first. All
-    /// time, not affected by `year`.
-    pub form: Vec<TeamResultItem>,
+    /// The last 10 confirmed results against other teams, newest first,
+    /// each with its sport's own score. Form is the first 5. All time, not
+    /// affected by `year`.
+    pub recent_results: Vec<TeamResultItem>,
     /// The current run of identical results. Absent before the first result.
     pub streak: Option<TeamStreak>,
-    pub last10: TeamLastN,
     /// The next scheduled match, squad games included.
     pub next_match: Option<TeamNextMatch>,
 }
@@ -242,8 +271,8 @@ pub struct TeamLeaderboardRow {
     pub lost: u64,
     /// `won / played`, from 5 appearances. Absent below that.
     pub win_rate: Option<f64>,
-    /// Sport counters, e.g. `goals`, `assists`. Zero totals are left out.
-    pub stats: std::collections::BTreeMap<String, u64>,
+    /// The sport's own counters for this player, e.g. `stats.football`.
+    pub stats: SportMatchStats,
 }
 
 /// `GET /teams/{team_id}/leaderboard`.
@@ -283,7 +312,14 @@ fn opponent(o: Option<ts::Opponent>) -> Option<TeamOpponent> {
     })
 }
 
-fn result_item(r: TeamResult) -> TeamResultItem {
+fn result_item(
+    r: TeamResult,
+    matches: &std::collections::HashMap<String, dao::records::MatchRecord>,
+) -> TeamResultItem {
+    let confirmed_score = matches
+        .get(&r.match_id)
+        .and_then(|m| m.confirmed_score.as_ref())
+        .map(confirmed_score_from_record);
     TeamResultItem {
         kind: kind_from_str(&r.kind),
         outcome: outcome_from_str(&r.outcome),
@@ -292,8 +328,7 @@ fn result_item(r: TeamResult) -> TeamResultItem {
         name: r.name,
         ranked: r.ranked,
         tournament_id: r.tournament_id,
-        goals_for: r.goals_for,
-        goals_against: r.goals_against,
+        confirmed_score,
         opponent: opponent(r.opponent),
     }
 }
@@ -315,14 +350,6 @@ fn layout(ext_last_12_months: u64) -> TeamOverviewLayout {
         TeamOverviewLayout::Standard
     } else {
         TeamOverviewLayout::Squad
-    }
-}
-
-fn last_n(results: &[TeamResult]) -> TeamLastN {
-    TeamLastN {
-        played: results.len() as u32,
-        goals_for: results.iter().map(|r| r.goals_for).sum(),
-        goals_against: results.iter().map(|r| r.goals_against).sum(),
     }
 }
 
@@ -365,8 +392,14 @@ impl TeamStatsApi {
     ///
     /// Counts confirmed matches only. `record` covers league, cup and
     /// friendly matches; squad (in-house) games are counted separately in
-    /// `squad`. `year` limits the records to one year. `form`, `streak`,
-    /// `last10` and `next_match` are always current.
+    /// `squad`. `year` limits the records to one year. `recent_results`,
+    /// `streak` and `next_match` are always current.
+    ///
+    /// `sport` is optional because a client has no way to know what to ask
+    /// for: nothing on `Team` says which sports it plays. Omit it and this
+    /// answers for the team's most-played sport, with every sport it plays
+    /// in `sports` — enough to render the page and its sport switcher from
+    /// one call, with no guessing and no speculative request per sport.
     #[oai(path = "/teams/:team_id/summary", method = "get")]
     async fn get_team_summary(
         &self,
@@ -374,8 +407,8 @@ impl TeamStatsApi {
         Data(stats): Data<&StatsStore>,
         AuthSchema(jwt): AuthSchema,
         Path(team_id): Path<String>,
-        /// The sport to summarise.
-        Query(sport): Query<MatchType>,
+        /// The sport to summarise. Omit for the team's most-played.
+        Query(sport): Query<Option<MatchType>>,
         /// Limit the records to this year. Omit for all time.
         Query(year): Query<Option<i32>>,
     ) -> Result<TeamSummaryResponse> {
@@ -391,38 +424,80 @@ impl TeamStatsApi {
                 "team not found".into(),
             )));
         }
-        let tag = match_type_tag(&sport);
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let (records, recent, next) = tokio::try_join!(
+
+        // `sports` is in the response either way, so the only question is
+        // whether it can be read alongside the rest. It can when the caller
+        // named a sport; when they didn't, its answer is what decides which
+        // sport the other three queries are even about.
+        let (sports, sport) = match sport {
+            Some(s) => (None, s),
+            None => {
+                let sports = ts::team_sports(os, &team_id)
+                    .await
+                    .map_err(stats_internal)?;
+                // A team with no matches has no sports to pick from. It still
+                // gets a summary: every record is zero and `sports` is empty,
+                // which is the honest answer and renders as a new team rather
+                // than an error.
+                let first = sports
+                    .first()
+                    .map_or(MatchType::Other, |t| crate::mapping::match_type_from_tag(t));
+                (Some(sports), first)
+            }
+        };
+        let tag = match_type_tag(&sport);
+        let (records, recent, next, fetched_sports) = tokio::try_join!(
             ts::team_records(os, &team_id, tag, year, &now),
-            ts::recent_results(os, &team_id, tag, LAST_N),
+            ts::recent_results(os, &team_id, tag, RECENT_RESULTS),
             ts::next_match(os, &team_id, tag, &now),
+            async {
+                match &sports {
+                    Some(_) => Ok(Vec::new()),
+                    None => ts::team_sports(os, &team_id).await,
+                }
+            },
         )
         .map_err(stats_internal)?;
+        let sports: Vec<MatchType> = sports
+            .unwrap_or(fetched_sports)
+            .iter()
+            .map(|t| crate::mapping::match_type_from_tag(t))
+            .collect();
 
         let streak = ts::streak(&recent).map(|(o, count)| TeamStreak {
             outcome: outcome_from_str(&o),
             count,
         });
-        let last10 = last_n(&recent);
-        let form = recent.into_iter().take(FORM_LEN).map(result_item).collect();
+        // The stats store has which matches and their outcomes; each
+        // match's own score comes from the match itself, as on the feed.
+        let match_ids: Vec<String> = recent.iter().map(|r| r.match_id.clone()).collect();
+        let matches = dao
+            .batch_get_match_metas(&match_ids)
+            .await
+            .map_err(dao_internal)?;
+        let recent_results = recent
+            .into_iter()
+            .map(|r| result_item(r, &matches))
+            .collect();
         Ok(TeamSummaryResponse::Summary(Json(TeamSummary {
             team_id,
             sport,
+            sports,
             year,
             years: records.years,
             layout: layout(records.ext_last_12_months),
-            record: records.ext.into(),
-            league: records.league.into(),
-            cup: records.cup.into(),
-            friendly: records.friendly.into(),
+            record: TeamRecord::new(records.ext),
+            league: TeamRecord::new(records.league),
+            cup: TeamRecord::new(records.cup),
+            friendly: TeamRecord::new(records.friendly),
             squad: TeamSquadRecord {
                 games: records.squad.games,
-                goals: records.squad.goals,
+                result: side_result_from_record(&records.squad.result),
+                stats: match_stats_from_record(&records.squad.stats),
             },
-            form,
+            recent_results,
             streak,
-            last10,
             next_match: next.map(next_match_item),
         })))
     }
@@ -499,7 +574,7 @@ impl TeamStatsApi {
                     won: r.won,
                     drawn: r.drawn,
                     lost: r.lost,
-                    stats: r.stats,
+                    stats: match_stats_from_record(&r.stats),
                 }
             })
             .collect();
@@ -537,19 +612,49 @@ async fn member_user_ids(dao: &dao::Dao, team_id: &str) -> Result<HashSet<String
 mod tests {
     use super::*;
 
-    fn result(outcome: &str, gf: u64, ga: u64) -> TeamResult {
-        TeamResult {
-            match_id: "m".into(),
-            name: "m".into(),
-            kind: "friendly".into(),
-            ranked: false,
-            starts_at: "2026-11-08T10:30:00Z".into(),
-            tournament_id: None,
-            outcome: outcome.into(),
-            goals_for: gf,
-            goals_against: ga,
-            opponent: None,
-        }
+    /// A cricket record carries cricket's scoreline and counters and
+    /// nothing of football's (no goals, no clean sheets).
+    #[test]
+    fn a_record_carries_only_its_sports_scoreline_and_counters() {
+        use agon_services_core::sports::cricket::{
+            CricketMatchStatsRecord, CricketSideResultRecord,
+        };
+        use agon_services_core::sports::{MatchStatsRecord, SideResultRecord};
+
+        let counts = RecordCounts {
+            played: 4,
+            won: 2,
+            drawn: 1,
+            lost: 1,
+            result: SideResultRecord {
+                cricket: Some(CricketSideResultRecord {
+                    runs_for: 240,
+                    wickets_lost: 30,
+                    runs_against: 198,
+                    wickets_taken: 36,
+                }),
+                ..Default::default()
+            },
+            stats: MatchStatsRecord {
+                cricket: Some(CricketMatchStatsRecord {
+                    wickets: 7,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        };
+
+        let cricket = TeamRecord::new(counts);
+        assert_eq!(cricket.result.football, None);
+        assert_eq!(
+            cricket
+                .result
+                .cricket
+                .map(|c| (c.runs_for, c.wickets_taken)),
+            Some((240, 36))
+        );
+        assert_eq!(cricket.stats.football, None);
+        assert_eq!(cricket.stats.cricket.map(|c| c.wickets), Some(7));
     }
 
     #[test]
@@ -557,19 +662,6 @@ mod tests {
         assert_eq!(layout(0), TeamOverviewLayout::Squad);
         assert_eq!(layout(2), TeamOverviewLayout::Squad);
         assert_eq!(layout(3), TeamOverviewLayout::Standard);
-    }
-
-    #[test]
-    fn last_n_sums_goals() {
-        let rs = [result("won", 3, 1), result("lost", 0, 2)];
-        assert_eq!(
-            last_n(&rs),
-            TeamLastN {
-                played: 2,
-                goals_for: 3,
-                goals_against: 3
-            }
-        );
     }
 
     #[test]

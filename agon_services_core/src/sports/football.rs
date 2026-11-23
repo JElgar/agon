@@ -156,6 +156,21 @@ pub struct FootballStatsRecord {
     pub best_goal_contributions: Option<BestFigureRecord>,
 }
 
+/// One match's football counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FootballMatchStatsRecord {
+    #[serde(default)]
+    pub goals: u64,
+    #[serde(default)]
+    pub assists: u64,
+    /// `1` when the side conceded nothing. A player gets their side's, so a
+    /// player total is the clean sheets they played in, and a side total
+    /// is the clean sheets the side kept.
+    #[serde(default)]
+    pub clean_sheets: u64,
+}
+
 /// Football: the marker type its sport traits are implemented for.
 pub struct Football;
 
@@ -203,6 +218,74 @@ impl SportRecord for Football {
             ..FootballStatsRecord::default()
         }
     }
+
+    type MatchStatsRecord = FootballMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &["goals", "assists", "clean_sheets"];
+
+    fn match_stats(
+        c: &FootballStatsRecord,
+        side: &FootballSideResultRecord,
+    ) -> FootballMatchStatsRecord {
+        FootballMatchStatsRecord {
+            goals: c.goals,
+            assists: c.assists,
+            clean_sheets: u64::from(side.goals_against == 0),
+        }
+    }
+
+    fn add_match_stats(totals: &mut FootballMatchStatsRecord, o: &FootballMatchStatsRecord) {
+        totals.goals += o.goals;
+        totals.assists += o.assists;
+        totals.clean_sheets += o.clean_sheets;
+    }
+
+    /// A clean sheet is the side's, once, however many of its players
+    /// shared it.
+    fn side_match_stats(
+        players: FootballMatchStatsRecord,
+        side: &FootballSideResultRecord,
+    ) -> FootballMatchStatsRecord {
+        FootballMatchStatsRecord {
+            clean_sheets: u64::from(side.goals_against == 0),
+            ..players
+        }
+    }
+
+    type SideResultRecord = FootballSideResultRecord;
+    const SIDE_RESULT_FIELDS: &'static [&'static str] = &["goals_for", "goals_against"];
+
+    fn side_result(score: &FootballScoreRecord, side_id: &str) -> FootballSideResultRecord {
+        goals_for_and_against(&score.score, side_id)
+    }
+
+    fn add_side_result(totals: &mut FootballSideResultRecord, o: &FootballSideResultRecord) {
+        totals.goals_for += o.goals_for;
+        totals.goals_against += o.goals_against;
+    }
+}
+
+/// A side's goals for and against from a goal tally keyed by side id
+/// (against = every other side's goals).
+fn goals_for_and_against(tally: &HashMap<String, u32>, side_id: &str) -> FootballSideResultRecord {
+    let mut out = FootballSideResultRecord::default();
+    for (id, goals) in tally {
+        if id == side_id {
+            out.goals_for += u64::from(*goals);
+        } else {
+            out.goals_against += u64::from(*goals);
+        }
+    }
+    out
+}
+
+/// One side's football scoreline (see [`SportRecord::SideResultRecord`]),
+/// from the goal tally, own goals included.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FootballSideResultRecord {
+    #[serde(default)]
+    pub goals_for: u64,
+    #[serde(default)]
+    pub goals_against: u64,
 }
 
 crate::personal_bests!(FootballStatsRecord {

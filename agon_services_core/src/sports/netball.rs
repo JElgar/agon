@@ -187,6 +187,59 @@ impl SportRecord for Netball {
             ..NetballStatsRecord::default()
         }
     }
+
+    type MatchStatsRecord = NetballMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &["goals"];
+
+    fn match_stats(
+        c: &NetballStatsRecord,
+        _side: &NetballSideResultRecord,
+    ) -> NetballMatchStatsRecord {
+        NetballMatchStatsRecord { goals: c.goals }
+    }
+
+    fn add_match_stats(totals: &mut NetballMatchStatsRecord, o: &NetballMatchStatsRecord) {
+        totals.goals += o.goals;
+    }
+
+    type SideResultRecord = NetballSideResultRecord;
+    const SIDE_RESULT_FIELDS: &'static [&'static str] = &["goals_for", "goals_against"];
+
+    fn side_result(score: &NetballScoreRecord, side_id: &str) -> NetballSideResultRecord {
+        let mut out = NetballSideResultRecord::default();
+        for (id, goals) in &score.score {
+            if id == side_id {
+                out.goals_for += u64::from(*goals);
+            } else {
+                out.goals_against += u64::from(*goals);
+            }
+        }
+        out
+    }
+
+    fn add_side_result(totals: &mut NetballSideResultRecord, o: &NetballSideResultRecord) {
+        totals.goals_for += o.goals_for;
+        totals.goals_against += o.goals_against;
+    }
+}
+
+/// One side's netball scoreline (see [`SportRecord::SideResultRecord`]),
+/// from the scoreboard tally, so a two-point goal counts two here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetballSideResultRecord {
+    #[serde(default)]
+    pub goals_for: u64,
+    #[serde(default)]
+    pub goals_against: u64,
+}
+
+/// One match's netball counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetballMatchStatsRecord {
+    /// Goals scored, counted as in [`NetballStatsRecord::goals`].
+    #[serde(default)]
+    pub goals: u64,
 }
 
 crate::personal_bests!(NetballStatsRecord {});

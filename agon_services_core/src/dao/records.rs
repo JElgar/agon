@@ -664,6 +664,20 @@ pub struct SeriesRecord {
     /// (every occurrence friendly) rather than silently becoming ranked.
     #[serde(default)]
     pub ranked: bool,
+    /// Series admins, same type and `Owner`/`Admin`-only semantics as
+    /// `MatchRecord::authority` and `TournamentRecord::authority`. Only ever
+    /// stores `Admin` entries: `created_by_user_id` is the permanent owner
+    /// (there's no series-ownership transfer), resolved via
+    /// `caller_series_authority_role`'s creator-fallback the same way a
+    /// tournament's is — so a series from before this field existed just
+    /// deserializes with an empty map and keeps working. Copied onto every
+    /// occurrence generated from this point on (alongside the creator's
+    /// `Owner` entry) — see `generate_series_occurrence` — so a series admin
+    /// is also an admin of every match the series creates. Changing this
+    /// doesn't touch already-generated occurrences' own `authority`, same
+    /// as every other series template field.
+    #[serde(default)]
+    pub authority: std::collections::HashMap<String, MatchPlayerRole>,
     /// Lifecycle: "generating" | "active" | "paused" | "ended". "paused"
     /// stops further generation without touching already-created
     /// occurrences — meaningful for a `Never`-ending series, which

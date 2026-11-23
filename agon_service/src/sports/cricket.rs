@@ -10,7 +10,6 @@ use chrono::{DateTime, Utc};
 
 use poem_openapi::{Enum, Object, Union};
 
-use agon_services_core::sports::cricket::Cricket;
 use agon_services_core::sports::cricket::{
     BestBowlingFiguresRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
     CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
@@ -21,6 +20,7 @@ use agon_services_core::sports::cricket::{
     CricketScoreRecord, CricketStatsRecord, InningsEndReasonRecord, NextBallContextRecord,
     OversRecord,
 };
+use agon_services_core::sports::cricket::{Cricket, CricketSideResultRecord};
 
 use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts_opt};
 use crate::sports::Sport;
@@ -32,6 +32,7 @@ impl Sport for Cricket {
     type LiveEvent = CricketLiveEvent;
     type PlayerStats = CricketPlayerStats;
     type MatchStats = CricketMatchStats;
+    type SideResult = CricketSideResult;
 
     fn new_score() -> CricketScore {
         CricketScore {
@@ -461,6 +462,15 @@ impl Sport for Cricket {
                     reason: innings_end_reason_from_record(&e.reason),
                 })
             }
+        }
+    }
+
+    fn side_result_from_record(rec: &CricketSideResultRecord) -> CricketSideResult {
+        CricketSideResult {
+            runs_for: rec.runs_for,
+            wickets_lost: rec.wickets_lost,
+            runs_against: rec.runs_against,
+            wickets_taken: rec.wickets_taken,
         }
     }
 
@@ -1178,6 +1188,17 @@ pub struct BestBowlingFigures {
     pub runs_conceded: i32,
     pub overs: Overs,
     pub match_id: String,
+}
+
+/// A team's cricket scoreline summed over a set of matches: runs scored and
+/// wickets lost batting, runs conceded and wickets taken bowling, extras
+/// included.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct CricketSideResult {
+    pub runs_for: u64,
+    pub wickets_lost: u64,
+    pub runs_against: u64,
+    pub wickets_taken: u64,
 }
 
 /// Cricket counters summed over a set of matches, for a team or a player.

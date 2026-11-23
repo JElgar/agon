@@ -14,7 +14,7 @@ here can be rebuilt from it at any time.
 
 | Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, goals for/against, form, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
@@ -26,8 +26,9 @@ here can be rebuilt from it at any time.
   built from the same per-match contribution as lifetime stats. The
   mapping lists each sport's fields explicitly
   (`SportRecord::MATCH_STATS_FIELDS`), and the reads sum only the asked-for
-  sport's fields into that type. A generic sport (tennis, badminton, ...)
-  has no counters.
+  sport's fields into that type. A side's scoreline (`result`) works the
+  same way (`SportRecord::SideResultRecord`, read from the confirmed score).
+  A generic sport (tennis, badminton, ...) has neither, only W/D/L.
 - Players without an Agon account appear in a side's player count but get no
   stats row, because they have no stats identity.
 
@@ -170,7 +171,7 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
 | Endpoint | Index | What it reads |
 |---|---|---|
-| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), each kind's `sides.stats.<sport>` counters summed into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
+| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
 | `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |

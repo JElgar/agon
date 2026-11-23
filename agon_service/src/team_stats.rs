@@ -27,8 +27,11 @@ use tracing::error;
 
 use crate::mapping::{
     confirmed_score_from_record, dao_internal, match_stats_from_record, match_type_tag, parse_ts,
+    side_result_from_record,
 };
-use crate::{AuthSchema, ConfirmedScore, MatchType, Photo, SportMatchStats, require_uid};
+use crate::{
+    AuthSchema, ConfirmedScore, MatchType, Photo, SportMatchStats, SportSideResult, require_uid,
+};
 
 /// The OpenSearch client, if `OPENSEARCH_URL` is set. Without it these
 /// endpoints answer 503.
@@ -90,20 +93,16 @@ fn outcome_from_str(s: &str) -> TeamOutcome {
 }
 
 /// A team's results over a set of matches against other teams.
-///
-/// `points_for`/`points_against` are whatever the sport counts: goals in
-/// football and netball, runs in cricket, points or sets won elsewhere (see
-/// `opensearch::docs::side_points`). One pair of fields rather than a
-/// per-sport name, because the stored number is one number — a client
-/// labels it for the sport it asked about.
 #[derive(Object, Debug, Clone, PartialEq, Eq)]
 pub struct TeamRecord {
     pub played: u64,
     pub won: u64,
     pub drawn: u64,
     pub lost: u64,
-    pub points_for: u64,
-    pub points_against: u64,
+    /// The team's scoreline over these matches in its sport's terms, e.g.
+    /// `result.football` (goals for and against) or `result.cricket` (runs
+    /// and wickets, for and against).
+    pub result: SportSideResult,
     /// The sport's own counters for the team over these matches, e.g.
     /// `stats.football` (goals, assists, clean sheets) or `stats.cricket`
     /// (runs, wickets, catches, ...).
@@ -117,8 +116,7 @@ impl TeamRecord {
             won: r.won,
             drawn: r.drawn,
             lost: r.lost,
-            points_for: r.points_for,
-            points_against: r.points_against,
+            result: side_result_from_record(&r.result),
             stats: match_stats_from_record(&r.stats),
         }
     }
@@ -128,9 +126,9 @@ impl TeamRecord {
 #[derive(Object, Debug, Clone, PartialEq, Eq)]
 pub struct TeamSquadRecord {
     pub games: u64,
-    /// Points scored in them, by both sides — the same per-sport meaning
-    /// `TeamRecord::points_for` has.
-    pub points: u64,
+    /// Both sides' scorelines summed, so `goals_for` (or `runs_for`) is
+    /// everything scored in these games.
+    pub result: SportSideResult,
     /// See `TeamRecord::stats`: both sides' totals.
     pub stats: SportMatchStats,
 }
@@ -495,7 +493,7 @@ impl TeamStatsApi {
             friendly: TeamRecord::new(records.friendly),
             squad: TeamSquadRecord {
                 games: records.squad.games,
-                points: records.squad.points,
+                result: side_result_from_record(&records.squad.result),
                 stats: match_stats_from_record(&records.squad.stats),
             },
             recent_results,
@@ -614,20 +612,29 @@ async fn member_user_ids(dao: &dao::Dao, team_id: &str) -> Result<HashSet<String
 mod tests {
     use super::*;
 
-    /// A cricket record carries cricket's counters and nothing of
-    /// football's (no clean sheets).
+    /// A cricket record carries cricket's scoreline and counters and
+    /// nothing of football's (no goals, no clean sheets).
     #[test]
-    fn a_record_carries_only_its_sports_counters() {
-        use agon_services_core::sports::MatchStatsRecord;
-        use agon_services_core::sports::cricket::CricketMatchStatsRecord;
+    fn a_record_carries_only_its_sports_scoreline_and_counters() {
+        use agon_services_core::sports::cricket::{
+            CricketMatchStatsRecord, CricketSideResultRecord,
+        };
+        use agon_services_core::sports::{MatchStatsRecord, SideResultRecord};
 
         let counts = RecordCounts {
             played: 4,
             won: 2,
             drawn: 1,
             lost: 1,
-            points_for: 240,
-            points_against: 198,
+            result: SideResultRecord {
+                cricket: Some(CricketSideResultRecord {
+                    runs_for: 240,
+                    wickets_lost: 30,
+                    runs_against: 198,
+                    wickets_taken: 36,
+                }),
+                ..Default::default()
+            },
             stats: MatchStatsRecord {
                 cricket: Some(CricketMatchStatsRecord {
                     wickets: 7,
@@ -638,7 +645,14 @@ mod tests {
         };
 
         let cricket = TeamRecord::new(counts);
-        assert_eq!(cricket.points_for, 240);
+        assert_eq!(cricket.result.football, None);
+        assert_eq!(
+            cricket
+                .result
+                .cricket
+                .map(|c| (c.runs_for, c.wickets_taken)),
+            Some((240, 36))
+        );
         assert_eq!(cricket.stats.football, None);
         assert_eq!(cricket.stats.cricket.map(|c| c.wickets), Some(7));
     }

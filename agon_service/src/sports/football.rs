@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use poem_openapi::Object;
 
 use agon_core::football as scoring;
-use agon_services_core::sports::football::Football;
+use agon_services_core::sports::football::{Football, FootballSideResultRecord};
 use agon_services_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
     FootballGoalEventRecord, FootballLiveEventRecord, FootballMatchStatsRecord,
@@ -28,6 +28,7 @@ impl Sport for Football {
     type LiveEvent = scoring::LiveEvent;
     type PlayerStats = FootballPlayerStats;
     type MatchStats = FootballMatchStats;
+    type SideResult = FootballSideResult;
 
     fn new_score() -> FootballScore {
         FootballScore {
@@ -343,6 +344,13 @@ impl Sport for Football {
             clean_sheets: rec.clean_sheets,
         }
     }
+
+    fn side_result_from_record(rec: &FootballSideResultRecord) -> FootballSideResult {
+        FootballSideResult {
+            goals_for: rec.goals_for,
+            goals_against: rec.goals_against,
+        }
+    }
 }
 
 // ---- API types ----------------------------------------------------------
@@ -384,6 +392,14 @@ pub struct FootballMatchStats {
     /// For a team, the clean sheets it kept. For a player, the clean
     /// sheets they played in.
     pub clean_sheets: u64,
+}
+
+/// A team's football scoreline summed over a set of matches, own goals
+/// included.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct FootballSideResult {
+    pub goals_for: u64,
+    pub goals_against: u64,
 }
 
 // ---- Record mapping helpers ---------------------------------------------

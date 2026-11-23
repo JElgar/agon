@@ -11,15 +11,15 @@
 //! Document ids are deterministic (`<match_id>` and `<match_id>:<user_id>`), so
 //! re-running the builder and re-indexing is idempotent.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Datelike, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::dao::match_ops::MatchAggregate;
-use crate::dao::records::{ScoreRecord, TournamentFormatRecord, TournamentRecord};
-use crate::sports::MatchStatsRecord;
+use crate::dao::records::{TournamentFormatRecord, TournamentRecord};
+use crate::sports::{MatchStatsRecord, SideResultRecord};
 
 /// What kind of match this is. Decides where it counts on the team pages: the
 /// team record covers league, cup and friendly; squad games are counted on
@@ -84,58 +84,6 @@ pub fn match_year(starts_at: &str, timezone: Option<&str>) -> Option<i32> {
     }
 }
 
-/// Points per side from a confirmed score: goals (football, netball), runs
-/// (cricket, summed over a side's innings), points (simple scores) or sets won
-/// (set-based scores). Sides missing from the score are absent here.
-pub fn side_points(score: &ScoreRecord) -> HashMap<String, u64> {
-    let mut out: HashMap<String, u64> = HashMap::new();
-    match score {
-        ScoreRecord::Simple { entries } => {
-            for (side, pts) in entries {
-                out.insert(side.clone(), u64::from(*pts));
-            }
-        }
-        ScoreRecord::Sets { entries } => {
-            let sets = entries.values().map(Vec::len).max().unwrap_or(0);
-            for side in entries.keys() {
-                out.insert(side.clone(), 0);
-            }
-            for i in 0..sets {
-                let games: Vec<(&String, u32)> = entries
-                    .iter()
-                    .map(|(side, v)| (side, v.get(i).copied().unwrap_or(0)))
-                    .collect();
-                let best = games.iter().map(|(_, g)| *g).max().unwrap_or(0);
-                let leaders: Vec<&&String> = games
-                    .iter()
-                    .filter(|(_, g)| *g == best)
-                    .map(|(s, _)| s)
-                    .collect();
-                // A set only counts for its outright winner.
-                if leaders.len() == 1 {
-                    *out.entry((*leaders[0]).clone()).or_default() += 1;
-                }
-            }
-        }
-        ScoreRecord::Football(s) => {
-            for (side, goals) in &s.score {
-                out.insert(side.clone(), u64::from(*goals));
-            }
-        }
-        ScoreRecord::Netball(s) => {
-            for (side, goals) in &s.score {
-                out.insert(side.clone(), u64::from(*goals));
-            }
-        }
-        ScoreRecord::Cricket(s) => {
-            for innings in &s.innings {
-                *out.entry(innings.batting_side_id.clone()).or_default() += u64::from(innings.runs);
-            }
-        }
-    }
-    out
-}
-
 /// One side of a match, nested in [`MatchDoc`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SideDoc {
@@ -147,10 +95,11 @@ pub struct SideDoc {
     /// `won` / `drawn` / `lost`, once the score is confirmed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub score: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub conceded: Option<u64>,
+    /// This side's scoreline in the match's sport (`result.football` goals
+    /// for and against, `result.cricket` runs and wickets, ...). Omitted
+    /// until the score is confirmed, and for a generic sport.
+    #[serde(skip_serializing_if = "no_result")]
+    pub result: SideResultRecord,
     /// Account holders who took a spot on this side.
     pub player_ids: Vec<String>,
     pub player_count: u32,
@@ -236,6 +185,10 @@ fn no_stats(stats: &MatchStatsRecord) -> bool {
     *stats == MatchStatsRecord::default()
 }
 
+fn no_result(result: &SideResultRecord) -> bool {
+    *result == SideResultRecord::default()
+}
+
 pub fn player_doc_id(match_id: &str, user_id: &str) -> String {
     format!("{match_id}:{user_id}")
 }
@@ -277,14 +230,6 @@ pub fn build_match_docs(
     let year = match_year(&m.starts_at, tournament.map(|t| t.timezone.as_str()));
     let confirmed = m.confirmed_score.as_ref();
     let winner = confirmed.and_then(|c| c.winner_side_id.clone());
-    let points = confirmed.map(|c| side_points(&c.score)).unwrap_or_default();
-    let conceded_by = |side_id: &str| -> u64 {
-        points
-            .iter()
-            .filter(|(id, _)| id.as_str() != side_id)
-            .map(|(_, p)| *p)
-            .sum()
-    };
 
     let outcome_for = |side_id: &str| -> Option<Outcome> {
         confirmed.map(|_| match &winner {
@@ -348,10 +293,10 @@ pub fn build_match_docs(
                     let stats = MatchStatsRecord::for_player(
                         &m.match_type,
                         &cs.score,
+                        side_id,
                         &player_ids,
                         m.format.as_ref(),
                         &m.id,
-                        conceded_by(side_id),
                     );
                     PlayerStatDoc {
                         match_id: m.id.clone(),
@@ -394,29 +339,30 @@ pub fn build_match_docs(
         .sides
         .iter()
         .map(|s| {
-            let score = points.get(&s.side_id).copied();
-            let conceded = confirmed.map(|_| conceded_by(&s.side_id));
             let side_players: Vec<String> = roster
                 .get(s.side_id.as_str())
                 .into_iter()
                 .flatten()
                 .map(|u| u.to_string())
                 .collect();
-            let stats = match conceded {
-                Some(conceded) => MatchStatsRecord::for_side(
-                    &m.match_type,
-                    side_stats.remove(s.side_id.as_str()).unwrap_or_default(),
-                    conceded,
+            let (result, stats) = match confirmed {
+                Some(cs) => (
+                    SideResultRecord::for_side(&m.match_type, &cs.score, &s.side_id),
+                    MatchStatsRecord::for_side(
+                        &m.match_type,
+                        &cs.score,
+                        &s.side_id,
+                        side_stats.remove(s.side_id.as_str()).unwrap_or_default(),
+                    ),
                 ),
-                None => MatchStatsRecord::default(),
+                None => Default::default(),
             };
             SideDoc {
                 side_id: s.side_id.clone(),
                 team_id: s.team_id.clone(),
                 name: s.name.clone(),
                 outcome: outcome_for(&s.side_id).map(Outcome::as_str),
-                score: confirmed.map(|_| score.unwrap_or(0)),
-                conceded,
+                result,
                 player_count: side_players.len() as u32,
                 player_ids: side_players,
                 stats,
@@ -502,8 +448,9 @@ mod tests {
     use super::*;
     use crate::dao::records::{
         ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationKindRecord, MatchPlayerRecord,
-        MatchRecord, MatchSideRecord, UserRecord,
+        MatchRecord, MatchSideRecord, ScoreRecord, UserRecord,
     };
+    use crate::sports::football::FootballSideResultRecord;
 
     #[test]
     fn user_doc_carries_name_email_admin_flag_and_creation_time() {
@@ -555,11 +502,16 @@ mod tests {
             .iter()
             .map(|s| (s.side_id.clone(), s.clone()))
             .collect();
-        if let Some((pts, winner)) = score {
+        if let Some((goals, winner)) = score {
+            let tally: serde_json::Map<String, serde_json::Value> = goals
+                .iter()
+                .map(|(s, g)| (s.to_string(), (*g).into()))
+                .collect();
             match_.confirmed_score = Some(ConfirmedScoreRecord {
-                score: ScoreRecord::Simple {
-                    entries: pts.iter().map(|(s, p)| (s.to_string(), *p)).collect(),
-                },
+                score: serde_json::from_value(
+                    serde_json::json!({ "type": "football", "score": tally }),
+                )
+                .expect("football score"),
                 winner_side_id: winner.map(Into::into),
             });
         }
@@ -620,18 +572,29 @@ mod tests {
     }
 
     #[test]
-    fn sets_count_only_outright_set_wins() {
-        let score = ScoreRecord::Sets {
-            entries: [
-                ("a".to_string(), vec![6, 4, 7]),
-                ("b".to_string(), vec![3, 6, 5]),
-            ]
-            .into_iter()
-            .collect(),
-        };
-        let pts = side_points(&score);
-        assert_eq!(pts["a"], 2);
-        assert_eq!(pts["b"], 1);
+    fn a_generic_sport_has_an_outcome_but_no_scoreline_or_counters() {
+        let mut a = agg(
+            vec![side("a", Some("t")), side("b", Some("u"))],
+            vec![player("p1", Some("u1"), "a")],
+            None,
+        );
+        a.match_.match_type = "tennis".into();
+        a.match_.confirmed_score = Some(ConfirmedScoreRecord {
+            score: ScoreRecord::Sets {
+                entries: [("a".to_string(), vec![6, 6]), ("b".to_string(), vec![3, 4])]
+                    .into_iter()
+                    .collect(),
+            },
+            winner_side_id: Some("a".into()),
+        });
+        let docs = build_match_docs(&a, None, "now");
+        let a_side = &docs.match_doc.sides[0];
+        assert_eq!(a_side.outcome, Some("won"));
+        assert_eq!(a_side.result, SideResultRecord::default());
+        assert_eq!(a_side.stats, MatchStatsRecord::default());
+        let doc = to_value(&docs.match_doc);
+        assert!(doc["sides"][0].get("result").is_none());
+        assert!(doc["sides"][0].get("stats").is_none());
     }
 
     #[test]
@@ -648,7 +611,7 @@ mod tests {
             docs.match_doc
                 .sides
                 .iter()
-                .all(|s| s.outcome.is_none() && s.score.is_none())
+                .all(|s| s.outcome.is_none() && s.result == SideResultRecord::default())
         );
         assert_eq!(docs.match_doc.participant_ids, vec!["u1".to_string()]);
     }
@@ -671,9 +634,13 @@ mod tests {
             .iter()
             .find(|s| s.side_id == "a")
             .unwrap();
+        assert_eq!(a_side.outcome, Some("won"));
         assert_eq!(
-            (a_side.outcome, a_side.score, a_side.conceded),
-            (Some("won"), Some(3), Some(1))
+            a_side.result.football,
+            Some(FootballSideResultRecord {
+                goals_for: 3,
+                goals_against: 1,
+            })
         );
         assert_eq!(
             a_side.stats.football.as_ref().map(|f| f.clean_sheets),

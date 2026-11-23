@@ -259,6 +259,15 @@ macro_rules! define_sport_dispatch {
             }
         }
 
+        /// Map a stored `SideResultRecord` to the public `SportSideResult`.
+        pub fn side_result_from_record(
+            result: &agon_services_core::sports::SideResultRecord,
+        ) -> crate::SportSideResult {
+            crate::SportSideResult {
+                $( $key: result.$key.as_ref().map(<agon_services_core::sports::$key::$variant as Sport>::side_result_from_record), )+
+            }
+        }
+
         /// Map a stored `MatchStatsRecord` to the public `SportMatchStats`.
         pub fn match_stats_from_record(
             stats: &agon_services_core::sports::MatchStatsRecord,

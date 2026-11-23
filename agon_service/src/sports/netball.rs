@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 
 use poem_openapi::{Enum, Object, Union};
 
-use agon_services_core::sports::netball::Netball;
+use agon_services_core::sports::netball::{Netball, NetballSideResultRecord};
 use agon_services_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballMatchStatsRecord, NetballPeriodEventRecord, NetballPeriodRecord,
@@ -24,6 +24,7 @@ impl Sport for Netball {
     type LiveEvent = NetballLiveEvent;
     type PlayerStats = NetballPlayerStats;
     type MatchStats = NetballMatchStats;
+    type SideResult = NetballSideResult;
 
     fn new_score() -> NetballScore {
         NetballScore {
@@ -290,6 +291,13 @@ impl Sport for Netball {
     fn match_stats_from_record(rec: &NetballMatchStatsRecord) -> NetballMatchStats {
         NetballMatchStats { goals: rec.goals }
     }
+
+    fn side_result_from_record(rec: &NetballSideResultRecord) -> NetballSideResult {
+        NetballSideResult {
+            goals_for: rec.goals_for,
+            goals_against: rec.goals_against,
+        }
+    }
 }
 
 // ---- API types ----------------------------------------------------------
@@ -555,6 +563,14 @@ pub struct NetballPlayerStats {
 pub struct NetballMatchStats {
     /// Goals scored, counted as in `NetballPlayerStats::goals`.
     pub goals: u64,
+}
+
+/// A team's netball scoreline summed over a set of matches, from the
+/// scoreboard (a two-point goal counts two).
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct NetballSideResult {
+    pub goals_for: u64,
+    pub goals_against: u64,
 }
 
 // ---- Record mapping helpers ---------------------------------------------

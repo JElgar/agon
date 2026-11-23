@@ -591,6 +591,15 @@ macro_rules! define_score_and_match_type {
         pub struct SportMatchStats {
             $( pub(crate) $key: Option<<agon_services_core::sports::$key::$variant as crate::sports::Sport>::MatchStats>, )+
         }
+
+        /// A team's scoreline summed over a set of matches, in its sport's
+        /// own terms: one field per modeled sport, only the sport asked
+        /// about set. Every field is absent for a sport without its own
+        /// scoreline yet (tennis, badminton, squash, table tennis).
+        #[derive(Object, Debug, Clone, PartialEq, Eq, Default)]
+        pub struct SportSideResult {
+            $( pub(crate) $key: Option<<agon_services_core::sports::$key::$variant as crate::sports::Sport>::SideResult>, )+
+        }
     };
 }
 agon_services_core::for_each_sport!(define_score_and_match_type);

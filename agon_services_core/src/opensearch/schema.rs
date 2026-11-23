@@ -10,7 +10,7 @@
 
 use serde_json::{Value, json};
 
-use crate::sports::MatchStatsRecord;
+use crate::sports::{MatchStatsRecord, SideResultRecord};
 
 /// One logical index.
 #[derive(Debug, Clone, Copy)]
@@ -86,11 +86,10 @@ fn matches_body() -> Value {
                         "team_id": { "type": "keyword" },
                         "name": { "type": "keyword" },
                         "outcome": { "type": "keyword" },
-                        "score": { "type": "integer" },
-                        "conceded": { "type": "integer" },
+                        "result": per_sport_mapping(SideResultRecord::all_fields()),
                         "player_ids": { "type": "keyword" },
                         "player_count": { "type": "integer" },
-                        "stats": sport_stats_mapping()
+                        "stats": per_sport_mapping(MatchStatsRecord::all_fields())
                     }
                 },
                 "indexed_at": { "type": "date" }
@@ -130,18 +129,18 @@ fn match_stats_body() -> Value {
                 "won": { "type": "integer" },
                 "drawn": { "type": "integer" },
                 "lost": { "type": "integer" },
-                "stats": sport_stats_mapping(),
+                "stats": per_sport_mapping(MatchStatsRecord::all_fields()),
                 "indexed_at": { "type": "date" }
             }
         }
     })
 }
 
-/// A `stats` object ([`MatchStatsRecord`]): one sub-object per modeled
-/// sport, each with that sport's own counters
-/// (`SportRecord::MATCH_STATS_FIELDS`).
-fn sport_stats_mapping() -> Value {
-    let sports: serde_json::Map<String, Value> = MatchStatsRecord::all_fields()
+/// A per-sport object ([`MatchStatsRecord`], [`SideResultRecord`]): one
+/// sub-object per modeled sport, each with that sport's own fields, all
+/// counters.
+fn per_sport_mapping(sports: Vec<(&'static str, &'static [&'static str])>) -> Value {
+    let sports: serde_json::Map<String, Value> = sports
         .into_iter()
         .map(|(sport, fields)| {
             let counters: serde_json::Map<String, Value> = fields
@@ -205,6 +204,11 @@ mod tests {
             sides["stats"]["properties"]["football"]["properties"]["clean_sheets"]["type"],
             "long"
         );
+        assert_eq!(
+            sides["result"]["properties"]["cricket"]["properties"]["wickets_taken"]["type"],
+            "long"
+        );
+        assert!(sides.get("score").is_none());
     }
 
     #[test]

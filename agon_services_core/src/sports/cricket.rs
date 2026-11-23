@@ -431,7 +431,10 @@ impl SportRecord for Cricket {
         "balls_bowled",
     ];
 
-    fn match_stats(c: &CricketStatsRecord, _conceded: u64) -> CricketMatchStatsRecord {
+    fn match_stats(
+        c: &CricketStatsRecord,
+        _side: &CricketSideResultRecord,
+    ) -> CricketMatchStatsRecord {
         CricketMatchStatsRecord {
             runs: c.runs,
             wickets: c.wickets,
@@ -456,6 +459,48 @@ impl SportRecord for Cricket {
         totals.runs_conceded += o.runs_conceded;
         totals.balls_bowled += o.balls_bowled;
     }
+
+    type SideResultRecord = CricketSideResultRecord;
+    const SIDE_RESULT_FIELDS: &'static [&'static str] =
+        &["runs_for", "wickets_lost", "runs_against", "wickets_taken"];
+
+    /// Sums every innings the side batted in (runs for, wickets lost) and
+    /// bowled in (runs against, wickets taken), extras included.
+    fn side_result(score: &CricketScoreRecord, side_id: &str) -> CricketSideResultRecord {
+        let mut out = CricketSideResultRecord::default();
+        for innings in &score.innings {
+            if innings.batting_side_id == side_id {
+                out.runs_for += u64::from(innings.runs);
+                out.wickets_lost += u64::from(innings.wickets);
+            }
+            if innings.bowling_side_id == side_id {
+                out.runs_against += u64::from(innings.runs);
+                out.wickets_taken += u64::from(innings.wickets);
+            }
+        }
+        out
+    }
+
+    fn add_side_result(totals: &mut CricketSideResultRecord, o: &CricketSideResultRecord) {
+        totals.runs_for += o.runs_for;
+        totals.wickets_lost += o.wickets_lost;
+        totals.runs_against += o.runs_against;
+        totals.wickets_taken += o.wickets_taken;
+    }
+}
+
+/// One side's cricket scoreline (see [`SportRecord::SideResultRecord`]),
+/// from the innings totals.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CricketSideResultRecord {
+    #[serde(default)]
+    pub runs_for: u64,
+    #[serde(default)]
+    pub wickets_lost: u64,
+    #[serde(default)]
+    pub runs_against: u64,
+    #[serde(default)]
+    pub wickets_taken: u64,
 }
 
 /// One match's cricket counters (see [`SportRecord::MatchStatsRecord`]),

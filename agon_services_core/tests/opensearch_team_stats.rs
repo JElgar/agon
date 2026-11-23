@@ -1,13 +1,13 @@
 //! The typed team-stats reads (`opensearch::team_stats`) against a real
 //! OpenSearch: records per kind, recent results and streak, next match,
-//! leaderboards per scope, and stat keys read from the mapping. Uses a random
+//! and leaderboards per scope. Uses a random
 //! index prefix and deletes its indices afterwards.
 //!
 //! Skipped unless `OPENSEARCH_URL` is set (`make test-opensearch-local`).
 
 use agon_services_core::dao::match_ops::MatchAggregate;
 use agon_services_core::dao::records::{
-    ConfirmedScoreRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, ScoreRecord,
+    ConfirmedScoreRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord,
 };
 use agon_services_core::opensearch::team_stats::{self as ts, LeaderboardScope};
 use agon_services_core::opensearch::{
@@ -56,9 +56,12 @@ fn confirmed(
 ) -> MatchAggregate {
     let mut m = record(id, "completed", starts_at, &sides);
     m.confirmed_score = Some(ConfirmedScoreRecord {
-        score: ScoreRecord::Simple {
-            entries: pts.iter().map(|(s, p)| (s.to_string(), *p)).collect(),
-        },
+        // A goal tally only: enough for the side's football scoreline.
+        score: serde_json::from_value(json!({
+            "type": "football",
+            "score": pts.iter().map(|(s, p)| (s.to_string(), *p)).collect::<std::collections::HashMap<_, _>>(),
+        }))
+        .unwrap(),
         winner_side_id: winner.map(Into::into),
     });
     MatchAggregate {
@@ -171,13 +174,24 @@ async fn team_stats_reads_against_opensearch() {
         ),
         (3, 1, 1, 1)
     );
-    assert_eq!((r.friendly.points_for, r.friendly.points_against), (3, 4));
+    assert_eq!(
+        r.friendly
+            .result
+            .football
+            .as_ref()
+            .map(|f| (f.goals_for, f.goals_against)),
+        Some((3, 4))
+    );
     assert_eq!(
         r.friendly.stats.football.as_ref().map(|f| f.clean_sheets),
         Some(1)
     );
     assert_eq!(r.ext, r.friendly, "no league or cup games");
-    assert_eq!((r.squad.games, r.squad.points), (1, 6));
+    assert_eq!(r.squad.games, 1);
+    assert_eq!(
+        r.squad.result.football.as_ref().map(|f| f.goals_for),
+        Some(6)
+    );
     // m1 is more than 12 months before NOW; m2 and m3 are inside.
     assert_eq!(r.ext_last_12_months, 2);
 

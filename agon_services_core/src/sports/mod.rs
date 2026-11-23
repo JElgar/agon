@@ -199,8 +199,11 @@ pub trait SportRecord {
     const MATCH_STATS_FIELDS: &'static [&'static str];
 
     /// One player's counters, from their [`SportRecord::contribution`].
-    /// `conceded` is what the other sides scored against theirs.
-    fn match_stats(contribution: &Self::StatsRecord, conceded: u64) -> Self::MatchStatsRecord;
+    /// `side` is their side's result in the match.
+    fn match_stats(
+        contribution: &Self::StatsRecord,
+        side: &Self::SideResultRecord,
+    ) -> Self::MatchStatsRecord;
 
     /// Adds `other` into `totals`.
     fn add_match_stats(totals: &mut Self::MatchStatsRecord, other: &Self::MatchStatsRecord);
@@ -208,9 +211,35 @@ pub trait SportRecord {
     /// A side's counters, from the sum of its players'. Override for a
     /// counter that belongs to the side as a whole rather than to the sum
     /// of its players.
-    fn side_match_stats(players: Self::MatchStatsRecord, _conceded: u64) -> Self::MatchStatsRecord {
+    fn side_match_stats(
+        players: Self::MatchStatsRecord,
+        _side: &Self::SideResultRecord,
+    ) -> Self::MatchStatsRecord {
         players
     }
+
+    /// One side's scoreline in a match, read from the confirmed score
+    /// (e.g. goals for and against): what a team's record sums.
+    type SideResultRecord: RecordType + Default + Eq;
+
+    /// Every field of [`SportRecord::SideResultRecord`], as serialized.
+    const SIDE_RESULT_FIELDS: &'static [&'static str];
+
+    /// `side_id`'s scoreline in `score`.
+    fn side_result(score: &Self::ScoreRecord, side_id: &str) -> Self::SideResultRecord;
+
+    /// Adds `other` into `totals`.
+    fn add_side_result(totals: &mut Self::SideResultRecord, other: &Self::SideResultRecord);
+}
+
+/// A stored per-sport record keyed by sport tag (`{"football": {...}}`),
+/// summed field by field.
+fn from_sums<T: DeserializeOwned>(fields: &[&str], sum: impl Fn(&str) -> u64) -> Option<T> {
+    let fields: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|f| (f.to_string(), sum(f).into()))
+        .collect();
+    serde_json::from_value(fields.into()).ok()
 }
 
 macro_rules! define_contribution {
@@ -258,16 +287,15 @@ macro_rules! define_contribution {
         }
 
         impl MatchStatsRecord {
-            /// The counters the user holding `player_ids` earned from a
-            /// confirmed `score` in `sport`. `conceded` is what the other
-            /// sides scored against theirs.
+            /// The counters the user holding `player_ids` on `side_id` earned
+            /// from a confirmed `score` in `sport`.
             pub fn for_player(
                 sport: &str,
                 score: &ScoreRecord,
+                side_id: &str,
                 player_ids: &[&str],
                 format: Option<&MatchFormatRecord>,
                 match_id: &str,
-                conceded: u64,
             ) -> Self {
                 let mut out = Self::default();
                 match (sport, score) {
@@ -281,7 +309,8 @@ macro_rules! define_contribution {
                             let c = <$key::$variant as SportRecord>::contribution(
                                 score, player_ids, format, match_id,
                             );
-                            out.$key = Some(<$key::$variant as SportRecord>::match_stats(&c, conceded));
+                            let side = <$key::$variant as SportRecord>::side_result(score, side_id);
+                            out.$key = Some(<$key::$variant as SportRecord>::match_stats(&c, &side));
                         }
                     )+
                     _ => {}
@@ -301,15 +330,16 @@ macro_rules! define_contribution {
                 )+
             }
 
-            /// A side's counters in `sport`, from its players' summed.
-            /// `None` for a generic sport.
-            pub fn for_side(sport: &str, players: Self, conceded: u64) -> Self {
-                let mut out = players;
-                match sport {
+            /// `side_id`'s counters from a confirmed `score` in `sport`,
+            /// given its players' summed. Empty for a generic sport.
+            pub fn for_side(sport: &str, score: &ScoreRecord, side_id: &str, players: Self) -> Self {
+                let mut out = Self::default();
+                match (sport, score) {
                     $(
-                        $tag => {
-                            let totals = out.$key.take().unwrap_or_default();
-                            out.$key = Some(<$key::$variant as SportRecord>::side_match_stats(totals, conceded));
+                        ($tag, ScoreRecord::$variant(score)) => {
+                            let side = <$key::$variant as SportRecord>::side_result(score, side_id);
+                            let totals = players.$key.unwrap_or_default();
+                            out.$key = Some(<$key::$variant as SportRecord>::side_match_stats(totals, &side));
                         }
                     )+
                     _ => {}
@@ -336,16 +366,71 @@ macro_rules! define_contribution {
             pub fn from_sums(sport: &str, sum: impl Fn(&str) -> u64) -> Self {
                 let mut out = Self::default();
                 match sport {
+                    $( $tag => out.$key = from_sums(<$key::$variant as SportRecord>::MATCH_STATS_FIELDS, sum), )+
+                    _ => {}
+                }
+                out
+            }
+        }
+
+        /// One side's scoreline in its sport, as the stats store keeps it:
+        /// one field per modeled sport, only the match's own sport set.
+        /// Empty for a generic sport.
+        #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+        pub struct SideResultRecord {
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $key: Option<<$key::$variant as SportRecord>::SideResultRecord>,
+            )+
+        }
+
+        impl SideResultRecord {
+            /// `side_id`'s scoreline in a confirmed `score` in `sport`.
+            pub fn for_side(sport: &str, score: &ScoreRecord, side_id: &str) -> Self {
+                let mut out = Self::default();
+                match (sport, score) {
                     $(
-                        $tag => {
-                            let fields: serde_json::Map<String, serde_json::Value> =
-                                <$key::$variant as SportRecord>::MATCH_STATS_FIELDS
-                                    .iter()
-                                    .map(|f| (f.to_string(), sum(f).into()))
-                                    .collect();
-                            out.$key = serde_json::from_value(fields.into()).ok();
+                        ($tag, ScoreRecord::$variant(score)) => {
+                            out.$key = Some(<$key::$variant as SportRecord>::side_result(score, side_id));
                         }
                     )+
+                    _ => {}
+                }
+                out
+            }
+
+            /// Adds `other` into this, sport by sport.
+            pub fn add(&mut self, other: &Self) {
+                $(
+                    if let Some(o) = &other.$key {
+                        <$key::$variant as SportRecord>::add_side_result(
+                            self.$key.get_or_insert_with(Default::default),
+                            o,
+                        );
+                    }
+                )+
+            }
+
+            /// The fields `sport` keeps, under `result.<sport>`. Empty for a
+            /// generic sport.
+            pub fn fields(sport: &str) -> &'static [&'static str] {
+                match sport {
+                    $( $tag => <$key::$variant as SportRecord>::SIDE_RESULT_FIELDS, )+
+                    _ => &[],
+                }
+            }
+
+            /// Every modeled sport's tag and its fields.
+            pub fn all_fields() -> Vec<(&'static str, &'static [&'static str])> {
+                vec![$( ($tag, <$key::$variant as SportRecord>::SIDE_RESULT_FIELDS), )+]
+            }
+
+            /// `sport`'s scoreline, from the summed value of each of its
+            /// [`SideResultRecord::fields`]. Empty for a generic sport.
+            pub fn from_sums(sport: &str, sum: impl Fn(&str) -> u64) -> Self {
+                let mut out = Self::default();
+                match sport {
+                    $( $tag => out.$key = from_sums(<$key::$variant as SportRecord>::SIDE_RESULT_FIELDS, sum), )+
                     _ => {}
                 }
                 out
@@ -359,13 +444,23 @@ for_each_sport!(define_contribution);
 mod tests {
     use super::*;
 
-    /// `MATCH_STATS_FIELDS` is what the stats store maps and sums, so it
-    /// must name every field the type serializes, no more and no fewer.
+    /// The `*_FIELDS` lists are what the stats store maps and sums, so each
+    /// must name every field its type serializes, no more and no fewer.
     #[test]
-    fn match_stats_fields_name_every_serialized_field() {
-        for (sport, fields) in MatchStatsRecord::all_fields() {
-            let one = MatchStatsRecord::from_sums(sport, |_| 1);
-            let value = serde_json::to_value(&one).unwrap();
+    fn declared_fields_name_every_serialized_field() {
+        let stats = MatchStatsRecord::all_fields()
+            .into_iter()
+            .map(|(sport, fields)| {
+                let one = serde_json::to_value(MatchStatsRecord::from_sums(sport, |_| 1));
+                (sport, fields, one.unwrap())
+            });
+        let results = SideResultRecord::all_fields()
+            .into_iter()
+            .map(|(sport, fields)| {
+                let one = serde_json::to_value(SideResultRecord::from_sums(sport, |_| 1));
+                (sport, fields, one.unwrap())
+            });
+        for (sport, fields, value) in stats.chain(results) {
             let mut serialized: Vec<&str> = value[sport]
                 .as_object()
                 .unwrap_or_else(|| panic!("{sport} parses from its own fields"))
@@ -386,9 +481,17 @@ mod tests {
     #[test]
     fn a_generic_sport_has_no_match_stats() {
         assert!(MatchStatsRecord::fields("tennis").is_empty());
+        assert!(SideResultRecord::fields("tennis").is_empty());
+        let sets = ScoreRecord::Sets {
+            entries: [("a".to_string(), vec![6, 6])].into_iter().collect(),
+        };
         assert_eq!(
-            MatchStatsRecord::for_side("tennis", MatchStatsRecord::default(), 0),
+            MatchStatsRecord::for_side("tennis", &sets, "a", MatchStatsRecord::default()),
             MatchStatsRecord::default()
+        );
+        assert_eq!(
+            SideResultRecord::for_side("tennis", &sets, "a"),
+            SideResultRecord::default()
         );
     }
 }

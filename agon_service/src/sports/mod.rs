@@ -40,6 +40,8 @@ pub(crate) trait Sport: SportRecord {
     /// One match's counters, summed for a team or player: its
     /// `SportMatchStats` field.
     type MatchStats: ApiType;
+    /// A side's scoreline, summed for a team: its `SportSideResult` field.
+    type SideResult: ApiType;
 
     /// The score before any live event has been recorded.
     fn new_score() -> Self::Score;
@@ -99,4 +101,5 @@ pub(crate) trait Sport: SportRecord {
     fn live_event_from_record(rec: &Self::LiveEventRecord) -> Self::LiveEvent;
     fn stats_from_record(rec: &Self::StatsRecord) -> Self::PlayerStats;
     fn match_stats_from_record(rec: &Self::MatchStatsRecord) -> Self::MatchStats;
+    fn side_result_from_record(rec: &Self::SideResultRecord) -> Self::SideResult;
 }

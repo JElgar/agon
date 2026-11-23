@@ -9,27 +9,23 @@
 //!
 //! **What counts.** Only confirmed matches count towards records and
 //! leaderboards, matching lifetime stats. Squad games (both sides are this
-//! team) have no W/D/L for the team, only games and points. They're kept out
-//! of the external record (`ext` = league + cup + friendly), form and last 10,
-//! but they do count on the leaderboard (`all`), per the in-house rule.
+//! team) have no W/D/L for the team, only games and the scoreline. They're
+//! kept out of the external record (`ext` = league + cup + friendly) and
+//! recent results, but they do count on the leaderboard (`all`), per the
+//! in-house rule.
 //!
-//! **Sport-specific counters.** Each sport's own counters (football goals,
-//! assists and clean sheets; cricket runs, wickets, catches, ...) are read
-//! from `stats.<sport>` with that sport's fields
-//! (`SportRecord::MATCH_STATS_FIELDS`), into its own type.
-//!
-//! **Points, not goals.** A side's stored `score` is whatever that sport
-//! counts — goals in football and netball, runs in cricket, points or sets
-//! elsewhere (`super::docs::side_points`). The fields here are named for
-//! that, so a cricket team's record doesn't report its runs under a football
-//! word.
+//! **Sport-specific.** A side's scoreline (football goals for and against;
+//! cricket runs and wickets) is read from `result.<sport>` and its counters
+//! (football goals, assists, clean sheets; cricket runs, wickets, catches,
+//! ...) from `stats.<sport>`, each with that sport's own fields into its own
+//! type. A generic sport (tennis, ...) has neither, only W/D/L.
 
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::client::{OpenSearchClient, OpenSearchResult};
 use super::schema::{MATCH_STATS, MATCHES};
-use crate::sports::MatchStatsRecord;
+use crate::sports::{MatchStatsRecord, SideResultRecord};
 
 /// Upper bound on distinct players in one leaderboard slice. A team's roster
 /// plus ringers over its whole history is far below this.
@@ -44,8 +40,9 @@ pub struct RecordCounts {
     pub won: u64,
     pub drawn: u64,
     pub lost: u64,
-    pub points_for: u64,
-    pub points_against: u64,
+    /// This team's scoreline summed across these matches (e.g. football
+    /// goals for and against).
+    pub result: SideResultRecord,
     /// The sport's own counters for this team's side, summed across these
     /// matches (e.g. football clean sheets, cricket wickets).
     pub stats: MatchStatsRecord,
@@ -57,18 +54,19 @@ impl RecordCounts {
         self.won += o.won;
         self.drawn += o.drawn;
         self.lost += o.lost;
-        self.points_for += o.points_for;
-        self.points_against += o.points_against;
+        self.result.add(&o.result);
         self.stats.add(&o.stats);
     }
 }
 
 /// Squad games: the team plays itself, so there's no W/D/L, only how many
-/// games and how many points were scored in them (both sides).
+/// games and what was scored in them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SquadCounts {
     pub games: u64,
-    pub points: u64,
+    /// Both sides' scorelines summed, so `goals_for` (or `runs_for`) is
+    /// everything scored in these games.
+    pub result: SideResultRecord,
     /// See [`RecordCounts::stats`]: both sides' totals.
     pub stats: MatchStatsRecord,
 }
@@ -96,7 +94,7 @@ pub struct TeamRecords {
 /// One request: the query selects this team's confirmed matches in the
 /// sport; `years` and `recent_ext` ignore the year filter; `scoped` applies
 /// it and splits by kind, then reads this team's side(s) through the nested
-/// `sides`, summing `sport`'s own counters.
+/// `sides`, summing `sport`'s own scoreline and counters.
 pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &str) -> Value {
     let scoped_filter = match year {
         Some(y) => json!({ "term": { "year": y } }),
@@ -107,8 +105,12 @@ pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &s
         "outcome".into(),
         json!({ "terms": { "field": "sides.outcome", "size": 5 } }),
     );
-    ours_aggs.insert("pf".into(), json!({ "sum": { "field": "sides.score" } }));
-    ours_aggs.insert("pa".into(), json!({ "sum": { "field": "sides.conceded" } }));
+    for f in SideResultRecord::fields(sport) {
+        ours_aggs.insert(
+            format!("result:{f}"),
+            json!({ "sum": { "field": format!("sides.result.{sport}.{f}") } }),
+        );
+    }
     for f in MatchStatsRecord::fields(sport) {
         ours_aggs.insert(
             format!("stat:{f}"),
@@ -151,6 +153,11 @@ fn sport_stats(agg: &Value, sport: &str) -> MatchStatsRecord {
     MatchStatsRecord::from_sums(sport, |f| sum(&agg[format!("stat:{f}")]))
 }
 
+/// `sport`'s scoreline from an aggregation's `result:<field>` sums.
+fn side_result(agg: &Value, sport: &str) -> SideResultRecord {
+    SideResultRecord::from_sums(sport, |f| sum(&agg[format!("result:{f}")]))
+}
+
 /// Read a [`team_records_query`] response for `sport`.
 pub fn parse_team_records(resp: &Value, sport: &str) -> TeamRecords {
     let aggs = &resp["aggregations"];
@@ -169,8 +176,8 @@ pub fn parse_team_records(resp: &Value, sport: &str) -> TeamRecords {
             Some("squad") => {
                 out.squad = SquadCounts {
                     games: count(&kind["doc_count"]),
-                    // Both sides are this team, so this sums both scores.
-                    points: sum(&ours["pf"]),
+                    // Both sides are this team, so this sums both.
+                    result: side_result(ours, sport),
                     stats: sport_stats(ours, sport),
                 };
             }
@@ -178,8 +185,7 @@ pub fn parse_team_records(resp: &Value, sport: &str) -> TeamRecords {
                 let mut rec = RecordCounts {
                     // One side per external match is ours.
                     played: count(&ours["doc_count"]),
-                    points_for: sum(&ours["pf"]),
-                    points_against: sum(&ours["pa"]),
+                    result: side_result(ours, sport),
                     stats: sport_stats(ours, sport),
                     ..Default::default()
                 };
@@ -602,14 +608,21 @@ fn sum(agg: &Value) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sports::cricket::CricketMatchStatsRecord;
-    use crate::sports::football::FootballMatchStatsRecord;
+    use crate::sports::cricket::{CricketMatchStatsRecord, CricketSideResultRecord};
+    use crate::sports::football::{FootballMatchStatsRecord, FootballSideResultRecord};
 
     fn kind_bucket(kind: &str, docs: u64, ours: Value) -> Value {
         json!({ "key": kind, "doc_count": docs, "sides": { "doc_count": docs * 2, "ours": ours } })
     }
 
-    fn ours(n: u64, w: u64, d: u64, l: u64, pf: f64, pa: f64, stats: &[(&str, f64)]) -> Value {
+    fn ours(
+        n: u64,
+        w: u64,
+        d: u64,
+        l: u64,
+        result: &[(&str, f64)],
+        stats: &[(&str, f64)],
+    ) -> Value {
         let mut outcomes = Vec::new();
         for (k, c) in [("won", w), ("drawn", d), ("lost", l)] {
             if c > 0 {
@@ -618,10 +631,11 @@ mod tests {
         }
         let mut v = json!({
             "doc_count": n,
-            "outcome": { "buckets": outcomes },
-            "pf": { "value": pf },
-            "pa": { "value": pa }
+            "outcome": { "buckets": outcomes }
         });
+        for (k, s) in result {
+            v[format!("result:{k}")] = json!({ "value": s });
+        }
         for (k, s) in stats {
             v[format!("stat:{k}")] = json!({ "value": s });
         }
@@ -634,10 +648,14 @@ mod tests {
             "years": { "buckets": [{ "key": 2026, "doc_count": 9 }, { "key": 2025, "doc_count": 3 }] },
             "recent_ext": { "doc_count": 7 },
             "scoped": { "doc_count": 12, "by_kind": { "buckets": [
-                kind_bucket("league", 5, ours(5, 3, 1, 1, 9.0, 4.0, &[("goals", 9.0), ("assists", 0.0), ("clean_sheets", 2.0)])),
-                kind_bucket("friendly", 3, ours(3, 1, 0, 2, 4.0, 6.0, &[("goals", 4.0), ("assists", 3.0), ("clean_sheets", 0.0)])),
-                // Squad: both sides are ours, so pf already covers both scores.
-                kind_bucket("squad", 4, json!({ "doc_count": 8, "pf": { "value": 21.0 }, "stat:goals": { "value": 21.0 } })),
+                kind_bucket("league", 5, ours(5, 3, 1, 1,
+                    &[("goals_for", 9.0), ("goals_against", 4.0)],
+                    &[("goals", 9.0), ("assists", 0.0), ("clean_sheets", 2.0)])),
+                kind_bucket("friendly", 3, ours(3, 1, 0, 2,
+                    &[("goals_for", 4.0), ("goals_against", 6.0)],
+                    &[("goals", 4.0), ("assists", 3.0), ("clean_sheets", 0.0)])),
+                // Squad: both sides are ours, so goals_for covers both.
+                kind_bucket("squad", 4, json!({ "doc_count": 8, "result:goals_for": { "value": 21.0 }, "stat:goals": { "value": 21.0 } })),
             ] } }
         } });
         let r = parse_team_records(&resp, "football");
@@ -650,8 +668,13 @@ mod tests {
                 won: 3,
                 drawn: 1,
                 lost: 1,
-                points_for: 9,
-                points_against: 4,
+                result: SideResultRecord {
+                    football: Some(FootballSideResultRecord {
+                        goals_for: 9,
+                        goals_against: 4,
+                    }),
+                    ..Default::default()
+                },
                 stats: MatchStatsRecord {
                     football: Some(FootballMatchStatsRecord {
                         goals: 9,
@@ -665,7 +688,7 @@ mod tests {
         assert_eq!(r.cup, RecordCounts::default());
         assert_eq!(r.ext.played, 8);
         assert_eq!(r.ext.won, 4);
-        assert_eq!(r.ext.points_against, 10);
+        assert_eq!(r.ext.result.football.map(|f| f.goals_against), Some(10));
         // Both kinds' counters sum into the external record.
         assert_eq!(
             r.ext.stats.football,
@@ -676,7 +699,7 @@ mod tests {
             })
         );
         assert_eq!(r.squad.games, 4);
-        assert_eq!(r.squad.points, 21);
+        assert_eq!(r.squad.result.football.map(|f| f.goals_for), Some(21));
         assert_eq!(r.squad.stats.football.map(|f| f.goals), Some(21));
     }
 
@@ -688,16 +711,35 @@ mod tests {
             aggs["stat:wickets"],
             json!({ "sum": { "field": "sides.stats.cricket.wickets" } })
         );
+        assert_eq!(
+            aggs["result:wickets_taken"],
+            json!({ "sum": { "field": "sides.result.cricket.wickets_taken" } })
+        );
         assert!(aggs.get("stat:goals").is_none(), "no football counters");
+        assert!(
+            aggs.get("result:goals_for").is_none(),
+            "no football scoreline"
+        );
 
         let resp = json!({ "aggregations": {
             "years": { "buckets": [] },
             "recent_ext": { "doc_count": 1 },
             "scoped": { "doc_count": 1, "by_kind": { "buckets": [
-                kind_bucket("friendly", 1, ours(1, 1, 0, 0, 180.0, 140.0, &[("runs", 170.0), ("wickets", 9.0), ("catches", 4.0)])),
+                kind_bucket("friendly", 1, ours(1, 1, 0, 0,
+                    &[("runs_for", 180.0), ("wickets_lost", 6.0), ("runs_against", 140.0), ("wickets_taken", 10.0)],
+                    &[("runs", 170.0), ("wickets", 9.0), ("catches", 4.0)])),
             ] } }
         } });
         let r = parse_team_records(&resp, "cricket");
+        assert_eq!(
+            r.friendly.result.cricket,
+            Some(CricketSideResultRecord {
+                runs_for: 180,
+                wickets_lost: 6,
+                runs_against: 140,
+                wickets_taken: 10,
+            })
+        );
         assert_eq!(r.friendly.stats.football, None);
         assert_eq!(
             r.friendly.stats.cricket,
@@ -716,7 +758,10 @@ mod tests {
         let ours = q["aggs"]["scoped"]["aggs"]["by_kind"]["aggs"]["sides"]["aggs"]["ours"]["aggs"]
             .as_object()
             .unwrap();
-        assert!(ours.keys().all(|k| !k.starts_with("stat:")));
+        assert!(
+            ours.keys()
+                .all(|k| !k.starts_with("stat:") && !k.starts_with("result:"))
+        );
     }
 
     #[test]
@@ -783,16 +828,16 @@ mod tests {
     fn results_are_read_from_our_side() {
         let resp = json!({ "hits": { "hits": [
             match_hit("m2", "friendly", json!([
-                { "side_id": "a", "team_id": "leyton", "name": "Leyton", "outcome": "won", "score": 2, "conceded": 1 },
-                { "side_id": "b", "team_id": "hw", "outcome": "lost", "score": 1, "conceded": 2 }
+                { "side_id": "a", "team_id": "leyton", "name": "Leyton", "outcome": "won" },
+                { "side_id": "b", "team_id": "hw", "outcome": "lost" }
             ])),
             match_hit("m1", "league", json!([
-                { "side_id": "a", "team_id": "hw", "outcome": "lost", "score": 0, "conceded": 3 },
-                { "side_id": "b", "name": "Pickup XI", "outcome": "won", "score": 3, "conceded": 0 }
+                { "side_id": "a", "team_id": "hw", "outcome": "lost" },
+                { "side_id": "b", "name": "Pickup XI", "outcome": "won" }
             ])),
             match_hit("m0", "league", json!([
-                { "side_id": "a", "team_id": "hw", "outcome": "won", "score": 2, "conceded": 0 },
-                { "side_id": "b", "team_id": "x", "outcome": "lost", "score": 0, "conceded": 2 }
+                { "side_id": "a", "team_id": "hw", "outcome": "won" },
+                { "side_id": "b", "team_id": "x", "outcome": "lost" }
             ]))
         ] } });
         let rs = parse_recent_results(&resp, "hw");

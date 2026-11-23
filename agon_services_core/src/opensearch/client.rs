@@ -19,7 +19,7 @@ use opensearch::http::response::Response;
 use opensearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
 use opensearch::indices::{
     IndicesCreateParts, IndicesDeleteParts, IndicesExistsParts, IndicesGetAliasParts,
-    IndicesGetMappingParts, IndicesRefreshParts,
+    IndicesRefreshParts,
 };
 use opensearch::params::Refresh;
 use opensearch::{BulkParts, CountParts, OpenSearch, SearchParts};
@@ -346,19 +346,6 @@ impl OpenSearchClient {
             .flatten()
             .filter_map(|h| h["_id"].as_str().map(str::to_string))
             .collect())
-    }
-
-    /// The mapping of an index or alias, keyed by physical index name.
-    pub async fn get_mapping(&self, index: &str) -> OpenSearchResult<Value> {
-        let resp = self
-            .client
-            .indices()
-            .get_mapping(IndicesGetMappingParts::Index(&[index]))
-            .send()
-            .await?;
-        let (status, body) = Self::read(resp).await?;
-        Self::check(status, &body)?;
-        Ok(body)
     }
 
     /// Run a raw `_search` against an index or alias. The typed reads in

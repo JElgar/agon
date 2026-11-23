@@ -73,8 +73,16 @@ jobs:
       agon-ui-image: ${{ needs.publish-ui.outputs.image }}
       stack-name: staging
 
+  # `always()` is required here too, for the same reason as on `deploy`
+  # above: `deploy`'s own needs (publish-service/worker/ui) are routinely
+  # skipped, and GitHub's default "all needs must succeed" check looks past
+  # `deploy`'s own `if: always()` at that skipped ancestry, so without this
+  # these jobs were silently skipped on every push that didn't touch
+  # agon_service/agon_worker/agon_ui — i.e. most infra-only or workflow-only
+  # changes — which meant `deploy-prod` could never run after them either.
   test:
     needs: deploy
+    if: always() && needs.deploy.result == 'success'
     uses: JElgar/agon/.github/workflows/test.yml@main
     with:
       agon-service-url: ${{ needs.deploy.outputs.agon-url }}/api
@@ -84,6 +92,7 @@ jobs:
 
   test-ui-e2e:
     needs: deploy
+    if: always() && needs.deploy.result == 'success'
     uses: JElgar/agon/.github/workflows/test-ui-e2e.yml@main
     with:
       base-url: ${{ needs.deploy.outputs.agon-url }}

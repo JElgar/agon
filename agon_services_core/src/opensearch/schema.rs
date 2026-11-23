@@ -10,6 +10,8 @@
 
 use serde_json::{Value, json};
 
+use crate::sports::{MatchStatsRecord, SideResultRecord};
+
 /// One logical index.
 #[derive(Debug, Clone, Copy)]
 pub struct IndexDef {
@@ -49,20 +51,9 @@ fn settings() -> Value {
 }
 
 /// One document per match. See [`crate::opensearch::docs::MatchDoc`].
-///
-/// v2: `tournament_round`/`tournament_slot` were added to the mapping without
-/// bumping the version (the matches-read PR reasoned "nothing has been
-/// deployed or backfilled yet", true for a fresh environment but not for one
-/// where `matches_v1` already existed before those fields were added).
-/// `ensure_index` only creates an index that doesn't exist yet — it never
-/// updates an existing one's mapping — so on a table with real history,
-/// `matches_v1`'s `dynamic: strict` mapping had no `tournament_round` field,
-/// and a bulk index of any tournament match failed outright
-/// (`strict_dynamic_mapping_exception`). Bumping to v2 so a fresh index is
-/// created with both fields mapped from the start.
 pub const MATCHES: IndexDef = IndexDef {
     name: "matches",
-    version: 2,
+    version: 3,
     body: matches_body,
 };
 
@@ -71,11 +62,6 @@ fn matches_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
-            // A side's sport counters (goals, assists, runs, wickets, ...)
-            // vary by sport, same reasoning as `match_stats.stats` below.
-            "dynamic_templates": [
-                { "side_stat_counters": { "path_match": "sides.stats.*", "mapping": { "type": "long" } } }
-            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
@@ -100,11 +86,10 @@ fn matches_body() -> Value {
                         "team_id": { "type": "keyword" },
                         "name": { "type": "keyword" },
                         "outcome": { "type": "keyword" },
-                        "score": { "type": "integer" },
-                        "conceded": { "type": "integer" },
+                        "result": per_sport_mapping(SideResultRecord::all_fields()),
                         "player_ids": { "type": "keyword" },
                         "player_count": { "type": "integer" },
-                        "stats": { "type": "object", "dynamic": true }
+                        "stats": per_sport_mapping(MatchStatsRecord::all_fields())
                     }
                 },
                 "indexed_at": { "type": "date" }
@@ -116,14 +101,17 @@ fn matches_body() -> Value {
 /// One flat row per player per confirmed match. See
 /// [`crate::opensearch::docs::PlayerStatDoc`].
 ///
-/// v2: adds `series_id`, so a future series-scoped slice (the per-player
+/// v3: adds `series_id`, so a future series-scoped slice (the per-player
 /// analogue of `tournament_id`'s `LeaderboardScope::Tournament`) can filter
-/// on it. New field on an already-deployed strict mapping, so — same lesson
-/// as `MATCHES`'s v2 — this needs the version bump even though nothing else
-/// about the shape changed.
+/// on it. New field on an already-deployed strict mapping (v2's per-sport
+/// stats rework), so this needs its own version bump even though nothing
+/// else about the shape changed: `ensure_index` never updates an existing
+/// index's mapping, so skipping the bump would repeat the exact
+/// `strict_dynamic_mapping_exception` that `matches` hit before it got its
+/// own bump.
 pub const MATCH_STATS: IndexDef = IndexDef {
     name: "match_stats",
-    version: 2,
+    version: 3,
     body: match_stats_body,
 };
 
@@ -132,11 +120,6 @@ fn match_stats_body() -> Value {
         "settings": settings(),
         "mappings": {
             "dynamic": "strict",
-            // Sport counters (goals, assists, runs, wickets, ...) vary by sport
-            // and grow over time, so `stats` takes any key, always as a long.
-            "dynamic_templates": [
-                { "stat_counters": { "path_match": "stats.*", "mapping": { "type": "long" } } }
-            ],
             "properties": {
                 "match_id": { "type": "keyword" },
                 "user_id": { "type": "keyword" },
@@ -156,11 +139,28 @@ fn match_stats_body() -> Value {
                 "won": { "type": "integer" },
                 "drawn": { "type": "integer" },
                 "lost": { "type": "integer" },
-                "stats": { "type": "object", "dynamic": true },
+                "stats": per_sport_mapping(MatchStatsRecord::all_fields()),
                 "indexed_at": { "type": "date" }
             }
         }
     })
+}
+
+/// A per-sport object ([`MatchStatsRecord`], [`SideResultRecord`]): one
+/// sub-object per modeled sport, each with that sport's own fields, all
+/// counters.
+fn per_sport_mapping(sports: Vec<(&'static str, &'static [&'static str])>) -> Value {
+    let sports: serde_json::Map<String, Value> = sports
+        .into_iter()
+        .map(|(sport, fields)| {
+            let counters: serde_json::Map<String, Value> = fields
+                .iter()
+                .map(|f| (f.to_string(), json!({ "type": "long" })))
+                .collect();
+            (sport.to_string(), json!({ "properties": counters }))
+        })
+        .collect();
+    json!({ "properties": sports })
 }
 
 /// One document per user. See [`crate::opensearch::docs::UserDoc`]. Backs
@@ -198,9 +198,27 @@ mod tests {
 
     #[test]
     fn physical_and_alias_names_include_prefix_and_version() {
-        assert_eq!(MATCHES.physical(""), "matches_v2");
+        assert_eq!(MATCHES.physical(""), "matches_v3");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
-        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v2");
+        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v3");
+    }
+
+    #[test]
+    fn stats_are_mapped_per_sport_with_each_sports_own_counters() {
+        let stats = &(MATCH_STATS.body)()["mappings"]["properties"]["stats"]["properties"];
+        assert_eq!(stats["football"]["properties"]["assists"]["type"], "long");
+        assert_eq!(stats["cricket"]["properties"]["wickets"]["type"], "long");
+        assert!(stats["cricket"]["properties"].get("assists").is_none());
+        let sides = &(MATCHES.body)()["mappings"]["properties"]["sides"]["properties"];
+        assert_eq!(
+            sides["stats"]["properties"]["football"]["properties"]["clean_sheets"]["type"],
+            "long"
+        );
+        assert_eq!(
+            sides["result"]["properties"]["cricket"]["properties"]["wickets_taken"]["type"],
+            "long"
+        );
+        assert!(sides.get("score").is_none());
     }
 
     #[test]

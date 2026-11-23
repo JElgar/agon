@@ -260,6 +260,51 @@ impl Dao {
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
+
+    /// Grant `uid` `Admin` authority over a series, or revoke it (an absent
+    /// `authority` entry), by setting or removing their one entry in the
+    /// map — same shape as `Dao::set_match_player_role`. Never used for
+    /// `Owner`: a series has no ownership transfer, so `created_by_user_id`
+    /// stays the permanent owner and is never written into `authority`
+    /// itself (see `SeriesRecord::authority`'s doc comment). Conditioned
+    /// only on the series existing — unlike the match version there's no
+    /// owner-entry in this map to guard against clobbering.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_series_user_role(
+        &self,
+        series_id: &str,
+        uid: &str,
+        role: Option<super::records::MatchPlayerRole>,
+    ) -> DaoResult<()> {
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Series(series_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#uid", uid);
+        request = match role {
+            Some(role) => request
+                .update_expression("SET authority.#uid = :role")
+                .expression_attribute_values(":role", to_attr(&role)?),
+            None => request.update_expression("REMOVE authority.#uid"),
+        };
+        let result = request.send().await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("series {series_id} not found")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+}
+
+/// Serialize any record value into a DynamoDB AttributeValue (nested map/list).
+fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
+    Ok(serde_dynamo::to_attribute_value(value)?)
 }
 
 fn is_put_conditional_failure(err: &SdkError<PutItemError>) -> bool {

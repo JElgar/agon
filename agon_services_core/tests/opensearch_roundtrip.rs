@@ -12,7 +12,7 @@
 
 use agon_services_core::dao::match_ops::MatchAggregate;
 use agon_services_core::dao::records::{
-    ConfirmedScoreRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, ScoreRecord,
+    ConfirmedScoreRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord,
 };
 use agon_services_core::opensearch::docs::player_doc_id;
 use agon_services_core::opensearch::{
@@ -53,9 +53,12 @@ fn confirmed(
         .map(|s| (s.side_id.clone(), s.clone()))
         .collect();
     m.confirmed_score = Some(ConfirmedScoreRecord {
-        score: ScoreRecord::Simple {
-            entries: pts.iter().map(|(s, p)| (s.to_string(), *p)).collect(),
-        },
+        // A goal tally only: enough for the side's football scoreline.
+        score: serde_json::from_value(json!({
+            "type": "football",
+            "score": pts.iter().map(|(s, p)| (s.to_string(), *p)).collect::<std::collections::HashMap<_, _>>(),
+        }))
+        .unwrap(),
         winner_side_id: winner.map(Into::into),
     });
     MatchAggregate {
@@ -171,8 +174,8 @@ async fn index_and_aggregate_round_trip() {
                         "filter": { "term": { "sides.team_id": "hw" } },
                         "aggs": {
                             "outcome": { "terms": { "field": "sides.outcome" } },
-                            "gf": { "sum": { "field": "sides.score" } },
-                            "ga": { "sum": { "field": "sides.conceded" } }
+                            "gf": { "sum": { "field": "sides.result.football.goals_for" } },
+                            "ga": { "sum": { "field": "sides.result.football.goals_against" } }
                         }
                     } }
                 } }

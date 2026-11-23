@@ -14,13 +14,21 @@ here can be rebuilt from it at any time.
 
 | Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, score, conceded, sport counters under `sides.stats.*` (its players' `match_stats.stats` summed, plus `clean_sheets` for football — not a player's contribution, so it's set directly rather than summed) | team records, goals for/against, form, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, sport counters under `stats.*` | leaderboards, top performers, any per-player slice |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
 - The mappings are in `agon_services_core/src/opensearch/schema.rs`.
+- Each sport's counters are its own type in its sport file
+  (`agon_services_core::sports::<sport>`, `SportRecord::MatchStatsRecord`),
+  built from the same per-match contribution as lifetime stats. The
+  mapping lists each sport's fields explicitly
+  (`SportRecord::MATCH_STATS_FIELDS`), and the reads sum only the asked-for
+  sport's fields into that type. A side's scoreline (`result`) works the
+  same way (`SportRecord::SideResultRecord`, read from the confirmed score).
+  A generic sport (tennis, badminton, ...) has neither, only W/D/L.
 - Players without an Agon account appear in a side's player count but get no
   stats row, because they have no stats identity.
 
@@ -163,8 +171,8 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
 | Endpoint | Index | What it reads |
 |---|---|---|
-| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games and goals), the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (form, streak, last 10 goals) and the next scheduled match |
-| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and every `stats.*` counter. Counter names come from the index mapping. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
+| `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
 | `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
 | `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
@@ -190,9 +198,10 @@ new index version:
    mapping without a version bump; `matches_v1` already existed there from
    before, `ensure_index` never updates an existing index's mapping, and the
    next tournament match indexed hit `strict_dynamic_mapping_exception`.
-   `matches` is now v2 (with `tournament_round`/`tournament_slot` mapped from
-   creation) and `match_stats` is v2 (adding `series_id`, the per-player
-   analogue of `tournament_id`, for a future series-scoped slice).
+   `matches` has since moved on to v3 (the per-sport `sides.result`/`sides.stats`
+   rework) and `match_stats` to v3 (adding `series_id`, the per-player
+   analogue of `tournament_id`, for a future series-scoped slice) — each a
+   version bump of its own for the same reason.
 2. Deploy the worker. On start it creates `<name>_v<new>` and live changes go
    there. The alias, and so the read endpoints, still point at the old
    version, which stops getting live changes. Reads are stale until step 3

@@ -417,6 +417,115 @@ impl SportRecord for Cricket {
         });
         stats
     }
+
+    type MatchStatsRecord = CricketMatchStatsRecord;
+    const MATCH_STATS_FIELDS: &'static [&'static str] = &[
+        "runs",
+        "wickets",
+        "fours",
+        "sixes",
+        "balls_faced",
+        "dismissals",
+        "catches",
+        "runs_conceded",
+        "balls_bowled",
+    ];
+
+    fn match_stats(
+        c: &CricketStatsRecord,
+        _side: &CricketSideResultRecord,
+    ) -> CricketMatchStatsRecord {
+        CricketMatchStatsRecord {
+            runs: c.runs,
+            wickets: c.wickets,
+            fours: c.fours,
+            sixes: c.sixes,
+            balls_faced: c.balls_faced,
+            dismissals: c.dismissals,
+            catches: c.catches,
+            runs_conceded: c.runs_conceded,
+            balls_bowled: c.balls_bowled,
+        }
+    }
+
+    fn add_match_stats(totals: &mut CricketMatchStatsRecord, o: &CricketMatchStatsRecord) {
+        totals.runs += o.runs;
+        totals.wickets += o.wickets;
+        totals.fours += o.fours;
+        totals.sixes += o.sixes;
+        totals.balls_faced += o.balls_faced;
+        totals.dismissals += o.dismissals;
+        totals.catches += o.catches;
+        totals.runs_conceded += o.runs_conceded;
+        totals.balls_bowled += o.balls_bowled;
+    }
+
+    type SideResultRecord = CricketSideResultRecord;
+    const SIDE_RESULT_FIELDS: &'static [&'static str] =
+        &["runs_for", "wickets_lost", "runs_against", "wickets_taken"];
+
+    /// Sums every innings the side batted in (runs for, wickets lost) and
+    /// bowled in (runs against, wickets taken), extras included.
+    fn side_result(score: &CricketScoreRecord, side_id: &str) -> CricketSideResultRecord {
+        let mut out = CricketSideResultRecord::default();
+        for innings in &score.innings {
+            if innings.batting_side_id == side_id {
+                out.runs_for += u64::from(innings.runs);
+                out.wickets_lost += u64::from(innings.wickets);
+            }
+            if innings.bowling_side_id == side_id {
+                out.runs_against += u64::from(innings.runs);
+                out.wickets_taken += u64::from(innings.wickets);
+            }
+        }
+        out
+    }
+
+    fn add_side_result(totals: &mut CricketSideResultRecord, o: &CricketSideResultRecord) {
+        totals.runs_for += o.runs_for;
+        totals.wickets_lost += o.wickets_lost;
+        totals.runs_against += o.runs_against;
+        totals.wickets_taken += o.wickets_taken;
+    }
+}
+
+/// One side's cricket scoreline (see [`SportRecord::SideResultRecord`]),
+/// from the innings totals.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CricketSideResultRecord {
+    #[serde(default)]
+    pub runs_for: u64,
+    #[serde(default)]
+    pub wickets_lost: u64,
+    #[serde(default)]
+    pub runs_against: u64,
+    #[serde(default)]
+    pub wickets_taken: u64,
+}
+
+/// One match's cricket counters (see [`SportRecord::MatchStatsRecord`]),
+/// for one player or summed for a side. Same meaning as the
+/// [`CricketStatsRecord`] counters of the same name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CricketMatchStatsRecord {
+    #[serde(default)]
+    pub runs: u64,
+    #[serde(default)]
+    pub wickets: u64,
+    #[serde(default)]
+    pub fours: u64,
+    #[serde(default)]
+    pub sixes: u64,
+    #[serde(default)]
+    pub balls_faced: u64,
+    #[serde(default)]
+    pub dismissals: u64,
+    #[serde(default)]
+    pub catches: u64,
+    #[serde(default)]
+    pub runs_conceded: u64,
+    #[serde(default)]
+    pub balls_bowled: u64,
 }
 
 crate::personal_bests!(CricketStatsRecord {

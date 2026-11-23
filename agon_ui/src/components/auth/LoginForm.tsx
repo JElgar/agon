@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -213,7 +214,15 @@ export function LoginForm() {
         </form>
 
         <p className="pt-2 text-center text-[13px] text-muted-foreground">
-          By continuing you agree to Agon&apos;s Terms and Privacy Policy.
+          By continuing you agree to Agon&apos;s{' '}
+          <Link to="/terms" className="underline">
+            Terms
+          </Link>{' '}
+          and{' '}
+          <Link to="/privacy" className="underline">
+            Privacy Policy
+          </Link>
+          .
         </p>
       </div>
     </div>

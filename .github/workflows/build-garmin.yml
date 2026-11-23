@@ -1,12 +1,13 @@
 on:
   workflow_call:
+  workflow_dispatch:
 
 env:
   # The Garmin EULA's hash changes whenever the EULA text does, and
   # `agreement accept` needs the current one or it's rejected. Obtain it by
   # running `connect-iq-sdk-manager agreement view` locally and store the
   # printed hash in the GARMIN_CONNECTIQ_AGREEMENT_HASH repo secret.
-  CONNECTIQ_SDK_MANAGER_VERSION: v1.3.0
+  CONNECTIQ_SDK_MANAGER_VERSION: v0.8.4
   # Exact version, not a range, so a CI run today and in six months compile
   # against the same SDK. Bump by hand when the watch app needs a newer one.
   CONNECTIQ_SDK_VERSION: 9.2.0

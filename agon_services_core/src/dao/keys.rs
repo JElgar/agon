@@ -683,9 +683,38 @@ impl FromStr for Sk {
     }
 }
 
+// ---------------------------------------------------------------------------
+// GSI1 keys
+// ---------------------------------------------------------------------------
+
+/// GSI1 partition listing the tournaments a team has entered:
+/// `TEAMTOURNS#<teamId>`. Projected from a `TOURNAMENT#<tid>` /
+/// `ENTRY#<teamId>` item only when the tournament's `entry_audience` is
+/// `Teams` (so `entrant_id` really is a team id) — see
+/// `Dao::create_tournament_entry` and `Dao::list_team_tournament_entries`.
+pub fn team_tournaments_gsi1pk(team_id: &str) -> String {
+    format!("TEAMTOURNS{DELIMITER}{team_id}")
+}
+
+/// GSI1 sort key for a [`team_tournaments_gsi1pk`] projection:
+/// `<entryCreatedAt>#<tournamentId>`, so a team's entries sort by when they
+/// were made (ISO-8601 sorts lexically), the tournament id breaking ties.
+pub fn team_tournaments_gsi1sk(entry_created_at: &str, tournament_id: &str) -> String {
+    format!("{entry_created_at}{DELIMITER}{tournament_id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn team_tournaments_gsi1_keys() {
+        assert_eq!(team_tournaments_gsi1pk("t1"), "TEAMTOURNS#t1");
+        assert_eq!(
+            team_tournaments_gsi1sk("2026-11-24T10:00:00Z", "tr1"),
+            "2026-11-24T10:00:00Z#tr1"
+        );
+    }
 
     fn pk_roundtrip(pk: Pk, expected: &str) {
         assert_eq!(pk.to_string(), expected, "format");

@@ -15,11 +15,11 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
-use super::keys::{Pk, Sk};
+use super::keys::{Pk, Sk, team_tournaments_gsi1pk, team_tournaments_gsi1sk};
 use super::page::Page;
 use super::records::{
-    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryRecord,
-    TournamentRecord,
+    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryAudienceRecord,
+    TournamentEntryRecord, TournamentRecord,
 };
 
 pub const TYPE_TOURNAMENT: &str = "tournament";
@@ -189,14 +189,31 @@ impl Dao {
     /// the two writes). `Conflict` if this entrant already has an entry —
     /// at most one entry per entrant, the same "doubles as the uniqueness
     /// guard" convention as `Sk::WaitlistEntry`.
+    ///
+    /// `audience` is the tournament's `entry_audience`: for `Teams` the
+    /// entrant is a team, so the entry is also projected into GSI1 as
+    /// `TEAMTOURNS#<teamId>` / `<createdAt>#<tournamentId>` (see
+    /// `list_team_tournament_entries`). A `Players` entry's entrant is a
+    /// user and is not projected.
     #[tracing::instrument(skip(self, entry), fields(tournament_id = %entry.tournament_id, entrant_id = %entry.entrant_id))]
-    pub async fn create_tournament_entry(&self, entry: &TournamentEntryRecord) -> DaoResult<()> {
-        let item = to_item(
+    pub async fn create_tournament_entry(
+        &self,
+        entry: &TournamentEntryRecord,
+        audience: TournamentEntryAudienceRecord,
+    ) -> DaoResult<()> {
+        let mut builder = ItemBuilder::new(to_item(
             &Pk::Tournament(entry.tournament_id.clone()),
             &Sk::Entry(entry.entrant_id.clone()),
             TYPE_TOURNAMENT_ENTRY,
             entry,
-        )?;
+        )?);
+        if audience == TournamentEntryAudienceRecord::Teams {
+            builder = builder.gsi1(
+                team_tournaments_gsi1pk(&entry.entrant_id),
+                team_tournaments_gsi1sk(&entry.created_at, &entry.tournament_id),
+            );
+        }
+        let item = builder.build();
         let put = Put::builder()
             .table_name(self.table())
             .set_item(Some(item))
@@ -556,6 +573,79 @@ impl Dao {
             limit,
         )
         .await
+    }
+
+    /// Every generated match of a tournament (all pages of
+    /// `list_tournament_matches`). A tournament has at most a few dozen
+    /// matches, so this is a handful of reads — what standings sum over.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_all_tournament_matches(
+        &self,
+        tournament_id: &str,
+    ) -> DaoResult<Vec<MatchRecord>> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .list_tournament_matches(tournament_id, cursor.as_deref(), 50)
+                .await?;
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => return Ok(out),
+            }
+        }
+    }
+
+    /// The entries a team has made into `Teams`-audience tournaments, via
+    /// their GSI1 projection (`TEAMTOURNS#<teamId>` / `<createdAt>#<tid>`,
+    /// written by `create_tournament_entry`), newest entry first. Every
+    /// entry status is returned (`"requested"` as well as `"accepted"`);
+    /// filtering is the caller's call. A squad team of a teamless
+    /// tournament has no entry and is never listed here — it belongs to
+    /// exactly one tournament, `TeamRecord::tournament_id`.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_team_tournament_entries(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<TournamentEntryRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .index_name("GSI1")
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_GSI1PK)
+                .expression_attribute_values(":pk", s(team_tournaments_gsi1pk(team_id)))
+                .scan_index_forward(false),
+            cursor,
+            limit,
+        )
+        .await
+    }
+
+    /// Every entry a team has made (all pages of
+    /// `list_team_tournament_entries`, any entry status), newest first. A
+    /// team enters a handful of tournaments, not thousands.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_all_team_tournament_entries(
+        &self,
+        team_id: &str,
+    ) -> DaoResult<Vec<TournamentEntryRecord>> {
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = self
+                .list_team_tournament_entries(team_id, cursor.as_deref(), 100)
+                .await?;
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => return Ok(out),
+            }
+        }
     }
 }
 

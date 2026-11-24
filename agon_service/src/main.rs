@@ -113,6 +113,10 @@ mod team_stats;
 // `StatsStore` and shares its OpenSearch client/config.
 mod user_stats;
 
+// A team's leagues/cups and friendly/squad summaries for its page
+// (`GET /teams/{id}/competitions`). Its own `OpenApi` type, like `team_stats`.
+mod competitions;
+
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
@@ -1566,7 +1570,8 @@ struct TournamentStandingsRow {
     points: u32,
 }
 
-/// `GET /tournaments/{id}/standings` — ordered by `points` descending.
+/// `GET /tournaments/{id}/standings` — ordered by `points` descending, ties
+/// by `entrant_id` (see `agon_services_core::standings`).
 #[derive(Object)]
 struct TournamentStandings {
     rows: Vec<TournamentStandingsRow>,
@@ -6722,7 +6727,10 @@ impl Api {
             added_by_user_id: uid,
             created_at: now_iso(),
         };
-        match dao.create_tournament_entry(&entry).await {
+        match dao
+            .create_tournament_entry(&entry, tournament.entry_audience)
+            .await
+        {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(AddTournamentEntryResponse::Conflict(PlainText(msg)));
@@ -7389,65 +7397,21 @@ impl Api {
             )));
         }
 
-        let mut rows: HashMap<String, TournamentStandingsRow> = HashMap::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let page = dao
-                .list_tournament_matches(&tournament_id, cursor.as_deref(), 50)
-                .await
-                .map_err(dao_internal)?;
-            for m in &page.items {
-                let Some(confirmed) = &m.confirmed_score else {
-                    continue;
-                };
-                let team_ids: Vec<(String, String)> = m
-                    .sides
-                    .values()
-                    .filter_map(|s| s.team_id.as_ref().map(|t| (s.side_id.clone(), t.clone())))
-                    .collect();
-                for (_, team_id) in &team_ids {
-                    rows.entry(team_id.clone())
-                        .or_insert(TournamentStandingsRow {
-                            entrant_id: team_id.clone(),
-                            played: 0,
-                            won: 0,
-                            drawn: 0,
-                            lost: 0,
-                            points: 0,
-                        });
-                }
-                match &confirmed.winner_side_id {
-                    Some(winner_side_id) => {
-                        for (side_id, team_id) in &team_ids {
-                            let row = rows.get_mut(team_id).unwrap();
-                            row.played += 1;
-                            if side_id == winner_side_id {
-                                row.won += 1;
-                                row.points += tournament.points_win;
-                            } else {
-                                row.lost += 1;
-                                row.points += tournament.points_loss;
-                            }
-                        }
-                    }
-                    None => {
-                        for (_, team_id) in &team_ids {
-                            let row = rows.get_mut(team_id).unwrap();
-                            row.played += 1;
-                            row.drawn += 1;
-                            row.points += tournament.points_draw;
-                        }
-                    }
-                }
-            }
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-
-        let mut rows: Vec<TournamentStandingsRow> = rows.into_values().collect();
-        rows.sort_by_key(|r| std::cmp::Reverse(r.points));
+        let matches = dao
+            .list_all_tournament_matches(&tournament_id)
+            .await
+            .map_err(dao_internal)?;
+        let rows = agon_services_core::standings::league_standings(&tournament, &matches)
+            .into_iter()
+            .map(|r| TournamentStandingsRow {
+                entrant_id: r.entrant_id,
+                played: r.played,
+                won: r.won,
+                drawn: r.drawn,
+                lost: r.lost,
+                points: r.points,
+            })
+            .collect();
         Ok(GetTournamentStandingsResponse::Standings(Json(
             TournamentStandings { rows },
         )))
@@ -14276,6 +14240,7 @@ async fn main() {
             youtube::YoutubeApi,
             team_stats::TeamStatsApi,
             user_stats::UserStatsApi,
+            competitions::TeamCompetitionsApi,
         ),
         "Agon API",
         "1.0",

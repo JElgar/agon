@@ -58,9 +58,9 @@ use mapping::{
     roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
     score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
     switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, tournament_entry_from_record, tournament_from_record,
-    tournament_match_summary_from_record, unrankable_sport_reason, unratable_players,
-    user_profile_from_record, winner_from_score,
+    team_member_from_record, team_role_from_str, tournament_entry_from_record,
+    tournament_from_record, tournament_match_summary_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -326,7 +326,7 @@ struct UpdateUserInput {
     // be both a no-op (the DAO doesn't update email) and misleading.
 }
 
-#[derive(Object)]
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
 pub struct Photo {
     pub image_url: String,
     /// The asset backing this photo, when known — pass it back in
@@ -8675,10 +8675,14 @@ impl Api {
         Ok(DeleteCommentResponse::Ok)
     }
 
+    /// The teams the caller is a member of, paginated, each with the
+    /// caller's `role`, the team's `form` and its `next_match` (those two
+    /// from the stats store; left out when it's unavailable).
     #[oai(path = "/users/me/teams", method = "get")]
     async fn list_my_teams(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(stats): Data<&team_stats::StatsStore>,
         AuthSchema(jwt_data): AuthSchema,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
@@ -8692,19 +8696,71 @@ impl Api {
             .await
             .map_err(dao_internal)?;
 
-        // Each membership row carries its team_id; hydrate the team meta for the
-        // display name + follower count. TODO: BatchGet these (N+1 for now).
+        // Each membership row carries its team_id (and the caller's role).
+        // Hydrate the page's team metas in one batch read and, alongside
+        // it, every team's form and next match (one OpenSearch request for
+        // the page, then one batch read — see `team_stats::list_overviews`;
+        // `None` without the stats store, which leaves those fields out).
+        let team_ids: Vec<String> = page.items.iter().map(|m| m.team_id.clone()).collect();
+        let (teams, mut overviews) = tokio::try_join!(
+            self.batch_team_metas(dao, &team_ids),
+            team_stats::list_overviews(dao, stats, &uid, &team_ids),
+        )?;
+
         let is_following = false; // being a member doesn't imply following
         let mut items = Vec::with_capacity(page.items.len());
-        for membership in page.items {
-            if let Some(team) = dao
-                .get_team_meta(&membership.team_id)
-                .await
-                .map_err(dao_internal)?
-            {
-                items.push(team_list_item_from_record(&team, is_following));
+        for membership in &page.items {
+            let Some(team) = teams.get(&membership.team_id) else {
+                continue;
+            };
+            // A tournament's squad team never belongs in "my teams" (its
+            // memberships aren't projected there), but don't rely on it.
+            if team.tournament_id.is_some() {
+                continue;
             }
+            let mut item = team_list_item_from_record(team, is_following);
+            item.role = Some(team_role_from_str(&membership.role));
+            if let Some(o) = overviews
+                .as_mut()
+                .and_then(|o| o.remove(&membership.team_id))
+            {
+                item.form = Some(o.form);
+                item.next_match = o.next_match;
+            }
+            items.push(item);
         }
+        Ok(ListTeamsResponse::Teams(Json(TeamPage {
+            items,
+            next_cursor: page.next_cursor,
+        })))
+    }
+
+    /// The teams the caller follows, paginated. Tournament squad teams are
+    /// left out (they can't be followed through the team endpoints).
+    #[oai(path = "/users/me/followed-teams", method = "get")]
+    async fn list_my_followed_teams(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        /// Opaque cursor from the previous page's `next_cursor`.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTeamsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let page = dao
+            .list_followed_teams(&uid, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        let team_ids: Vec<String> = page.items.iter().map(|f| f.team_id.clone()).collect();
+        let teams = self.batch_team_metas(dao, &team_ids).await?;
+        // Follow-edge order (whatever GSI3 returns), not the batch read's.
+        let items = team_ids
+            .iter()
+            .filter_map(|id| teams.get(id))
+            .filter(|t| t.tournament_id.is_none())
+            .map(|t| team_list_item_from_record(t, true))
+            .collect();
         Ok(ListTeamsResponse::Teams(Json(TeamPage {
             items,
             next_cursor: page.next_cursor,
@@ -13827,6 +13883,9 @@ fn mock_team_list_item(id: String, name: String) -> TeamListItem {
         logo: None,
         follower_count: 128,
         is_followed_by_me: false,
+        role: None,
+        form: None,
+        next_match: None,
     }
 }
 

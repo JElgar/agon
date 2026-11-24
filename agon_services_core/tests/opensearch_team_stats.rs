@@ -255,6 +255,65 @@ async fn team_stats_reads_against_opensearch() {
     assert_eq!(y25.len(), 2);
     assert!(y25.iter().all(|r| r.played == 1));
 
+    // A page of teams in one request: HW, Leyton, and a team with nothing.
+    // The derbies m1/m2 are in both teams' form, each from its own side;
+    // HW's squad game isn't form; m5 is both teams' next match.
+    let page: Vec<String> = ["hw", "leyton", "quiet"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let o = ts::team_overviews(&os, &page, NOW).await.unwrap();
+    assert_eq!(o.len(), 3);
+    let form = |team: &str| -> Vec<(String, String)> {
+        o[team]
+            .form
+            .iter()
+            .map(|r| (r.match_id.clone(), r.outcome.clone()))
+            .collect()
+    };
+    assert_eq!(
+        form("hw"),
+        vec![
+            ("m3".into(), "lost".into()),
+            ("m2".into(), "drawn".into()),
+            ("m1".into(), "won".into())
+        ]
+    );
+    assert_eq!(
+        form("leyton"),
+        vec![("m2".into(), "drawn".into()), ("m1".into(), "lost".into())]
+    );
+    assert!(o["leyton"].form.iter().all(|r| r.side_id == "b"));
+    let hw_next = o["hw"].next_match.as_ref().unwrap();
+    assert_eq!(hw_next.match_id, "m5");
+    assert_eq!(
+        hw_next.opponent.as_ref().unwrap().team_id.as_deref(),
+        Some("leyton")
+    );
+    let leyton_next = o["leyton"].next_match.as_ref().unwrap();
+    assert_eq!(leyton_next.match_id, "m5");
+    assert_eq!(
+        leyton_next.opponent.as_ref().unwrap().team_id.as_deref(),
+        Some("hw")
+    );
+    assert_eq!(o["quiet"], ts::TeamOverview::default());
+    // The list's form agrees with the summary's first results.
+    let summary_form: Vec<&str> = recent.iter().map(|r| r.match_id.as_str()).collect();
+    assert_eq!(
+        o["hw"]
+            .form
+            .iter()
+            .map(|r| r.match_id.as_str())
+            .collect::<Vec<_>>(),
+        summary_form
+    );
+    // After m5 has started there's no next match.
+    let later = ts::team_overviews(&os, &page, "2026-12-02T00:00:00Z")
+        .await
+        .unwrap();
+    assert_eq!(later["hw"].next_match, None);
+    assert!(ts::team_overviews(&os, &[], NOW).await.unwrap().is_empty());
+
     // Another sport has nothing.
     let none = ts::team_records(&os, "hw", "netball", None, NOW)
         .await

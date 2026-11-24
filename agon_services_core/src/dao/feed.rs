@@ -11,16 +11,18 @@
 //! written efficiently; the caller (the fan-out workflow) chunks the audience so
 //! a mid-way failure resumes rather than restarts.
 
+use std::collections::{HashMap, HashSet};
+
 use aws_sdk_dynamodb::types::{DeleteRequest, PutRequest, WriteRequest};
 
 use super::audience::AudienceMember;
 use super::batch::BATCH_WRITE_MAX;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
-use super::records::FeedItemRecord;
+use super::records::{FeedItemRecord, TeamRecord};
 
 pub const TYPE_FEED_ITEM: &str = "feed_item";
 
@@ -180,5 +182,74 @@ impl Dao {
             limit,
         )
         .await
+    }
+
+    /// One `BatchGetItem` for what a team's "next match" card needs from
+    /// DynamoDB beyond the stats store: the viewer's own feed entries for
+    /// some matches, and some teams' metas (opponent logos).
+    ///
+    /// The feed entry is where the feed reads `viewer_is_going` from
+    /// (`FeedItemRecord::viewer_is_going`, set by the fan-out audience and,
+    /// synchronously, by the create/join/accept transactions), so a card
+    /// built from this agrees with the viewer's feed. It's addressed by
+    /// `(match_id, starts_at)`; a viewer with no entry for a match (not a
+    /// participant, not following anyone involved) simply has none in the
+    /// result.
+    ///
+    /// Returns the feed entries keyed by match id and the teams keyed by
+    /// team id. No request at all when both lists are empty.
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_feed_entries_and_team_metas(
+        &self,
+        viewer_id: &str,
+        matches: &[(String, String)],
+        team_ids: &[String],
+    ) -> DaoResult<(HashMap<String, FeedItemRecord>, HashMap<String, TeamRecord>)> {
+        let key = |pk: Pk, sk: Sk| {
+            HashMap::from([
+                (ATTR_PK.to_string(), s(pk.to_string())),
+                (ATTR_SK.to_string(), s(sk.to_string())),
+            ])
+        };
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = HashSet::new();
+        let mut keys = Vec::with_capacity(matches.len() + team_ids.len());
+        for (match_id, starts_at) in matches {
+            if seen.insert(("m", match_id.as_str(), starts_at.as_str())) {
+                keys.push(key(
+                    Pk::UserFeed(viewer_id.into()),
+                    Sk::Feed {
+                        starts_at: starts_at.clone(),
+                        match_id: match_id.clone(),
+                    },
+                ));
+            }
+        }
+        for team_id in team_ids {
+            if seen.insert(("t", team_id.as_str(), "")) {
+                keys.push(key(Pk::Team(team_id.clone()), Sk::Meta));
+            }
+        }
+
+        let mut feed = HashMap::new();
+        let mut teams = HashMap::new();
+        for item in self.batch_get_all(keys, None).await? {
+            match item_pk(&item)? {
+                Pk::UserFeed(_) => {
+                    let record: FeedItemRecord = from_item(item)?;
+                    feed.insert(record.ref_id.clone(), record);
+                }
+                Pk::Team(_) => {
+                    let record: TeamRecord = from_item(item)?;
+                    teams.insert(record.id.clone(), record);
+                }
+                other => {
+                    return Err(DaoError::Malformed(format!(
+                        "batch_get_feed_entries_and_team_metas returned an item under {other}"
+                    )));
+                }
+            }
+        }
+        Ok((feed, teams))
     }
 }

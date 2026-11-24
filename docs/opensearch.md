@@ -181,7 +181,8 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
 | Endpoint | Index | What it reads |
 |---|---|---|
-| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
+| `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match. Then one DynamoDB `BatchGetItem` (`Dao::batch_get_feed_entries_and_team_metas`, alongside the match-score read) for the caller's own feed entry on the next match — `next_match.viewer_is_going`, read exactly where the feed reads it — and the opponent teams' metas, for `opponent.logo` |
+| `GET /users/me/teams` (`list_my_teams` in `agon_service/src/main.rs`, `team_stats::list_overviews`) | `matches` | **One request for the whole page** (`team_overviews`): the query is `terms team_ids` = the page's teams; a `form` filter agg (confirmed, not squad) and a `next` filter agg (`status: scheduled`, `starts_at >= now`) each hold a `terms` agg on `team_ids` with `include` = the page's teams and a `top_hits` (newest 5 by `starts_at` desc; soonest 1 asc). `team_ids` is multi-valued, so a match between two page teams is in both buckets; each bucket's outcome and opponent are read from the side whose `team_id` is that bucket's key. Any sport. Then one DynamoDB `BatchGetItem` for the next matches' `viewer_is_going` (the caller's feed entries) and opponent logos. Team metas and the caller's `role` come from DynamoDB as before. If `OPENSEARCH_URL` is unset or the query fails, the list is returned without `form`/`next_match` rather than failing |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
 | `GET /matches?q=&participant=&team_id=&team_match=&match_type=&status=&open=&open_has_space=&kind=&tournament_id=&from=&to=&sort=&cursor=&limit=` (`agon_service/src/main.rs`) | `matches` | One filtered search (`agon_services_core::opensearch::matches::search_query`). `q` is a typo-tolerant name match: `bool_prefix` with `fuzziness: AUTO` (every word but the last is fuzzy, the last is a prefix) OR'd with a plain fuzzy `match` (a typo in a fully typed last word). `participant` is a term on `roster_ids`; `team_id` is a `terms` filter, or one `term` per team with `team_match=all` (head-to-head); `from`/`to` bound `starts_at`; newest first unless `sort=asc`, with `match_id` as the tie-break. Reads back only the ids (and, with `participant`, the outcome lists); the matches are hydrated from DynamoDB. Offset pagination. 503 without OpenSearch |
 | `GET /teams/{id}/head-to-head/{other_id}?sport=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation over confirmed, non-squad matches in the sport with both teams in `team_ids`: a nested aggregation on the first team's side gives W/D/L, its `result.<sport>` scoreline and `stats.<sport>` counters (the same `TeamRecord` as the summary). The meetings themselves are `GET /matches?team_id=<a>&team_id=<b>&team_match=all` |
@@ -199,7 +200,15 @@ only ever on one of the two sides), but are still kept out of
 per-player leaderboard — a leaderboard is inherently team-scoped — and no
 personal goals-for/against or clean sheets, since those are side-level, not
 individually attributable. The API pod gets
-`OPENSEARCH_URL` like the worker; without it every one of these answers 503.
+`OPENSEARCH_URL` like the worker; without it every one of these answers 503,
+except `GET /users/me/teams`, which just leaves out `form` and `next_match`.
+
+`viewer_is_going` comes from the caller's feed entry
+(`UFEED#<uid>` / `FEED#<starts_at>#<match_id>`, the `starts_at` taken from
+the `matches` document), not from the document's `participant_ids`: the
+feed entry also covers a participant not yet assigned a side, and the
+create/join/accept transactions write it synchronously, so it doesn't wait
+on the worker.
 
 ## Changing the schema
 
@@ -239,7 +248,9 @@ make test-opensearch-local
   nested team-record aggregation, and cleans up.
 - `opensearch_team_stats` needs only OpenSearch. It indexes one team's
   history and runs every `team_stats` read against it: records, recent
-  results, next match, leaderboards and head-to-head from both sides.
+  results, next match, leaderboards, head-to-head from both sides, and the
+  page-of-teams `team_overviews` (form and next match per team in one
+  request, a derby read from each side).
 - `opensearch_dynamodb_sync` also needs DynamoDB Local. It writes a confirmed
   match through the DAO and runs `sync_match` three times: once to index it,
   again after a player leaves (their row must go), and again after the match

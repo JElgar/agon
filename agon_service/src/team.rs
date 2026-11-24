@@ -1,6 +1,7 @@
 use poem_openapi::{Enum, Object};
 
 use crate::membership::Member;
+use crate::team_stats::{TeamFormResult, TeamNextMatch};
 use crate::{MatchType, Photo};
 
 /// A persistent team/squad's metadata. The pool of people a match side can be
@@ -94,6 +95,20 @@ pub struct TeamListItem {
     pub follower_count: u32,
     /// Whether the requesting user follows this team.
     pub is_followed_by_me: bool,
+    /// The caller's role on this team. Only on `GET /users/me/teams`;
+    /// absent on every other list.
+    pub role: Option<TeamRole>,
+    /// The team's last 5 confirmed results against other teams (any sport,
+    /// squad games left out), newest first — the same results
+    /// `TeamSummary.recent_results` starts with. Only on
+    /// `GET /users/me/teams`. Empty before the first result; absent on
+    /// other lists, and when the stats store is unavailable (the list still
+    /// answers without it).
+    pub form: Option<Vec<TeamFormResult>>,
+    /// The team's next scheduled match (any sport, squad games included).
+    /// Only on `GET /users/me/teams`. Absent when there isn't one, on other
+    /// lists, and when the stats store is unavailable.
+    pub next_match: Option<TeamNextMatch>,
 }
 
 #[derive(Object)]

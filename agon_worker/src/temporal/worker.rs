@@ -14,12 +14,18 @@ use temporalio_sdk_core::{CoreRuntime, RuntimeOptions};
 
 use super::TASK_QUEUE;
 use super::activities::AgonActivities;
-use super::workflows::{AcceptInvitation, FanOutMatch, MatchReminder, MaterializeSeries};
+use super::workflows::{
+    AcceptInvitation, FanOutMatch, MatchReminder, MaterializeSeries, RepairOpenSearch,
+};
 
 /// Connect to Temporal (config from the standard `TEMPORAL_*` env / profile) and
 /// run the worker until the process exits. Registers both workflows and the
 /// shared activities struct.
-pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run(
+    dao: Dao,
+    search: SearchClient,
+    opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CoreRuntime::new_assume_tokio(RuntimeOptions::builder().build()?)?;
 
     let (conn_options, client_options) =
@@ -28,11 +34,16 @@ pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::erro
     let client = Client::new(connection, client_options)?;
 
     let worker_options = WorkerOptions::new(TASK_QUEUE)
-        .register_activities(AgonActivities { dao, search })
+        .register_activities(AgonActivities {
+            dao,
+            search,
+            opensearch,
+        })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
         .register_workflow::<MaterializeSeries>()?
         .register_workflow::<MatchReminder>()?
+        .register_workflow::<RepairOpenSearch>()?
         .build();
 
     tracing::info!(task_queue = TASK_QUEUE, "temporal worker starting");

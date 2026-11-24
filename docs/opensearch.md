@@ -63,13 +63,22 @@ The same handler also runs on every user `#PROFILE` write, rebuilding that
 user's `users` document (`agon_services_core::opensearch::sync_user`) — just
 an index, no player rows or stale-row cleanup to do.
 
-A failure is logged (`opensearch: match/user sync failed`) and **not
-retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
-the team summary/leaderboard endpoints tolerate the same brief staleness
-every other async-indexed read in this app already does. Run the backfill to
-repair. **Revisit this before the UI switches to the team-stats read
-endpoints:** a missed write would then show as a stale record until the next
-change to that match.
+A failed sync doesn't fail the stream message (that would replay every other
+handler and, during an outage, send events to the DLQ). It's handed to a
+Temporal **`RepairOpenSearch`** workflow instead (`os-repair-match-<id>` /
+`os-repair-user-<id>`):
+- Its activity rebuilds the documents from DynamoDB's current state, so a late
+  retry never writes stale data.
+- It retries with backoff (5s, doubling, capped at 10 minutes) for up to
+  three days. Past that, run the backfill with `--match <id>`.
+- A second failure for the same target while a repair is still retrying
+  attaches to that run.
+- Only if Temporal itself can't be reached does the message fail and
+  redeliver.
+
+Watch for `opensearch: sync failed; scheduling a repair` and
+`opensearch repair succeeded` in the worker logs. Local runs without
+Temporal just log the failure (run the backfill to repair).
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.

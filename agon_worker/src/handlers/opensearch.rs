@@ -6,13 +6,14 @@
 //! On any write to a user's `#PROFILE`, rebuild their `users` document with
 //! [`agon_services_core::opensearch::sync_user`].
 //!
-//! **Resilience.** A failure here is logged and swallowed rather than failing
-//! the message: an OpenSearch outage must not push stream events into the DLQ
-//! or delay the handlers that matter today. The backfill
-//! (`agon_worker backfill-opensearch`) repairs anything missed. `GET
-//! /admin/stats` and the team summary/leaderboard endpoints tolerate the
-//! same brief staleness every other async-indexed read in this app already
-//! does.
+//! **Resilience.** A failed sync doesn't fail the message: that would replay
+//! every other handler for this event and, during an OpenSearch outage, push
+//! stream events into the DLQ. Instead the sync is handed to a Temporal
+//! `RepairOpenSearch` workflow, which retries with backoff (for up to three
+//! days) until it lands, so team stats, leaderboards and admin search heal by
+//! themselves. Only if Temporal itself can't be reached does the message fail
+//! and redeliver. Without a Temporal client (local runs) the failure is just
+//! logged, and the backfill (`agon_worker backfill-opensearch`) repairs it.
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a
@@ -25,30 +26,58 @@ use agon_services_core::opensearch::{
     OpenSearchClient, SyncOutcome, UserSyncOutcome, sync_match, sync_user,
 };
 
-use crate::error::WorkerResult;
+use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Image};
+use crate::temporal::client::TemporalClient;
+use crate::temporal::workflows::OpenSearchSyncTarget;
 
 /// `#META` attributes whose changes never affect an OpenSearch document.
 const NOISE_ATTRS: &[&str] = &["like_count", "comment_count", "live_seq", "live_tip_seq"];
 
-pub async fn handle(
-    dao: &Dao,
-    os: Option<&OpenSearchClient>,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    let Some(os) = os else {
+/// What the handler writes through: the OpenSearch client (`None` turns the
+/// handler off) and the Temporal client that failed syncs are handed to.
+#[derive(Clone, Copy, Default)]
+pub struct Sinks<'a> {
+    pub opensearch: Option<&'a OpenSearchClient>,
+    pub temporal: Option<&'a TemporalClient>,
+}
+
+pub async fn handle(dao: &Dao, sinks: Sinks<'_>, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
+    let (Some(os), temporal) = (sinks.opensearch, sinks.temporal) else {
         return Ok(());
     };
     match &ev.pk {
-        Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
-        Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,
+        Pk::Match(match_id) => handle_match(os, temporal, dao, match_id, ev, now).await,
+        Pk::User(user_id) => handle_user(os, temporal, dao, user_id, ev, now).await,
         _ => Ok(()),
     }
 }
 
+/// Hand a failed sync to a `RepairOpenSearch` workflow. Fails the message
+/// (so SQS redelivers it) only if the workflow can't be started.
+async fn schedule_repair(
+    temporal: Option<&TemporalClient>,
+    target: OpenSearchSyncTarget,
+    error: &dyn std::fmt::Display,
+) -> WorkerResult<()> {
+    let Some(temporal) = temporal else {
+        tracing::warn!(
+            ?target,
+            error = %error,
+            "opensearch: sync failed; no Temporal client to retry it (run the backfill to repair)"
+        );
+        return Ok(());
+    };
+    tracing::warn!(?target, error = %error, "opensearch: sync failed; scheduling a repair");
+    temporal
+        .start_opensearch_repair(target)
+        .await
+        .map_err(|e| WorkerError::Sqs(format!("start opensearch repair: {e}")))
+}
+
 async fn handle_match(
     os: &OpenSearchClient,
+    temporal: Option<&TemporalClient>,
     dao: &Dao,
     match_id: &str,
     ev: &ChangeEvent,
@@ -72,11 +101,12 @@ async fn handle_match(
             tracing::debug!(match_id = %match_id, "opensearch: match removed");
         }
         Err(e) => {
-            tracing::warn!(
-                match_id = %match_id,
-                error = %e,
-                "opensearch: match sync failed (not retried; the backfill repairs it)"
-            );
+            return schedule_repair(
+                temporal,
+                OpenSearchSyncTarget::Match(match_id.to_string()),
+                &e,
+            )
+            .await;
         }
     }
     Ok(())
@@ -84,6 +114,7 @@ async fn handle_match(
 
 async fn handle_user(
     os: &OpenSearchClient,
+    temporal: Option<&TemporalClient>,
     dao: &Dao,
     user_id: &str,
     ev: &ChangeEvent,
@@ -101,11 +132,12 @@ async fn handle_user(
             tracing::debug!(user_id = %user_id, "opensearch: user removed");
         }
         Err(e) => {
-            tracing::warn!(
-                user_id = %user_id,
-                error = %e,
-                "opensearch: user sync failed (not retried; the backfill repairs it)"
-            );
+            return schedule_repair(
+                temporal,
+                OpenSearchSyncTarget::User(user_id.to_string()),
+                &e,
+            )
+            .await;
         }
     }
     Ok(())

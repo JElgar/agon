@@ -13,11 +13,11 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowIdConflictPolic
 
 use super::workflows::{
     AcceptInvitation, AcceptInvitationInput, FanOutMatch, FanOutMatchInput, MatchReminder,
-    MatchReminderInput, MaterializeSeries,
+    MatchReminderInput, MaterializeSeries, OpenSearchSyncTarget, RepairOpenSearch,
 };
 use super::{
     TASK_QUEUE, accept_workflow_id, fanout_workflow_id, materialize_workflow_id,
-    reminder_workflow_id,
+    opensearch_repair_workflow_id, reminder_workflow_id,
 };
 
 /// Thin wrapper over a Temporal client for starting Agon workflows.
@@ -114,6 +114,26 @@ impl TemporalClient {
             .start_workflow(
                 MatchReminder::run,
                 input,
+                WorkflowStartOptions::new(TASK_QUEUE, id)
+                    .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
+                    .build(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Start (or attach to) a repair of one match's or user's OpenSearch
+    /// documents. Idempotent via the deterministic `os-repair-…` id and the
+    /// `UseExisting` conflict policy.
+    pub async fn start_opensearch_repair(
+        &self,
+        target: OpenSearchSyncTarget,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let id = opensearch_repair_workflow_id(&target);
+        self.client
+            .start_workflow(
+                RepairOpenSearch::run,
+                target,
                 WorkflowStartOptions::new(TASK_QUEUE, id)
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),

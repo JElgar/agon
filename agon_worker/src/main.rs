@@ -97,14 +97,17 @@ async fn main() {
 
     let mut consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
 
-    // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
-    // failure here is not fatal, since nothing reads OpenSearch yet; the worker
-    // runs without it and the backfill can catch up later.
+    // OpenSearch sync: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a setup
+    // failure here is not fatal: the worker runs without it (team stats then go
+    // stale) and the backfill catches up later.
     let opensearch =
         agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
             tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
             None
         });
+    // The client, once its indices are ready: shared by the stream handler and
+    // the Temporal worker's repair activity.
+    let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;
         for def in agon_services_core::opensearch::all_indices() {
@@ -116,7 +119,8 @@ async fn main() {
         }
         if ready {
             tracing::info!("opensearch shadow write enabled");
-            consumer = consumer.with_opensearch(os);
+            consumer = consumer.with_opensearch(os.clone());
+            opensearch_ready = Some(os);
         }
     } else {
         tracing::info!("OPENSEARCH_URL unset; opensearch shadow write disabled");
@@ -149,7 +153,7 @@ async fn main() {
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, search).await {
+        if let Err(e) = temporal::worker::run(dao, search, opensearch_ready).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };

@@ -174,7 +174,10 @@ impl Consumer {
             &self.dao,
             &self.search,
             self.push.as_ref(),
-            self.opensearch.as_ref(),
+            handlers::opensearch::Sinks {
+                opensearch: self.opensearch.as_ref(),
+                temporal: self.temporal.as_ref(),
+            },
             self.config.ui_base_url.as_deref(),
             &event,
             &now,

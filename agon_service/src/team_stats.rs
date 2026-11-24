@@ -1,9 +1,13 @@
-//! Team stats reads: `GET /teams/{team_id}/summary` and
-//! `GET /teams/{team_id}/leaderboard`.
+//! Team stats reads: `GET /teams/{team_id}/summary`,
+//! `GET /teams/{team_id}/leaderboard` and
+//! `GET /teams/{team_id}/head-to-head/{other_team_id}`.
 //!
-//! Both read OpenSearch (`agon_services_core::opensearch::team_stats`), which
+//! All read OpenSearch (`agon_services_core::opensearch::team_stats`), which
 //! the worker keeps in sync from DynamoDB. They're answered from aggregations,
-//! so their cost doesn't grow with how many matches a team has played.
+//! so their cost doesn't grow with how many matches a team has played. A
+//! team's match lists (its matches tab, friendlies, squad games, fixtures,
+//! the meetings behind a head-to-head) are `GET /matches` with `team_id`,
+//! `kind` and `tournament_id` filters, not endpoints here.
 //!
 //! The data is only complete once the OpenSearch backfill has run against the
 //! table (`docs/opensearch.md`). Before then these endpoints work but only see
@@ -309,6 +313,30 @@ pub struct TeamLeaderboard {
     pub rows: Vec<TeamLeaderboardRow>,
 }
 
+/// `GET /teams/{team_id}/head-to-head/{other_team_id}`.
+#[derive(Object)]
+pub struct TeamHeadToHead {
+    pub team_id: String,
+    pub other_team_id: String,
+    pub sport: MatchType,
+    /// `team_id`'s record against `other_team_id`: confirmed matches, squad
+    /// games excluded, all time. The meetings themselves are
+    /// `GET /matches?team_id=<a>&team_id=<b>&team_match=all`.
+    pub record: TeamRecord,
+}
+
+#[derive(ApiResponse)]
+enum TeamHeadToHeadResponse {
+    #[oai(status = 200)]
+    HeadToHead(Json<TeamHeadToHead>),
+    /// Both ids are the same team.
+    #[oai(status = 400)]
+    BadRequest(PlainText<String>),
+    /// Either team doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[derive(ApiResponse)]
 enum TeamSummaryResponse {
     #[oai(status = 200)]
@@ -612,6 +640,51 @@ impl TeamStatsApi {
             },
         )))
     }
+
+    /// Two teams' record against each other in one sport.
+    ///
+    /// Confirmed matches with both teams on a side, all time, squad games
+    /// excluded. `record` is from `team_id`'s side, with the sport's own
+    /// scoreline totals. List the meetings themselves with
+    /// `GET /matches?team_id=<a>&team_id=<b>&team_match=all`.
+    #[oai(path = "/teams/:team_id/head-to-head/:other_team_id", method = "get")]
+    async fn get_team_head_to_head(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(stats): Data<&StatsStore>,
+        AuthSchema(jwt): AuthSchema,
+        Path(team_id): Path<String>,
+        Path(other_team_id): Path<String>,
+        /// The sport.
+        Query(sport): Query<MatchType>,
+    ) -> Result<TeamHeadToHeadResponse> {
+        require_uid(dao, &jwt).await?;
+        let os = store(stats)?;
+        if team_id == other_team_id {
+            return Ok(TeamHeadToHeadResponse::BadRequest(PlainText(
+                "a team has no head-to-head with itself".into(),
+            )));
+        }
+        let (ours, theirs) = tokio::try_join!(
+            dao.get_team_meta(&team_id),
+            dao.get_team_meta(&other_team_id),
+        )
+        .map_err(dao_internal)?;
+        if ours.is_none() || theirs.is_none() {
+            return Ok(TeamHeadToHeadResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        }
+        let h2h = ts::head_to_head(os, &team_id, &other_team_id, match_type_tag(&sport))
+            .await
+            .map_err(stats_internal)?;
+        Ok(TeamHeadToHeadResponse::HeadToHead(Json(TeamHeadToHead {
+            team_id,
+            other_team_id,
+            sport,
+            record: TeamRecord::new(h2h.record),
+        })))
+    }
 }
 
 /// The user ids of the team's current members (accepted, with an account).
@@ -691,6 +764,19 @@ mod tests {
     fn win_rate_needs_five_apps() {
         assert_eq!(win_rate(4, 4), None);
         assert_eq!(win_rate(5, 2), Some(0.4));
+    }
+
+    #[test]
+    fn kinds_round_trip_through_their_tags() {
+        for k in [
+            TeamMatchKind::League,
+            TeamMatchKind::Cup,
+            TeamMatchKind::Friendly,
+            TeamMatchKind::Squad,
+            TeamMatchKind::Pickup,
+        ] {
+            assert_eq!(kind_from_str(kind_tag(k)), k);
+        }
     }
 
     #[test]

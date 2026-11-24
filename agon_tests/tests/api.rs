@@ -2409,6 +2409,36 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
     assert_eq!(found.name, "Test Match");
 }
 
+/// A match that's been called off has nothing left to show, so it drops out
+/// of the feed once cancelled even though it already fanned out.
+#[tokio::test]
+async fn cancelling_a_match_removes_it_from_the_feed() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
+
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            status: Some(models::MatchStatus::Cancelled),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("cancel match");
+
+    assert!(
+        !feed_contains(&invitee_config, &created.id).await,
+        "a cancelled match must not be in the feed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Feed fan-out scenarios (multi-user end-to-end)
 //

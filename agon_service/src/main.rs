@@ -3875,6 +3875,12 @@ impl Api {
         let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
         for entry in &eligible {
             if let Some(summary) = summaries.get(&entry.match_id) {
+                // A cancelled match never belongs in the feed, regardless of
+                // the `status` filter above — there's nothing to show once
+                // the match has been called off.
+                if summary.match_.status == "cancelled" {
+                    continue;
+                }
                 if let Some(s) = &status
                     && summary.match_.status != match_status_str(s)
                 {

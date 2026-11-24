@@ -3883,8 +3883,7 @@ impl Api {
             }
 
             if !eligible.is_empty() {
-                let match_ids: Vec<String> =
-                    eligible.iter().map(|e| e.match_id.clone()).collect();
+                let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
 
                 // Hydrate every referenced match's meta + sides (never players —
                 // the feed doesn't render the full roster, see `FeedMatch`) and
@@ -3993,10 +3992,7 @@ impl Api {
 
         let items = built.into_iter().map(FeedItem::Match).collect();
 
-        Ok(GetFeedResponse::Feed(Json(FeedPage {
-            items,
-            next_cursor,
-        })))
+        Ok(GetFeedResponse::Feed(Json(FeedPage { items, next_cursor })))
     }
 
     #[oai(path = "/matches", method = "get")]

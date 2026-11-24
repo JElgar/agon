@@ -162,6 +162,18 @@ pub struct TeamResultItem {
     pub ranked: bool,
     pub starts_at: chrono::DateTime<chrono::Utc>,
     pub tournament_id: Option<String>,
+    /// The team's own side in this match.
+    ///
+    /// `confirmed_score` is keyed by side id throughout — `SimpleScore`'s
+    /// and `SetsScore`'s `entries`, football's and netball's `score`,
+    /// cricket's innings — and a match's side ids are scoped to that match,
+    /// so there's nothing else here to match them against. Without this a
+    /// client can see that a result was 3–2 but not which side of it the
+    /// team was on, which makes the score unprintable rather than merely
+    /// less convenient: `outcome` can orient a two-sided match, but
+    /// `TeamOpponent` carries no side id either, so nothing identifies the
+    /// team's own entry in the score.
+    pub side_id: String,
     pub outcome: TeamOutcome,
     /// The match's score in its sport's own shape, the same as a feed
     /// card's `FeedMatch.confirmed_score`. Absent only if the match was
@@ -328,6 +340,7 @@ fn result_item(
         name: r.name,
         ranked: r.ranked,
         tournament_id: r.tournament_id,
+        side_id: r.side_id,
         confirmed_score,
         opponent: opponent(r.opponent),
     }

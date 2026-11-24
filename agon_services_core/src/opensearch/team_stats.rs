@@ -316,6 +316,10 @@ pub struct TeamResult {
     pub ranked: bool,
     pub starts_at: String,
     pub tournament_id: Option<String>,
+    /// The team's own side in this match. Every score is keyed by side id,
+    /// so without this the match's score can't be read from the team's
+    /// point of view — see `TeamResultItem::side_id` in `agon_service`.
+    pub side_id: String,
     /// `won`, `drawn` or `lost`.
     pub outcome: String,
     pub opponent: Option<Opponent>,
@@ -412,6 +416,7 @@ pub fn parse_recent_results(resp: &Value, team_id: &str) -> Vec<TeamResult> {
                 ranked: m.ranked,
                 starts_at: m.starts_at.clone(),
                 tournament_id: m.tournament_id.clone(),
+                side_id: ours.side_id.clone(),
                 outcome: ours.outcome.clone()?,
                 opponent,
             })
@@ -848,6 +853,11 @@ mod tests {
             Some("Leyton")
         );
         assert_eq!(rs[1].opponent.as_ref().unwrap().team_id, None);
+        // Our side isn't always the first one listed: "hw" is side b in m2
+        // and side a in the two below it.
+        assert_eq!(rs[0].side_id, "b");
+        assert_eq!(rs[1].side_id, "a");
+        assert_eq!(rs[2].side_id, "a");
         assert_eq!(streak(&rs), Some(("lost".into(), 2)));
         assert_eq!(streak(&[]), None);
     }

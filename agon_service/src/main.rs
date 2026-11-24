@@ -1000,7 +1000,8 @@ struct CreateMatchSideInput {
     max_players: Option<u32>,
     /// Whether an accepted member of `team_id` may join this side directly,
     /// with no invite or join link. Meaningless without a `team_id`. Omit
-    /// for the default (`false`).
+    /// for the default: the team's `Team.members_join_default` (`false` for
+    /// a side with no team).
     team_join_enabled: Option<bool>,
     /// This side's squad, when the match belongs to a teamless tournament
     /// (`CreateMatchInput.tournament_id` set, and that tournament's
@@ -2034,6 +2035,39 @@ enum DeleteTeamResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ResendTeamInviteResponse {
+    /// Sent again: the invitation with its new `invited_at`. The invitee
+    /// gets a fresh notification shortly after (the worker writes it).
+    #[oai(status = 200)]
+    Invitation(Json<Invitation>),
+
+    /// The member's invitation isn't pending (already accepted or
+    /// declined, or they joined without one), or it's a by-name invite with
+    /// no Agon account to notify — share its link again instead.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller is neither the team's owner nor an admin, or the team is a
+    /// tournament squad's.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The team, or the membership within it, doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The invitation was changed by someone else while this was being
+    /// handled (re-sent or answered at the same moment). Re-read and retry.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+
+    /// The invitation was last sent under 24 hours ago. The message says
+    /// how long until it can be re-sent.
+    #[oai(status = 429)]
+    TooManyRequests(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -4479,6 +4513,29 @@ impl Api {
                 "a scheduled match's time can't be more than {} hours in the past",
                 MAX_SCHEDULED_START_IN_PAST.num_hours()
             ))));
+        }
+
+        // A team side whose `team_join_enabled` was left out takes its team's
+        // `members_join_default`. Squad sides of a teamless tournament were
+        // already given an explicit `false` above, so they never reach this.
+        let default_join_team_ids: Vec<String> = input
+            .sides
+            .iter()
+            .filter(|s| s.team_join_enabled.is_none())
+            .filter_map(|s| s.team_id.clone())
+            .collect();
+        if !default_join_team_ids.is_empty() {
+            let metas = dao
+                .batch_get_team_metas(&default_join_team_ids)
+                .await
+                .map_err(dao_internal)?;
+            for side in input.sides.iter_mut() {
+                if side.team_join_enabled.is_none()
+                    && let Some(team) = side.team_id.as_ref().and_then(|id| metas.get(id))
+                {
+                    side.team_join_enabled = Some(team.members_join_default);
+                }
+            }
         }
 
         let now = now_iso();
@@ -7001,6 +7058,11 @@ impl Api {
                         created_at: now.clone(),
                         colour: Some(label.colour.clone()),
                         tournament_id: Some(tournament_id.clone()),
+                        // A squad's sides set team join explicitly, and
+                        // its sport is the tournament's — neither setting
+                        // is read for a tournament team.
+                        sports: Vec::new(),
+                        members_join_default: false,
                     };
                     squad_teams.push((team, members));
                 }
@@ -8759,6 +8821,11 @@ impl Api {
             None => None,
         };
 
+        let sports = match team_sport_tags(input.sports.as_deref().unwrap_or_default()) {
+            Ok(tags) => tags,
+            Err(msg) => return Ok(CreateTeamResponse::ValidationError(PlainText(msg))),
+        };
+
         let now = now_iso();
         let team = dao::records::TeamRecord {
             id: new_id(),
@@ -8769,6 +8836,8 @@ impl Api {
             created_at: now.clone(),
             colour: None,
             tournament_id: None,
+            sports,
+            members_join_default: input.members_join_default.unwrap_or(false),
         };
         // The creator becomes the first member with the Owner role (already
         // an Agon user, so no invitation to accept) — permanent, since
@@ -8987,11 +9056,18 @@ impl Api {
             None => None,
         };
 
+        let sports = match input.sports.as_deref().map(team_sport_tags).transpose() {
+            Ok(tags) => tags,
+            Err(msg) => return Ok(UpdateTeamResponse::ValidationError(PlainText(msg))),
+        };
+
         match dao
             .update_team(
                 &team_id,
                 input.name.as_deref(),
                 resolved_logo.as_ref().map(|o| o.as_deref()),
+                sports.as_deref(),
+                input.members_join_default,
             )
             .await
         {
@@ -9075,6 +9151,103 @@ impl Api {
     /// which is permanent (see `AssignableTeamRole`'s doc comment). Owner or
     /// admin may call this; the target can't be the team's owner (their role
     /// can't be changed by anyone, including themselves).
+    #[oai(
+        path = "/teams/:team_id/members/:member_id/resend-invite",
+        method = "post"
+    )]
+    async fn resend_team_invite(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+        Path(member_id): Path<String>,
+    ) -> Result<ResendTeamInviteResponse> {
+        info!("Re-sending invite for member {member_id} of team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        if let Some(msg) = tournament_team_refusal(dao, &team_id).await? {
+            return Ok(ResendTeamInviteResponse::Forbidden(PlainText(msg)));
+        }
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(ResendTeamInviteResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(ResendTeamInviteResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can re-send an invite".into(),
+            )));
+        }
+        let Some(member) = agg.members.iter().find(|m| m.membership_id == member_id) else {
+            return Ok(ResendTeamInviteResponse::NotFound(PlainText(
+                "member not found".into(),
+            )));
+        };
+        let Some(embedded) = member
+            .invitation
+            .as_ref()
+            .filter(|inv| inv.status == "pending")
+        else {
+            return Ok(ResendTeamInviteResponse::ValidationError(PlainText(
+                "this member has no pending invitation".into(),
+            )));
+        };
+        // The standalone invitation is what the worker notifies from, and
+        // carries the re-send counter.
+        let Some(rec) = dao
+            .get_invitation(&embedded.id)
+            .await
+            .map_err(dao_internal)?
+            .filter(|rec| rec.status == "pending")
+        else {
+            return Ok(ResendTeamInviteResponse::ValidationError(PlainText(
+                "this member has no pending invitation".into(),
+            )));
+        };
+        if rec.invited_user_id.is_none() {
+            return Ok(ResendTeamInviteResponse::ValidationError(PlainText(
+                "this invite is for someone without an Agon account, so there's nobody to \
+                 notify; share its invite link with them again instead"
+                    .into(),
+            )));
+        }
+        if let Some(wait) = invite_resend_wait(&rec.invited_at, chrono::Utc::now()) {
+            let hours = (wait.num_minutes() + 59) / 60;
+            return Ok(ResendTeamInviteResponse::TooManyRequests(PlainText(
+                format!(
+                    "this invite was sent less than 24 hours ago; it can be re-sent in about {hours} hour{}",
+                    if hours == 1 { "" } else { "s" }
+                ),
+            )));
+        }
+
+        let now = now_iso();
+        match dao
+            .resend_team_invitation(
+                &team_id,
+                &member_id,
+                &rec.id,
+                &rec.invited_at,
+                &now,
+                true, // user-kind: has a GSI1 inbox entry to re-sort
+            )
+            .await
+        {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(ResendTeamInviteResponse::Conflict(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+        let resent = dao::records::InvitationRecord {
+            invited_at: now,
+            resend_count: rec.resend_count + 1,
+            ..rec
+        };
+        Ok(ResendTeamInviteResponse::Invitation(Json(
+            invitation_from_record(&resent),
+        )))
+    }
+
     #[oai(path = "/teams/:team_id/members/:member_id", method = "patch")]
     async fn update_team_member_role(
         &self,
@@ -11470,7 +11643,7 @@ impl Api {
         // worst case the row keeps showing the (now stale) buttons, same as
         // before this existed.
         if let Err(e) = dao
-            .mark_invitation_notification_actioned(&uid, &invitation_id, status)
+            .mark_invitation_notification_actioned(&uid, &invitation_id, rec.resend_count, status)
             .await
         {
             error!(
@@ -12824,6 +12997,7 @@ fn build_invited_player(
         invited_at: now.to_string(),
         responded_at: None,
         reserve_spot,
+        resend_count: 0,
     };
 
     (player, invitation)
@@ -12906,6 +13080,7 @@ fn build_invited_team_member(
         invited_at: now.to_string(),
         responded_at: None,
         reserve_spot: false,
+        resend_count: 0,
     };
 
     (member, invitation)
@@ -13328,6 +13503,66 @@ async fn tournament_team_refusal(dao: &dao::Dao, team_id: &str) -> Result<Option
         }))
 }
 
+/// Validate a team's sport list (`CreateTeamInput.sports` /
+/// `UpdateTeamInput.sports`) into stored sport tags, order kept. The enum
+/// already restricts each entry to a known sport; this refuses duplicates,
+/// since the list is an ordering (first = default) and a repeat makes that
+/// ambiguous.
+fn team_sport_tags(sports: &[MatchType]) -> std::result::Result<Vec<String>, String> {
+    let mut tags: Vec<String> = Vec::with_capacity(sports.len());
+    for sport in sports {
+        let tag = match_type_tag(sport);
+        if tags.iter().any(|t| t == tag) {
+            return Err(format!("sport `{tag}` is listed more than once"));
+        }
+        tags.push(tag.to_string());
+    }
+    Ok(tags)
+}
+
+/// How long after an invitation was (last) sent before
+/// `POST /teams/:team_id/members/:member_id/resend-invite` will send it again.
+const INVITE_RESEND_INTERVAL: chrono::Duration = chrono::Duration::hours(24);
+
+/// `Some(wait)` — how long until it may be re-sent — if an invitation last
+/// sent at `last_sent` (RFC 3339) is still inside the re-send interval at
+/// `now`. An unparseable timestamp never blocks a re-send.
+fn invite_resend_wait(
+    last_sent: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::Duration> {
+    let sent = chrono::DateTime::parse_from_rfc3339(last_sent).ok()?;
+    let next = sent.with_timezone(&chrono::Utc) + INVITE_RESEND_INTERVAL;
+    (next > now).then(|| next - now)
+}
+
+#[cfg(test)]
+mod team_settings_tests {
+    use super::*;
+
+    #[test]
+    fn team_sports_keep_order_and_refuse_repeats() {
+        assert_eq!(
+            team_sport_tags(&[MatchType::Cricket, MatchType::Football]).unwrap(),
+            vec!["cricket".to_string(), "football".to_string()]
+        );
+        assert!(team_sport_tags(&[]).unwrap().is_empty());
+        assert!(team_sport_tags(&[MatchType::Football, MatchType::Football]).is_err());
+    }
+
+    #[test]
+    fn invites_resend_once_a_day() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-24T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let wait = invite_resend_wait("2026-11-24T02:00:00.000Z", now).expect("too soon");
+        assert_eq!(wait.num_hours(), 14);
+        assert_eq!(invite_resend_wait("2026-11-23T12:00:00Z", now), None);
+        assert_eq!(invite_resend_wait("2026-11-01T00:00:00Z", now), None);
+        assert_eq!(invite_resend_wait("not a time", now), None);
+    }
+}
+
 async fn require_uid(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
     check_scope(jwt, None)?;
     dao.get_user_id_by_sub(&jwt.sub)
@@ -13642,6 +13877,8 @@ fn mock_team(id: String, name: String) -> Team {
         is_followed_by_me: false,
         colour: None,
         tournament_id: None,
+        sports: vec![MatchType::Football],
+        members_join_default: false,
     }
 }
 

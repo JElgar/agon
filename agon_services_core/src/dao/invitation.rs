@@ -191,6 +191,93 @@ impl Dao {
         }
     }
 
+    /// Re-send a still-pending team invitation: stamp `now` as the
+    /// invitation's `invited_at` (on the standalone invitation, its GSI1 inbox
+    /// sort key, and the copy embedded on the team's pending member row) and
+    /// bump its `resend_count`, in one transaction. The worker sees the bumped
+    /// counter on the invitation's MODIFY and notifies the invitee again (see
+    /// `agon_worker`'s `notify.rs`).
+    ///
+    /// Guarded on the invitation still being `pending` with `invited_at`
+    /// equal to `prev_invited_at` — the value the caller read and checked its
+    /// rate limit against — so two concurrent re-sends can't both pass that
+    /// check, and a response landing in between isn't overwritten. Either
+    /// guard failing (or either item being gone) is `Conflict`.
+    #[tracing::instrument(skip(self))]
+    pub async fn resend_team_invitation(
+        &self,
+        team_id: &str,
+        membership_id: &str,
+        invitation_id: &str,
+        prev_invited_at: &str,
+        now: &str,
+        has_user_inbox: bool,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{AttributeValue, TransactWriteItem, Update};
+
+        let mut inv = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Invitation(invitation_id.into()).to_string()))
+            .key("SK", s(Sk::Meta.to_string()))
+            .condition_expression(
+                "attribute_exists(#pk) AND #status = :pending AND invited_at = :prev",
+            )
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":pending", s("pending"))
+            .expression_attribute_values(":prev", s(prev_invited_at))
+            .expression_attribute_values(":now", s(now))
+            .expression_attribute_values(":zero", AttributeValue::N("0".into()))
+            .expression_attribute_values(":one", AttributeValue::N("1".into()));
+        inv = if has_user_inbox {
+            inv.update_expression(
+                "SET invited_at = :now, \
+                 resend_count = if_not_exists(resend_count, :zero) + :one, \
+                 GSI1SK = :gsi1sk",
+            )
+            .expression_attribute_values(":gsi1sk", s(format!("pending#{now}")))
+        } else {
+            inv.update_expression(
+                "SET invited_at = :now, \
+                 resend_count = if_not_exists(resend_count, :zero) + :one",
+            )
+        };
+        let inv = inv.build().map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let member = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Member(membership_id.into()).to_string()))
+            .update_expression("SET invitation.invited_at = :now")
+            .condition_expression(
+                "attribute_exists(#pk) AND invitation.#id = :inv_id \
+                 AND invitation.#status = :pending",
+            )
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_names("#id", "id")
+            .expression_attribute_values(":inv_id", s(invitation_id))
+            .expression_attribute_values(":pending", s("pending"))
+            .expression_attribute_values(":now", s(now))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(inv).build())
+            .transact_items(TransactWriteItem::builder().update(member).build())
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                format!("invitation {invitation_id} is no longer pending or was just re-sent"),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Delete (revoke) an invitation. Delete-by-id, not a toggle (there's no
     /// idempotent-create counterpart the way `follow_user` has for
     /// `unfollow_user`), so errors with `DaoError::NotFound` if the

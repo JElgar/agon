@@ -13,12 +13,15 @@
 //! creation). The one exception is score submissions: the submission item is
 //! overwritten in place when a side responds, so "score confirmed" is detected
 //! as a `pending → confirmed` MODIFY transition (fired once, on the transition).
+//! Invitations likewise react to MODIFY: the accept transition notifies the
+//! inviter, and a re-send (`resend_count` bumped on a still-pending invite)
+//! notifies the invitee again under a per-send id.
 
 use agon_services_core::dao::Dao;
 use agon_services_core::dao::keys::{Pk, Sk};
 use agon_services_core::dao::records::{
     InvitationContextRecord, InvitationRecord, MatchRecord, NotificationKindRecord,
-    NotificationRecord, ScoreSubmissionRecord,
+    NotificationRecord, ScoreSubmissionRecord, invitation_notification_id,
 };
 
 use crate::error::{WorkerError, WorkerResult};
@@ -81,7 +84,9 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
 
 /// Dispatch an invitation change event. INSERT (invite sent) notifies the
 /// invitee; MODIFY notifies the inviter when the invitation transitions into
-/// `accepted`. A decline, a revoke (REMOVE), or any other modify is ignored.
+/// `accepted`, and notifies the invitee again when a still-pending invitation
+/// was re-sent (its `resend_count` went up — `Dao::resend_team_invitation`).
+/// A decline, a revoke (REMOVE), or any other modify is ignored.
 async fn notify_invitation_event(
     dao: &Dao,
     ev: &ChangeEvent,
@@ -90,9 +95,27 @@ async fn notify_invitation_event(
 ) -> WorkerResult<()> {
     match ev.kind {
         ChangeKind::Insert => notify_invitation(dao, ev, invitation_id, now).await,
+        ChangeKind::Modify if is_resend(ev) => notify_invitation(dao, ev, invitation_id, now).await,
         ChangeKind::Modify => notify_invitation_accepted(dao, ev, invitation_id, now).await,
         ChangeKind::Remove => Ok(()),
     }
+}
+
+/// Whether an invitation MODIFY is a re-send: still pending, with a higher
+/// `resend_count` than before. A re-send changes nothing else (the DAO
+/// guards it on `pending`), so it can never also be the accept transition.
+/// Without an old image the counter going up can't be seen, but the
+/// notification id is per-count anyway, so treating any pending invitation
+/// with a non-zero count as a re-send at worst re-issues a no-op write.
+fn is_resend(ev: &ChangeEvent) -> bool {
+    let Some(new) = ev.new_record::<InvitationRecord>() else {
+        return false;
+    };
+    if new.status != "pending" || new.resend_count == 0 {
+        return false;
+    }
+    ev.old_record::<InvitationRecord>()
+        .is_none_or(|old| old.resend_count < new.resend_count)
 }
 
 /// An invitation transitioned into "accepted": notify the inviter that their
@@ -197,8 +220,10 @@ async fn notify_invitation(
     };
 
     let notif = NotificationRecord {
-        // Deterministic id → idempotent under redelivery (one row per invite).
-        id: format!("notif-invitation-{invitation_id}"),
+        // Deterministic id → idempotent under redelivery: one row per send of
+        // the invite (the original keeps `notif-invitation-<id>`; re-send `n`
+        // gets its own id, so it lands as a fresh, unread bell entry).
+        id: invitation_notification_id(invitation_id, inv.resend_count),
         user_id: invited_user_id,
         is_read: false,
         created_at: now.to_string(),
@@ -677,5 +702,86 @@ fn preview_of(text: &str) -> String {
     } else {
         let truncated: String = text.chars().take(MAX).collect();
         format!("{truncated}…")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Envelope, Image};
+    use agon_services_core::dao::records::InvitationKindRecord;
+
+    fn inv(status: &str, resend_count: u32) -> InvitationRecord {
+        InvitationRecord {
+            id: "inv1".into(),
+            status: status.into(),
+            invited_by_user_id: "u_host".into(),
+            invited_user_id: Some("u_guest".into()),
+            invite_token: None,
+            kind: InvitationKindRecord::User {
+                invited_user_id: "u_guest".into(),
+            },
+            context: InvitationContextRecord::Team {
+                team_id: "t1".into(),
+                team_name: "Reds".into(),
+            },
+            invited_at: "2026-07-01T10:00:00Z".into(),
+            responded_at: None,
+            reserve_spot: false,
+            resend_count,
+        }
+    }
+
+    fn modify(old: Option<&InvitationRecord>, new: &InvitationRecord) -> ChangeEvent {
+        let to_image = |r: &InvitationRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
+        ChangeEvent::from_envelope(&Envelope {
+            event: ChangeKind::Modify,
+            pk: "INVITATION#inv1".into(),
+            sk: "#META".into(),
+            old_image: old.map(to_image),
+            new_image: Some(to_image(new)),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn resend_is_a_pending_counter_bump() {
+        assert!(is_resend(&modify(
+            Some(&inv("pending", 0)),
+            &inv("pending", 1)
+        )));
+        assert!(is_resend(&modify(
+            Some(&inv("pending", 1)),
+            &inv("pending", 2)
+        )));
+        // No old image: any re-sent pending invitation counts (the per-count
+        // notification id keeps a repeat a no-op).
+        assert!(is_resend(&modify(None, &inv("pending", 1))));
+    }
+
+    #[test]
+    fn other_modifies_are_not_resends() {
+        // Accepting a re-sent invitation keeps its count: that's the accept
+        // path, not another re-send.
+        assert!(!is_resend(&modify(
+            Some(&inv("pending", 1)),
+            &inv("accepted", 1)
+        )));
+        // A rewrite with the same count (redelivered or unrelated).
+        assert!(!is_resend(&modify(
+            Some(&inv("pending", 1)),
+            &inv("pending", 1)
+        )));
+        // Never re-sent.
+        assert!(!is_resend(&modify(
+            Some(&inv("pending", 0)),
+            &inv("pending", 0)
+        )));
+    }
+
+    #[test]
+    fn notification_ids_are_per_send() {
+        assert_eq!(invitation_notification_id("i", 0), "notif-invitation-i");
+        assert_eq!(invitation_notification_id("i", 2), "notif-invitation-i-r2");
     }
 }

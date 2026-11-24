@@ -1294,6 +1294,8 @@ pub fn team_from_records(team: &TeamRecord, is_followed_by_me: bool) -> Team {
         is_followed_by_me,
         colour: team.colour.clone(),
         tournament_id: team.tournament_id.clone(),
+        sports: team.sports.iter().map(|t| match_type_from_tag(t)).collect(),
+        members_join_default: team.members_join_default,
     }
 }
 

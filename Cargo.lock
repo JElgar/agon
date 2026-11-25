@@ -69,6 +69,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
+ "futures",
  "google-fcm1",
  "meilisearch-sdk",
  "opensearch",

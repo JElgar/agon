@@ -14127,6 +14127,11 @@ async fn main() {
                 }),
             );
 
+            // State for `POST`/`GET /admin/opensearch/backfill` — see
+            // `admin::backfill`'s doc comment for why this is in-memory
+            // rather than a DynamoDB-backed job record.
+            let backfill_job = std::sync::Arc::new(admin::BackfillJob::default());
+
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
             // browsers reject the preflight), and mixing `*` with specific origins
@@ -14178,6 +14183,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(stats_store)
+                .data(backfill_job)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

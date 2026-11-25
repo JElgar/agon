@@ -7,7 +7,10 @@
 //! Types live in [`models`] — see that module's doc comment for why they're
 //! referenced qualified (`models::User`, not a bare `User`).
 
+mod backfill;
 pub mod models;
+
+use std::sync::Arc;
 
 use agon_services_core::dao;
 use poem::http::StatusCode;
@@ -20,6 +23,50 @@ use poem_openapi::{ApiResponse, OpenApi};
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
 use crate::{opensearch_internal, page_limit, require_uid, search_cursor, search_offset};
+
+pub use backfill::BackfillJob;
+
+/// Map a backfill job's state (or its absence, before anything has ever been
+/// triggered on this process) to the API's representation.
+fn backfill_status_from_job(job: Option<backfill::JobState>) -> models::BackfillStatus {
+    let Some(job) = job else {
+        return models::BackfillStatus {
+            status: "idle".into(),
+            delete_old: None,
+            started_at: None,
+            finished_at: None,
+            match_pages: 0,
+            matches_indexed: 0,
+            matches_removed: 0,
+            matches_failed: 0,
+            user_pages: 0,
+            users_indexed: 0,
+            users_removed: 0,
+            users_failed: 0,
+            error: None,
+        };
+    };
+    models::BackfillStatus {
+        status: match job.status {
+            backfill::Status::Running => "running",
+            backfill::Status::Succeeded => "succeeded",
+            backfill::Status::Failed => "failed",
+        }
+        .to_string(),
+        delete_old: Some(job.delete_old),
+        started_at: Some(job.started_at),
+        finished_at: job.finished_at,
+        match_pages: job.progress.match_pages,
+        matches_indexed: job.progress.matches_indexed,
+        matches_removed: job.progress.matches_removed,
+        matches_failed: job.progress.matches_failed,
+        user_pages: job.progress.user_pages,
+        users_indexed: job.progress.users_indexed,
+        users_removed: job.progress.users_removed,
+        users_failed: job.progress.users_failed,
+        error: job.error,
+    }
+}
 
 pub struct AdminApi;
 
@@ -122,6 +169,26 @@ enum UpdateUserResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum StartBackfillResponse {
+    #[oai(status = 202)]
+    Started(Json<models::BackfillStatus>),
+
+    /// A backfill triggered by an earlier request is still running.
+    #[oai(status = 409)]
+    AlreadyRunning(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetBackfillStatusResponse {
+    #[oai(status = 200)]
+    Status(Json<models::BackfillStatus>),
 }
 
 #[OpenApi]
@@ -330,5 +397,73 @@ impl AdminApi {
         Ok(UpdateUserResponse::User(Json(admin_user_from_record(
             &record,
         ))))
+    }
+
+    /// Admin panel: kick off the `agon_worker backfill-opensearch` job in
+    /// the background, instead of a manual `kubectl exec` into the worker
+    /// pod. Runs in-process on `agon-service` (a single replica — see
+    /// `agon_infra`), reusing the same shared implementation
+    /// (`agon_services_core::opensearch::backfill`) and the OpenSearch
+    /// client already built for the admin/team-stats reads. Refused with
+    /// 409 while an earlier trigger is still running; poll `GET` on the
+    /// same path for progress.
+    #[oai(path = "/admin/opensearch/backfill", method = "post")]
+    async fn start_opensearch_backfill(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
+        Data(job): Data<&Arc<BackfillJob>>,
+        input: Json<models::StartBackfillInput>,
+    ) -> Result<StartBackfillResponse> {
+        let Some(os) = stats.0.clone() else {
+            return Ok(StartBackfillResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        };
+        let delete_old = input.0.delete_old.unwrap_or(false);
+        if !job.try_start(delete_old) {
+            return Ok(StartBackfillResponse::AlreadyRunning(PlainText(
+                "a backfill is already running".into(),
+            )));
+        }
+
+        let dao = dao.clone();
+        let spawned_job = Arc::clone(job);
+        tokio::spawn(async move {
+            let args = agon_services_core::opensearch::backfill::BackfillArgs {
+                delete_old,
+                ..Default::default()
+            };
+            let progress_job = Arc::clone(&spawned_job);
+            let on_progress: Arc<dyn Fn(agon_services_core::opensearch::backfill::BackfillProgress) + Send + Sync> =
+                Arc::new(move |progress| progress_job.update_progress(progress));
+            let exit_code = agon_services_core::opensearch::backfill::run_against(
+                &os,
+                dao,
+                args,
+                on_progress,
+            )
+            .await;
+            let error = (exit_code != 0)
+                .then(|| "backfill failed; see agon-service logs for the cause".to_string());
+            spawned_job.finish(exit_code, error);
+        });
+
+        Ok(StartBackfillResponse::Started(Json(
+            backfill_status_from_job(job.snapshot()),
+        )))
+    }
+
+    /// Admin panel: the OpenSearch backfill job this process last ran (or is
+    /// running). `status: "idle"` means nothing has been triggered since
+    /// `agon-service` last started.
+    #[oai(path = "/admin/opensearch/backfill", method = "get")]
+    async fn get_opensearch_backfill(
+        &self,
+        Data(job): Data<&Arc<BackfillJob>>,
+    ) -> Result<GetBackfillStatusResponse> {
+        Ok(GetBackfillStatusResponse::Status(Json(
+            backfill_status_from_job(job.snapshot()),
+        )))
     }
 }

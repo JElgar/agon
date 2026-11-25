@@ -6903,7 +6903,18 @@ async fn joining_a_match_twice_via_the_same_link_is_rejected() {
     )
     .await
     .expect("join via single-side link");
-    assert_eq!(joined.viewer_role, Some(models::MatchPlayerRole::Player));
+    // `viewer_role` is the match-authority concept (Owner/Admin/SideAdmin) —
+    // see `caller_match_authority_role`'s doc comment — so it's `None` for a
+    // plain joined player; the roster membership below is what this test
+    // actually cares about.
+    assert_eq!(joined.viewer_role, None);
+    assert!(
+        joined
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner.profile.id)),
+        "joiner is on the roster after joining"
+    );
     let roster_size = joined.players.len();
 
     // Same joiner, same link, again — rejected as a conflict rather than

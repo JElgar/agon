@@ -109,6 +109,10 @@ mod share;
 // type, combined with `Api` like `admin::AdminApi`.
 mod team_stats;
 
+// A player's own summary, read from OpenSearch. Reuses `team_stats`'s
+// `StatsStore` and shares its OpenSearch client/config.
+mod user_stats;
+
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
@@ -14072,6 +14076,7 @@ async fn main() {
             admin::AdminApi,
             youtube::YoutubeApi,
             team_stats::TeamStatsApi,
+            user_stats::UserStatsApi,
         ),
         "Agon API",
         "1.0",

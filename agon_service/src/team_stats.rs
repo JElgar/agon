@@ -383,7 +383,7 @@ fn scope_of(scope: TeamLeaderboardScope, tournament_id: Option<&str>) -> Leaderb
     }
 }
 
-fn store(store: &StatsStore) -> Result<&OpenSearchClient> {
+pub(crate) fn store(store: &StatsStore) -> Result<&OpenSearchClient> {
     store.0.as_ref().ok_or_else(|| {
         poem::Error::from_string(
             "team stats are not available (OPENSEARCH_URL is not set)",
@@ -392,7 +392,7 @@ fn store(store: &StatsStore) -> Result<&OpenSearchClient> {
     })
 }
 
-fn stats_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
+pub(crate) fn stats_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
     error!("opensearch error: {err}");
     poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
 }

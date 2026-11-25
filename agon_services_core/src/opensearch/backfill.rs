@@ -31,7 +31,9 @@ use std::time::Duration;
 
 use crate::dao::Dao;
 use crate::dao::entity_index::EntityKind;
-use crate::opensearch::{OpenSearchClient, SyncOutcome, UserSyncOutcome, all_indices, sync_match, sync_user};
+use crate::opensearch::{
+    OpenSearchClient, SyncOutcome, UserSyncOutcome, all_indices, sync_match, sync_user,
+};
 use futures::StreamExt;
 
 #[derive(Debug, Clone)]
@@ -254,7 +256,12 @@ pub async fn run_against(
             resume = ?cursor,
             "backfill progress"
         );
-        on_progress(BackfillProgress::from_counts(pages, &counts, 0, &user_counts));
+        on_progress(BackfillProgress::from_counts(
+            pages,
+            &counts,
+            0,
+            &user_counts,
+        ));
         if cursor.is_none() {
             break;
         }
@@ -264,8 +271,7 @@ pub async fn run_against(
     let mut user_cursor = args.resume_users.clone();
     let mut user_pages = 0u64;
     loop {
-        let page = match list_users_with_retry(&dao, user_cursor.as_deref(), args.page_size).await
-        {
+        let page = match list_users_with_retry(&dao, user_cursor.as_deref(), args.page_size).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(error = %e, resume = ?user_cursor, "listing users failed; re-run with --resume-users <cursor> to continue");
@@ -526,8 +532,8 @@ mod tests {
 
     #[test]
     fn parses_resume_and_delete_old() {
-        let a = BackfillArgs::parse(&args(&["--resume-users", "cursor123", "--delete-old"]))
-            .unwrap();
+        let a =
+            BackfillArgs::parse(&args(&["--resume-users", "cursor123", "--delete-old"])).unwrap();
         assert_eq!(a.resume_users, Some("cursor123".to_string()));
         assert!(a.delete_old);
     }

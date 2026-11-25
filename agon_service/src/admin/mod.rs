@@ -435,15 +435,12 @@ impl AdminApi {
                 ..Default::default()
             };
             let progress_job = Arc::clone(&spawned_job);
-            let on_progress: Arc<dyn Fn(agon_services_core::opensearch::backfill::BackfillProgress) + Send + Sync> =
-                Arc::new(move |progress| progress_job.update_progress(progress));
-            let exit_code = agon_services_core::opensearch::backfill::run_against(
-                &os,
-                dao,
-                args,
-                on_progress,
-            )
-            .await;
+            let on_progress: Arc<
+                dyn Fn(agon_services_core::opensearch::backfill::BackfillProgress) + Send + Sync,
+            > = Arc::new(move |progress| progress_job.update_progress(progress));
+            let exit_code =
+                agon_services_core::opensearch::backfill::run_against(&os, dao, args, on_progress)
+                    .await;
             let error = (exit_code != 0)
                 .then(|| "backfill failed; see agon-service logs for the cause".to_string());
             spawned_job.finish(exit_code, error);

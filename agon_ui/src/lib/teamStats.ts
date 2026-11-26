@@ -1,10 +1,13 @@
 import type { components } from '@/types/api'
 import type { MatchType } from '@/lib/sports'
 
-type SearchMatch = components['schemas']['SearchMatch']
+type TeamSummary = components['schemas']['TeamSummary']
+type SportMatchStats = components['schemas']['SportMatchStats']
 
-export type TeamMatchOutcome = 'win' | 'loss' | 'draw'
-
+/**
+ * A team's record against other teams: league, cup and friendly matches
+ * (squad games have no W/D/L for the team, so they're left out), all time.
+ */
 export interface TeamRecord {
   matches: number
   wins: number
@@ -16,68 +19,52 @@ export interface TeamSportRecord extends TeamRecord {
   sport: MatchType
 }
 
-/** The side of `match` that belongs to `teamId`, if any. */
-function teamSide(match: SearchMatch, teamId: string) {
-  return match.sides.find((side) => side.team_id === teamId)
-}
-
-/**
- * `teamId`'s result in one match, or `null` when it doesn't count toward a
- * completed record — no confirmed score yet (scheduled/in-progress, or a
- * completed match whose score hasn't been confirmed by both sides) or the
- * team isn't actually a side of this match.
- */
-function outcomeFor(match: SearchMatch, teamId: string): TeamMatchOutcome | null {
-  if (!match.confirmed_score) return null
-  const side = teamSide(match, teamId)
-  if (!side) return null
-  const { winner_side_id } = match.confirmed_score
-  if (winner_side_id == null) return 'draw'
-  return winner_side_id === side.id ? 'win' : 'loss'
-}
-
-function recordFrom(outcomes: TeamMatchOutcome[]): TeamRecord {
-  const matches = outcomes.length
-  const wins = outcomes.filter((o) => o === 'win').length
+function recordOf(played: number, won: number): TeamRecord {
   return {
-    matches,
-    wins,
-    winRatePct: matches === 0 ? null : (wins / matches) * 100,
+    matches: played,
+    wins: won,
+    winRatePct: played === 0 ? null : (won / played) * 100,
   }
 }
 
 /**
- * A team's overall win/loss record. There's no `GET /teams/{id}/stats`
- * endpoint (or stats fields on `Team`) yet, so this is derived client-side
- * from `matches` — the team's `GET /matches?team_id=` results — the same way
- * `ProfilePage`'s per-user stats already exist server-side but this team
- * equivalent doesn't. Only matches with a confirmed score count, and only
- * over whatever page of matches the caller fetched — see
- * `TEAM_STATS_MATCH_LIMIT` in `TeamPage` for the resulting known gap
- * (an approximation, not a full-history record).
+ * One record per sport the team plays, most matches first, from each sport's
+ * `GET /teams/{id}/summary`. These are full-history totals from the stats
+ * store, not an approximation over recent matches.
  */
-export function teamRecord(matches: SearchMatch[], teamId: string): TeamRecord {
-  const outcomes = matches
-    .map((m) => outcomeFor(m, teamId))
-    .filter((o): o is TeamMatchOutcome => o !== null)
-  return recordFrom(outcomes)
-}
-
-/**
- * The same record, split by `match_type` (the closest thing to "sport" on a
- * match) — most-played sport first. Same client-side-derived, same-page-of-
- * matches caveat as `teamRecord`.
- */
-export function teamSportRecords(matches: SearchMatch[], teamId: string): TeamSportRecord[] {
-  const bySport = new Map<MatchType, TeamMatchOutcome[]>()
-  for (const match of matches) {
-    const outcome = outcomeFor(match, teamId)
-    if (outcome === null) continue
-    const list = bySport.get(match.match_type) ?? []
-    list.push(outcome)
-    bySport.set(match.match_type, list)
-  }
-  return [...bySport.entries()]
-    .map(([sport, outcomes]) => ({ sport, ...recordFrom(outcomes) }))
+export function teamSportRecords(summaries: TeamSummary[]): TeamSportRecord[] {
+  return summaries
+    .map((s) => ({ sport: s.sport, ...recordOf(s.record.played, s.record.won) }))
+    .filter((r) => r.matches > 0)
     .sort((a, b) => b.matches - a.matches)
+}
+
+/** The team's overall record: every sport's summed. */
+export function teamRecord(summaries: TeamSummary[]): TeamRecord {
+  const played = summaries.reduce((n, s) => n + s.record.played, 0)
+  const won = summaries.reduce((n, s) => n + s.record.won, 0)
+  return recordOf(played, won)
+}
+
+/**
+ * The one counter a leaderboard row shows next to appearances, in its
+ * sport's own terms: goals for football and netball, runs for cricket.
+ * `null` for a sport with no counters yet (tennis, squash, …) or a player
+ * with none.
+ */
+export function headlineStat(
+  sport: MatchType,
+  stats: SportMatchStats | undefined,
+): { label: string; value: number } | null {
+  if (!stats) return null
+  switch (sport) {
+    case 'football':
+      return stats.football ? { label: 'Goals', value: stats.football.goals ?? 0 } : null
+    case 'netball':
+      return stats.netball ? { label: 'Goals', value: stats.netball.goals ?? 0 } : null
+    case 'cricket':
+      return stats.cricket ? { label: 'Runs', value: stats.cricket.runs ?? 0 } : null
+    default:
+      return null
+  }
 }

@@ -35,6 +35,7 @@ use crate::opensearch::{
     OpenSearchClient, SyncOutcome, UserSyncOutcome, all_indices, sync_match, sync_user,
 };
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct BackfillArgs {
@@ -502,6 +503,162 @@ async fn list_users_with_retry(
         }
     }
     Err(last)
+}
+
+/// An error from one of the page-level primitives below (used by the
+/// Temporal backfill workflow's activities — see
+/// `crate::opensearch::backfill_workflow`). Plain string-wrapped, same as
+/// this module's existing retry helpers, just given a real `Error` impl so
+/// it converts into Temporal's `ActivityError` via its blanket `From`.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct BackfillError(pub String);
+
+impl From<String> for BackfillError {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+/// One page's outcome from [`backfill_match_page`]/[`backfill_user_page`].
+/// `player_rows` is always 0 for the user phase.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PageOutcome {
+    pub indexed: u64,
+    pub removed: u64,
+    pub player_rows: u64,
+    pub failed: u64,
+    pub next_cursor: Option<String>,
+}
+
+/// Checks OpenSearch is reachable and every index exists, creating what's
+/// missing — the same preflight `run` does before paging. Called once at the
+/// start of the Temporal workflow.
+pub async fn ensure_ready(os: &OpenSearchClient) -> Result<(), BackfillError> {
+    os.health()
+        .await
+        .map_err(|e| BackfillError(e.to_string()))?;
+    for def in all_indices() {
+        os.ensure_index(&def)
+            .await
+            .map_err(|e| BackfillError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Sync one page of matches (bounded `concurrency` fan-out, same per-item
+/// retry as `run`). Used by the Temporal workflow's per-page activity —
+/// each page is its own activity invocation, so the workflow's own history
+/// durably records progress and a crash resumes from the last completed
+/// page's `next_cursor` rather than from the top.
+pub async fn backfill_match_page(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    cursor: Option<String>,
+    page_size: u32,
+    concurrency: usize,
+) -> Result<PageOutcome, BackfillError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let page = list_with_retry(dao, cursor.as_deref(), page_size)
+        .await
+        .map_err(BackfillError)?;
+    let next_cursor = page.next_cursor;
+    let results: Vec<_> = futures::stream::iter(page.items)
+        .map(|id| {
+            let (os, dao, now) = (os, dao, &now);
+            async move { sync_with_retry(os, dao, &id, now).await }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    let mut out = PageOutcome {
+        next_cursor,
+        ..Default::default()
+    };
+    for res in results {
+        match res {
+            Ok(SyncOutcome::Indexed { player_rows }) => {
+                out.indexed += 1;
+                out.player_rows += player_rows as u64;
+            }
+            Ok(SyncOutcome::Removed) => out.removed += 1,
+            Err(_) => out.failed += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// [`backfill_match_page`], for users.
+pub async fn backfill_user_page(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    cursor: Option<String>,
+    page_size: u32,
+    concurrency: usize,
+) -> Result<PageOutcome, BackfillError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let page = list_users_with_retry(dao, cursor.as_deref(), page_size)
+        .await
+        .map_err(BackfillError)?;
+    let next_cursor = page.next_cursor;
+    let results: Vec<_> = futures::stream::iter(page.items)
+        .map(|id| {
+            let (os, dao, now) = (os, dao, &now);
+            async move { user_sync_with_retry(os, dao, &id, now).await }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    let mut out = PageOutcome {
+        next_cursor,
+        ..Default::default()
+    };
+    for res in results {
+        match res {
+            Ok(UserSyncOutcome::Indexed) => out.indexed += 1,
+            Ok(UserSyncOutcome::Removed) => out.removed += 1,
+            Err(_) => out.failed += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// Refreshes every index and, if `swap`, points each alias at this version
+/// (optionally deleting the superseded one) — the same tail `run` runs once
+/// both phases finish with no failures. Called once at the end of the
+/// Temporal workflow.
+pub async fn finish(
+    os: &OpenSearchClient,
+    swap: bool,
+    delete_old: bool,
+) -> Result<(), BackfillError> {
+    for def in all_indices() {
+        if let Err(e) = os.refresh(&os.write_index(&def)).await {
+            tracing::warn!(error = %e, "refresh failed");
+        }
+    }
+    if !swap {
+        return Ok(());
+    }
+    for def in all_indices() {
+        let alias = def.alias(os.prefix());
+        let previous = os.alias_targets(&alias).await.unwrap_or_default();
+        os.point_alias(&def)
+            .await
+            .map_err(|e| BackfillError(e.to_string()))?;
+        tracing::info!(alias = %alias, index = %os.write_index(&def), ?previous, "alias points at this version");
+        if delete_old {
+            for old in previous.into_iter().filter(|i| *i != os.write_index(&def)) {
+                match os.delete_index(&old).await {
+                    Ok(()) => tracing::info!(index = %old, "deleted superseded index"),
+                    Err(e) => {
+                        tracing::warn!(index = %old, error = %e, "could not delete superseded index")
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

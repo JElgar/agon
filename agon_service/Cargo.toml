@@ -38,3 +38,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Building the Google OAuth consent URL (youtube.rs) with properly
 # percent-encoded query params.
 url = "2"
+# Starting/querying the OpenSearch backfill Temporal workflow (admin.rs) —
+# a plain client only, agon_service runs no Temporal worker of its own.
+temporalio-client = "0.5.0"
+temporalio-common = "0.5.0"

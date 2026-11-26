@@ -65,6 +65,16 @@ opentelemetry-appender-tracing = "0.32"
 # what the Temporal SDK / reqwest's `rustls-tls` already pull in.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
+# The `BackfillOpenSearch` workflow (`opensearch::backfill_workflow`) and its
+# activities, so both `agon_worker` (runs it) and `agon_service` (starts/queries
+# it from the admin API) share one definition — versions matched to
+# `agon_worker/Cargo.toml`.
+temporalio-sdk = "0.5.0"
+temporalio-macros = "0.5.0"
+# Referenced by the workflow/activity macro expansions (`::temporalio_workflow::…`).
+temporalio-workflow = "0.5.0"
+temporalio-common = "0.5.0"
+
 [dev-dependencies]
 # `#[tokio::test]` for the DynamoDB-Local integration tests under `tests/` —
 # the `[dependencies]` `tokio` above only pulls in the `time` feature.

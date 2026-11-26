@@ -105,6 +105,10 @@ async fn main() {
             tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
             None
         });
+    // Also handed to the Temporal worker below, for the backfill workflow's
+    // activities — kept outside the `if let` so it survives `with_opensearch`
+    // moving its own clone into the consumer.
+    let mut backfill_opensearch = None;
     if let Some(os) = opensearch {
         let mut ready = true;
         for def in agon_services_core::opensearch::all_indices() {
@@ -116,6 +120,7 @@ async fn main() {
         }
         if ready {
             tracing::info!("opensearch shadow write enabled");
+            backfill_opensearch = Some(os.clone());
             consumer = consumer.with_opensearch(os);
         }
     } else {
@@ -149,7 +154,7 @@ async fn main() {
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, search).await {
+        if let Err(e) = temporal::worker::run(dao, search, backfill_opensearch).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };

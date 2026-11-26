@@ -37,6 +37,7 @@
 //! and a direct `_count` (the total figure) — all querying the alias.
 
 pub mod backfill;
+pub mod backfill_workflow;
 pub mod client;
 pub mod docs;
 pub mod matches;

@@ -1928,6 +1928,15 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							// too (see the OpenSearch section) — the one index the service
 							// itself needs, unlike the worker's shadow writes to all of them.
 							{ name: "OPENSEARCH_URL", value: opensearchUrl },
+							// Temporal connection, for `POST`/`GET /admin/opensearch/backfill`
+							// (admin::BackfillClient) to start/query the `BackfillOpenSearch`
+							// workflow that `agon-worker` actually runs. Same vars/values as
+							// `agon-worker`'s own Temporal connection below — unlike the
+							// worker, a failed connect here isn't fatal (see
+							// `admin::backfill`'s doc comment): those two endpoints just
+							// answer 503 instead.
+							{ name: "TEMPORAL_ADDRESS", value: "temporal-frontend:7233" },
+							{ name: "TEMPORAL_NAMESPACE", value: "default" },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },

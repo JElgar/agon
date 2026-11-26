@@ -20,6 +20,8 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1"
 # Only the timer, for backoff between DynamoDB batch-retry attempts.
 tokio = { version = "1", features = ["time"] }
+# Bounded-concurrency fan-out (`buffer_unordered`) in `opensearch::backfill`.
+futures = "0.3"
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
 # Direct use in `search::SearchClient::count` — see its doc comment for why
@@ -62,6 +64,16 @@ opentelemetry-appender-tracing = "0.32"
 # `telemetry::init` — see its doc comment. `ring` (not `aws-lc-rs`) to match
 # what the Temporal SDK / reqwest's `rustls-tls` already pull in.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# The `BackfillOpenSearch` workflow (`opensearch::backfill_workflow`) and its
+# activities, so both `agon_worker` (runs it) and `agon_service` (starts/queries
+# it from the admin API) share one definition — versions matched to
+# `agon_worker/Cargo.toml`.
+temporalio-sdk = "0.5.0"
+temporalio-macros = "0.5.0"
+# Referenced by the workflow/activity macro expansions (`::temporalio_workflow::…`).
+temporalio-workflow = "0.5.0"
+temporalio-common = "0.5.0"
 
 [dev-dependencies]
 # `#[tokio::test]` for the DynamoDB-Local integration tests under `tests/` —

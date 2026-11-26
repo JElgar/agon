@@ -106,7 +106,9 @@ async fn main() {
             None
         });
     // The client, once its indices are ready: shared by the stream handler and
-    // the Temporal worker's repair activity.
+    // by the Temporal worker below, which needs it for both the backfill
+    // workflow's activities and the repair activity. Kept outside the `if let`
+    // so it survives `with_opensearch` moving its own clone into the consumer.
     let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;

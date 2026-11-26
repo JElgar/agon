@@ -109,6 +109,10 @@ mod share;
 // type, combined with `Api` like `admin::AdminApi`.
 mod team_stats;
 
+// A player's own summary, read from OpenSearch. Reuses `team_stats`'s
+// `StatsStore` and shares its OpenSearch client/config.
+mod user_stats;
+
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
@@ -14072,6 +14076,7 @@ async fn main() {
             admin::AdminApi,
             youtube::YoutubeApi,
             team_stats::TeamStatsApi,
+            user_stats::UserStatsApi,
         ),
         "Agon API",
         "1.0",
@@ -14121,6 +14126,23 @@ async fn main() {
                     None
                 }),
             );
+
+            // Temporal, for `POST`/`GET /admin/opensearch/backfill` — starts
+            // and queries the `BackfillOpenSearch` workflow that
+            // `agon_worker`'s Temporal worker actually runs (see
+            // `admin::backfill`'s doc comment). Optional, same convention as
+            // OpenSearch/Meilisearch above: unreachable just means those two
+            // endpoints answer 503 rather than the whole service failing to
+            // start over an admin-only feature.
+            let backfill_temporal = match admin::BackfillClient::connect().await {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    error!(
+                        "failed to connect to Temporal; opensearch backfill admin endpoint disabled: {e}"
+                    );
+                    None
+                }
+            };
 
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
@@ -14173,6 +14195,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(stats_store)
+                .data(backfill_temporal)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

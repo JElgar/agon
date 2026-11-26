@@ -3833,15 +3833,15 @@ async fn creating_a_scheduled_match_in_the_past_is_rejected() {
     let (config, _owner) = new_user().await;
     let (_invitee_config, invitee) = new_user().await;
 
-    // No score => Scheduled, but the time is in the past.
+    // No score => Scheduled. More than the 24h grace period in the past.
     let mut input = create_match_input(&invitee.profile.id);
-    input.starts_at = iso_offset_hours(-24);
+    input.starts_at = iso_offset_hours(-25);
 
     let response = matches_post(&config, input).await;
     assert_status_with_content(
         response,
         reqwest::StatusCode::BAD_REQUEST,
-        "scheduled match's time must be in the future",
+        "scheduled match's time can't be more than 24 hours in the past",
     );
 }
 
@@ -5663,7 +5663,7 @@ async fn deleted_teams_matches_show_deleted_team() {
         .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
         .expect("team side");
     assert_eq!(
-        side_before.name.as_deref(),
+        side_before.team_name.as_deref(),
         Some(team.name.as_str()),
         "resolves to the team's real name while it still exists"
     );
@@ -5680,7 +5680,11 @@ async fn deleted_teams_matches_show_deleted_team() {
         .iter()
         .find(|s| s.id == side_before.id)
         .expect("side is still there");
-    assert_eq!(side_after.name.as_deref(), Some("Deleted team"));
+    // `team_name`/`name` are None once the team is gone — "Deleted team" is a
+    // display fallback clients compute themselves, not something the server
+    // writes into either field (see MatchSide::name's doc comment).
+    assert!(side_after.team_name.is_none());
+    assert!(side_after.name.is_none());
     assert_eq!(
         side_after.team_id.as_deref(),
         Some(team.id.as_str()),
@@ -6899,7 +6903,18 @@ async fn joining_a_match_twice_via_the_same_link_is_rejected() {
     )
     .await
     .expect("join via single-side link");
-    assert_eq!(joined.viewer_role, Some(models::MatchPlayerRole::Player));
+    // `viewer_role` is the match-authority concept (Owner/Admin/SideAdmin) —
+    // see `caller_match_authority_role`'s doc comment — so it's `None` for a
+    // plain joined player; the roster membership below is what this test
+    // actually cares about.
+    assert_eq!(joined.viewer_role, None);
+    assert!(
+        joined
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner.profile.id)),
+        "joiner is on the roster after joining"
+    );
     let roster_size = joined.players.len();
 
     // Same joiner, same link, again — rejected as a conflict rather than

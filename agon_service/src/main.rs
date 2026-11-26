@@ -14127,6 +14127,23 @@ async fn main() {
                 }),
             );
 
+            // Temporal, for `POST`/`GET /admin/opensearch/backfill` — starts
+            // and queries the `BackfillOpenSearch` workflow that
+            // `agon_worker`'s Temporal worker actually runs (see
+            // `admin::backfill`'s doc comment). Optional, same convention as
+            // OpenSearch/Meilisearch above: unreachable just means those two
+            // endpoints answer 503 rather than the whole service failing to
+            // start over an admin-only feature.
+            let backfill_temporal = match admin::BackfillClient::connect().await {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    error!(
+                        "failed to connect to Temporal; opensearch backfill admin endpoint disabled: {e}"
+                    );
+                    None
+                }
+            };
+
             // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
             // combined with `allow_credentials(true)` (the CORS spec forbids it and
             // browsers reject the preflight), and mixing `*` with specific origins
@@ -14178,6 +14195,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(stats_store)
+                .data(backfill_temporal)
                 .data(verifier)
                 .data(device_signer)
                 .data(youtube_oauth)

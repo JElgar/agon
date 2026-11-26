@@ -7,6 +7,7 @@
 //! Types live in [`models`] — see that module's doc comment for why they're
 //! referenced qualified (`models::User`, not a bare `User`).
 
+mod backfill;
 pub mod models;
 
 use agon_services_core::dao;
@@ -20,6 +21,52 @@ use poem_openapi::{ApiResponse, OpenApi};
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
 use crate::{opensearch_internal, page_limit, require_uid, search_cursor, search_offset};
+
+pub use backfill::BackfillClient;
+
+/// Map a backfill run (or its absence, before one has ever been triggered)
+/// to the API's representation.
+fn backfill_status_from_run(run: Option<backfill::BackfillRun>) -> models::BackfillStatus {
+    let Some(run) = run else {
+        return models::BackfillStatus {
+            status: "idle".into(),
+            delete_old: None,
+            started_at: None,
+            finished_at: None,
+            match_pages: 0,
+            matches_indexed: 0,
+            matches_removed: 0,
+            matches_failed: 0,
+            user_pages: 0,
+            users_indexed: 0,
+            users_removed: 0,
+            users_failed: 0,
+            error: None,
+        };
+    };
+    let error = (run.status == backfill::RunStatus::Failed)
+        .then(|| "backfill failed; see agon-worker logs for the cause".to_string());
+    models::BackfillStatus {
+        status: match run.status {
+            backfill::RunStatus::Running => "running",
+            backfill::RunStatus::Succeeded => "succeeded",
+            backfill::RunStatus::Failed => "failed",
+        }
+        .to_string(),
+        delete_old: Some(run.progress.delete_old),
+        started_at: run.started_at,
+        finished_at: run.finished_at,
+        match_pages: run.progress.match_pages,
+        matches_indexed: run.progress.matches_indexed,
+        matches_removed: run.progress.matches_removed,
+        matches_failed: run.progress.matches_failed,
+        user_pages: run.progress.user_pages,
+        users_indexed: run.progress.users_indexed,
+        users_removed: run.progress.users_removed,
+        users_failed: run.progress.users_failed,
+        error,
+    }
+}
 
 pub struct AdminApi;
 
@@ -122,6 +169,26 @@ enum UpdateUserResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum StartBackfillResponse {
+    #[oai(status = 202)]
+    Started(Json<models::BackfillStatus>),
+
+    /// A backfill triggered by an earlier request is still running.
+    #[oai(status = 409)]
+    AlreadyRunning(PlainText<String>),
+
+    /// `OPENSEARCH_URL` isn't set on this deployment.
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetBackfillStatusResponse {
+    #[oai(status = 200)]
+    Status(Json<models::BackfillStatus>),
 }
 
 #[OpenApi]
@@ -331,4 +398,73 @@ impl AdminApi {
             &record,
         ))))
     }
+
+    /// Admin panel: start the OpenSearch backfill as a Temporal workflow
+    /// (`agon_services_core::opensearch::backfill_workflow`), instead of a
+    /// manual `kubectl exec` into the worker pod. `agon_worker`'s Temporal
+    /// worker runs it; this just starts (or attaches to) the fixed
+    /// `opensearch-backfill` workflow id, so the run survives this process
+    /// restarting. Refused with 409 while an earlier run is still going;
+    /// poll `GET` on the same path for progress.
+    #[oai(path = "/admin/opensearch/backfill", method = "post")]
+    async fn start_opensearch_backfill(
+        &self,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
+        Data(temporal): Data<&Option<BackfillClient>>,
+        input: Json<models::StartBackfillInput>,
+    ) -> Result<StartBackfillResponse> {
+        if stats.0.is_none() {
+            return Ok(StartBackfillResponse::NotConfigured(PlainText(
+                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
+            )));
+        }
+        let Some(temporal) = temporal else {
+            return Ok(StartBackfillResponse::NotConfigured(PlainText(
+                "Temporal is not reachable on this deployment".into(),
+            )));
+        };
+        let delete_old = input.0.delete_old.unwrap_or(false);
+        match temporal
+            .start(delete_old)
+            .await
+            .map_err(temporal_internal)?
+        {
+            backfill::StartOutcome::Started => {}
+            backfill::StartOutcome::AlreadyRunning => {
+                return Ok(StartBackfillResponse::AlreadyRunning(PlainText(
+                    "a backfill is already running".into(),
+                )));
+            }
+        }
+        let run = temporal.current_run().await.map_err(temporal_internal)?;
+        Ok(StartBackfillResponse::Started(Json(
+            backfill_status_from_run(run),
+        )))
+    }
+
+    /// Admin panel: the OpenSearch backfill's current (or most recent) run.
+    /// `status: "idle"` means a backfill has never been triggered via this
+    /// endpoint.
+    #[oai(path = "/admin/opensearch/backfill", method = "get")]
+    async fn get_opensearch_backfill(
+        &self,
+        Data(temporal): Data<&Option<BackfillClient>>,
+    ) -> Result<GetBackfillStatusResponse> {
+        let Some(temporal) = temporal else {
+            return Ok(GetBackfillStatusResponse::Status(Json(
+                backfill_status_from_run(None),
+            )));
+        };
+        let run = temporal.current_run().await.map_err(temporal_internal)?;
+        Ok(GetBackfillStatusResponse::Status(Json(
+            backfill_status_from_run(run),
+        )))
+    }
+}
+
+/// Map a Temporal client/connection failure to a 500 — these are
+/// infrastructure errors (can't reach Temporal), not a 404/409 the caller
+/// should act on differently.
+fn temporal_internal(err: Box<dyn std::error::Error>) -> Error {
+    Error::from_string(err.to_string(), StatusCode::INTERNAL_SERVER_ERROR)
 }

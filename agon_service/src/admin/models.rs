@@ -80,3 +80,35 @@ pub struct Stats {
     pub total_users: u64,
     pub total_matches: u64,
 }
+
+/// Body of `POST /admin/opensearch/backfill`.
+#[derive(Object)]
+#[oai(rename = "StartAdminBackfillInput")]
+pub struct StartBackfillInput {
+    /// Delete the superseded index version once the alias swap completes —
+    /// same as the CLI's `--delete-old`. Defaults to `false` (keep it, in
+    /// case a rollback is needed).
+    pub delete_old: Option<bool>,
+}
+
+/// The OpenSearch backfill job this `agon-service` process last ran (or is
+/// running), as reported by `GET`/`POST /admin/opensearch/backfill`. Absent
+/// `started_at` means nothing has been triggered on this process yet.
+#[derive(Object)]
+#[oai(rename = "AdminBackfillStatus")]
+pub struct BackfillStatus {
+    /// `"idle"`, `"running"`, `"succeeded"` or `"failed"`.
+    pub status: String,
+    pub delete_old: Option<bool>,
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub match_pages: u64,
+    pub matches_indexed: u64,
+    pub matches_removed: u64,
+    pub matches_failed: u64,
+    pub user_pages: u64,
+    pub users_indexed: u64,
+    pub users_removed: u64,
+    pub users_failed: u64,
+    pub error: Option<String>,
+}

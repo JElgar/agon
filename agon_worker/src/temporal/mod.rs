@@ -45,3 +45,14 @@ pub fn materialize_workflow_id(series_id: &str) -> String {
 pub fn reminder_workflow_id(match_id: &str) -> String {
     format!("reminder-{match_id}")
 }
+
+/// Deterministic workflow id for repairing one match's or user's OpenSearch
+/// documents after an inline sync failed. A second failure for the same
+/// target while a repair is still retrying attaches to that run instead of
+/// starting another.
+pub fn opensearch_repair_workflow_id(target: &workflows::OpenSearchSyncTarget) -> String {
+    match target {
+        workflows::OpenSearchSyncTarget::Match(id) => format!("os-repair-match-{id}"),
+        workflows::OpenSearchSyncTarget::User(id) => format!("os-repair-user-{id}"),
+    }
+}

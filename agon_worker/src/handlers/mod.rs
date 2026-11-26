@@ -18,7 +18,6 @@ pub mod stats;
 pub mod tournament;
 
 use agon_services_core::dao::Dao;
-use agon_services_core::opensearch::OpenSearchClient;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -45,7 +44,7 @@ pub async fn route(
     dao: &Dao,
     search: &SearchClient,
     push: Option<&PushClient>,
-    opensearch: Option<&OpenSearchClient>,
+    opensearch: opensearch::Sinks<'_>,
     ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,
@@ -56,7 +55,8 @@ pub async fn route(
     stats::handle(dao, ev).await?;
     tournament::handle(dao, ev).await?;
     rating::handle(dao, ev, now).await?;
-    // Shadow write: never fails the message (see the handler's docs).
+    // A failed sync is handed to a Temporal repair rather than failing the
+    // message (see the handler's docs).
     opensearch::handle(dao, opensearch, ev, now).await?;
     Ok(())
 }

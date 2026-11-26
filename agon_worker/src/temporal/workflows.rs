@@ -18,8 +18,11 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use temporalio_common::protos::temporal::api::common::v1::RetryPolicy;
 use temporalio_macros::{workflow, workflow_methods};
-use temporalio_sdk::{ActivityOptions, ContinueAsNewOptions, WorkflowContext, WorkflowResult};
+use temporalio_sdk::{
+    ActivityCloseTimeouts, ActivityOptions, ContinueAsNewOptions, WorkflowContext, WorkflowResult,
+};
 
 use super::activities::{
     AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, SkipSeriesOccurrence,
@@ -929,5 +932,118 @@ impl MatchReminder {
         .await?;
 
         Ok(())
+    }
+}
+
+// ===========================================================================
+// RepairOpenSearch — retry a failed OpenSearch sync until it lands.
+// ===========================================================================
+
+/// What an OpenSearch repair re-syncs: one match's documents (its `matches`
+/// doc and `match_stats` rows) or one user's `users` doc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenSearchSyncTarget {
+    Match(String),
+    User(String),
+}
+
+/// How long a repair keeps retrying before giving up. Past this, the
+/// backfill (`agon_worker backfill-opensearch --match <id>`) is the repair.
+pub const OPENSEARCH_REPAIR_WINDOW: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+/// Retries for [`RepairOpenSearch`]: 5s, 10s, 20s, … capped at 10 minutes
+/// between attempts, for up to [`OPENSEARCH_REPAIR_WINDOW`]. Every attempt
+/// rebuilds the documents from DynamoDB's *current* state, so retrying late
+/// never writes stale data.
+pub fn opensearch_repair_activity_opts() -> ActivityOptions {
+    let secs = |s: u64| Duration::from_secs(s).try_into().ok();
+    ActivityOptions::with_close_timeouts(ActivityCloseTimeouts::Both {
+        start_to_close: Duration::from_secs(60),
+        schedule_to_close: OPENSEARCH_REPAIR_WINDOW,
+    })
+    .retry_policy(RetryPolicy {
+        initial_interval: secs(5),
+        backoff_coefficient: 2.0,
+        maximum_interval: secs(600),
+        // 0 = unlimited attempts, bounded by the schedule-to-close window.
+        maximum_attempts: 0,
+        non_retryable_error_types: Vec::new(),
+    })
+    .build()
+}
+
+/// Re-sync one match or user to OpenSearch, retrying with backoff until it
+/// succeeds. Started by the stream handler (`handlers::opensearch`) when its
+/// inline sync fails, so an OpenSearch blip or outage heals by itself instead
+/// of leaving team stats stale until that match next changes. Workflow id:
+/// `os-repair-match-<id>` / `os-repair-user-<id>`.
+///
+/// A failure that arrives while a repair for the same target is still
+/// retrying attaches to that run. Its next attempt reads the latest state, so
+/// that's enough; the one gap is a change landing while an attempt is already
+/// writing, which the next change to that match (or the backfill) corrects.
+#[workflow]
+#[derive(Default)]
+pub struct RepairOpenSearch;
+
+#[workflow_methods]
+impl RepairOpenSearch {
+    #[run]
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        target: OpenSearchSyncTarget,
+    ) -> WorkflowResult<()> {
+        ctx.start_activity(
+            AgonActivities::sync_opensearch,
+            target,
+            opensearch_repair_activity_opts(),
+        )
+        .await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod opensearch_repair_tests {
+    use super::*;
+
+    #[test]
+    fn repair_ids_are_per_target() {
+        use crate::temporal::opensearch_repair_workflow_id as id;
+        assert_eq!(
+            id(&OpenSearchSyncTarget::Match("m1".into())),
+            "os-repair-match-m1"
+        );
+        assert_eq!(
+            id(&OpenSearchSyncTarget::User("u1".into())),
+            "os-repair-user-u1"
+        );
+    }
+
+    #[test]
+    fn repair_retries_with_backoff_inside_the_window() {
+        let opts = opensearch_repair_activity_opts();
+        let policy = opts.retry_policy.expect("retry policy");
+        assert_eq!(policy.maximum_attempts, 0, "bounded by time, not attempts");
+        assert_eq!(policy.backoff_coefficient, 2.0);
+        assert_eq!(policy.initial_interval.unwrap().seconds, 5);
+        assert_eq!(policy.maximum_interval.unwrap().seconds, 600);
+        match opts.close_timeouts {
+            ActivityCloseTimeouts::Both {
+                start_to_close,
+                schedule_to_close,
+            } => {
+                assert_eq!(start_to_close, Duration::from_secs(60));
+                assert_eq!(schedule_to_close, OPENSEARCH_REPAIR_WINDOW);
+            }
+            other => panic!("unexpected close timeouts {other:?}"),
+        }
+    }
+
+    #[test]
+    fn target_round_trips_through_json() {
+        let t = OpenSearchSyncTarget::User("u9".into());
+        let s = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<OpenSearchSyncTarget>(&s).unwrap(), t);
     }
 }

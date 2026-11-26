@@ -16,7 +16,9 @@ use temporalio_sdk_core::{CoreRuntime, RuntimeOptions};
 
 use super::TASK_QUEUE;
 use super::activities::AgonActivities;
-use super::workflows::{AcceptInvitation, FanOutMatch, MatchReminder, MaterializeSeries};
+use super::workflows::{
+    AcceptInvitation, FanOutMatch, MatchReminder, MaterializeSeries, RepairOpenSearch,
+};
 
 /// Connect to Temporal (config from the standard `TEMPORAL_*` env / profile) and
 /// run the worker until the process exits. Registers every workflow, plus the
@@ -38,11 +40,17 @@ pub async fn run(
         .register_activities(AgonActivities {
             dao: dao.clone(),
             search,
+            opensearch: opensearch.clone(),
         })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
         .register_workflow::<MaterializeSeries>()?
-        .register_workflow::<MatchReminder>()?;
+        .register_workflow::<MatchReminder>()?
+        // Registered whether or not OpenSearch is configured, unlike the
+        // backfill below: nothing starts a repair unless a sync failed, which
+        // can only happen when OpenSearch *is* configured, and its activity
+        // no-ops rather than failing if the client has gone away since.
+        .register_workflow::<RepairOpenSearch>()?;
 
     // The backfill workflow needs OpenSearch, which is itself optional (see
     // `main.rs`): without it there's nowhere to backfill into, so the

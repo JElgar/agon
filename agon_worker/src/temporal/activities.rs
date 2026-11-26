@@ -15,6 +15,9 @@ use temporalio_sdk::activities::{ActivityContext, ActivityError};
 pub struct AgonActivities {
     pub dao: Dao,
     pub search: SearchClient,
+    /// `None` when OpenSearch isn't configured; `sync_opensearch` is then a
+    /// no-op.
+    pub opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
 }
 
 /// One audience member: the viewer plus their capped "people you follow in
@@ -469,6 +472,41 @@ impl AgonActivities {
             .refresh_side_roster_previews(&match_id)
             .await
             .map_err(activity_err)
+    }
+
+    /// Rebuild one match's or user's OpenSearch documents from DynamoDB (see
+    /// `RepairOpenSearch`). Idempotent: it writes whatever the current state
+    /// is, so a retry or a duplicate run is harmless. An error is retried per
+    /// the workflow's retry policy.
+    #[activity]
+    pub async fn sync_opensearch(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        target: super::workflows::OpenSearchSyncTarget,
+    ) -> Result<(), ActivityError> {
+        use super::workflows::OpenSearchSyncTarget;
+        let Some(os) = &self.opensearch else {
+            return Ok(());
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = match &target {
+            OpenSearchSyncTarget::Match(id) => {
+                agon_services_core::opensearch::sync_match(os, &self.dao, id, &now, true)
+                    .await
+                    .map(|_| ())
+            }
+            OpenSearchSyncTarget::User(id) => {
+                agon_services_core::opensearch::sync_user(os, &self.dao, id, &now, true)
+                    .await
+                    .map(|_| ())
+            }
+        };
+        if let Err(e) = &result {
+            tracing::warn!(?target, error = %e, "opensearch repair attempt failed; will retry");
+        } else {
+            tracing::info!(?target, "opensearch repair succeeded");
+        }
+        result.map_err(ActivityError::from)
     }
 
     /// Send a "match coming up" reminder notification, fired by the

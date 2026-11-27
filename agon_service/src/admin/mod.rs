@@ -41,6 +41,10 @@ fn backfill_status_from_run(run: Option<backfill::BackfillRun>) -> models::Backf
             users_indexed: 0,
             users_removed: 0,
             users_failed: 0,
+            team_pages: 0,
+            teams_indexed: 0,
+            teams_removed: 0,
+            teams_failed: 0,
             error: None,
         };
     };
@@ -64,6 +68,10 @@ fn backfill_status_from_run(run: Option<backfill::BackfillRun>) -> models::Backf
         users_indexed: run.progress.users_indexed,
         users_removed: run.progress.users_removed,
         users_failed: run.progress.users_failed,
+        team_pages: run.progress.team_pages,
+        teams_indexed: run.progress.teams_indexed,
+        teams_removed: run.progress.teams_removed,
+        teams_failed: run.progress.teams_failed,
         error,
     }
 }

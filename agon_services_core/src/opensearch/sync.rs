@@ -7,8 +7,8 @@
 use serde_json::json;
 
 use super::client::{BulkOp, OpenSearchClient, OpenSearchError};
-use super::docs::{build_match_docs, build_user_doc, player_doc_id};
-use super::schema::{MATCH_STATS, MATCHES, USERS};
+use super::docs::{build_match_docs, build_team_doc, build_user_doc, player_doc_id};
+use super::schema::{MATCH_STATS, MATCHES, TEAMS, USERS};
 use crate::dao::Dao;
 use crate::dao::error::DaoError;
 
@@ -151,4 +151,48 @@ pub async fn sync_user(
     )
     .await?;
     Ok(UserSyncOutcome::Indexed)
+}
+
+/// What happened to the team, for logging and backfill counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeamSyncOutcome {
+    /// Team document written.
+    Indexed,
+    /// The team no longer exists, or isn't searchable (a tournament squad);
+    /// its document was removed.
+    Removed,
+}
+
+/// Rebuild `team_id`'s document in this build's physical `teams` index.
+/// Idempotent, same as [`sync_match`]: always rebuilt from the current
+/// DynamoDB state.
+pub async fn sync_team(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    team_id: &str,
+    now: &str,
+    wait_for_refresh: bool,
+) -> Result<TeamSyncOutcome, SyncError> {
+    let teams_index = os.write_index(&TEAMS);
+    let doc = dao
+        .get_team_meta(team_id)
+        .await?
+        .and_then(|team| build_team_doc(&team, now));
+    let Some(doc) = doc else {
+        os.bulk_with(
+            &[BulkOp::Delete {
+                index: teams_index,
+                id: team_id.to_string(),
+            }],
+            wait_for_refresh,
+        )
+        .await?;
+        return Ok(TeamSyncOutcome::Removed);
+    };
+    os.bulk_with(
+        &[BulkOp::index(&teams_index, team_id, &doc)?],
+        wait_for_refresh,
+    )
+    .await?;
+    Ok(TeamSyncOutcome::Indexed)
 }

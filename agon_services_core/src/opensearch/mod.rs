@@ -12,7 +12,7 @@
 //! while `OPENSEARCH_URL` is unset, same convention as the other optional
 //! integrations.
 //!
-//! Three indices (see [`schema`]):
+//! Four indices (see [`schema`]):
 //!
 //! - **`matches`**: one document per match, with each side nested (team,
 //!   roster, outcome, score, conceded). Team records, form, head-to-head and
@@ -22,9 +22,10 @@
 //!   year, sport) plus that player's counters. Leaderboards, a player's own
 //!   record/form, and every other per-player slice come from here.
 //! - **`users`**: one document per user (id, name, email, creation time,
-//!   admin flag). Backs the admin panel's "total users" count and its
-//!   `GET /admin/users` search/browse — the whole admin panel is now
-//!   Meilisearch-free.
+//!   admin flag). Backs the admin panel's "total users" count,
+//!   `GET /admin/users` and `GET /users/search`.
+//! - **`teams`**: one document per searchable team (id, name, creation time;
+//!   tournament squads are never indexed). Backs `GET /teams/search`.
 //!
 //! Each index is versioned. The worker writes to the physical index for the
 //! version compiled into it (`matches_v1`); readers use the alias (`matches`),
@@ -44,13 +45,17 @@ pub mod matches;
 pub mod schema;
 pub mod sync;
 pub mod team_stats;
+pub mod teams;
 pub mod text;
 pub mod user_stats;
 pub mod users;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};
-pub use docs::{MatchDocs, build_match_docs, build_user_doc};
+pub use docs::{MatchDocs, build_match_docs, build_team_doc, build_user_doc};
 pub use matches::{MatchFilters, search_matches};
-pub use schema::{IndexDef, MATCH_STATS, MATCHES, USERS, all_indices};
-pub use sync::{SyncError, SyncOutcome, UserSyncOutcome, sync_match, sync_user};
+pub use schema::{IndexDef, MATCH_STATS, MATCHES, TEAMS, USERS, all_indices};
+pub use sync::{
+    SyncError, SyncOutcome, TeamSyncOutcome, UserSyncOutcome, sync_match, sync_team, sync_user,
+};
+pub use teams::search_teams;
 pub use users::{UserSearchFields, search_users};

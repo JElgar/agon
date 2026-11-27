@@ -32,7 +32,8 @@ use std::time::Duration;
 use crate::dao::Dao;
 use crate::dao::entity_index::EntityKind;
 use crate::opensearch::{
-    OpenSearchClient, SyncOutcome, UserSyncOutcome, all_indices, sync_match, sync_user,
+    OpenSearchClient, SyncOutcome, TeamSyncOutcome, UserSyncOutcome, all_indices, sync_match,
+    sync_team, sync_user,
 };
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,7 @@ pub struct BackfillArgs {
     pub page_size: u32,
     pub resume: Option<String>,
     pub resume_users: Option<String>,
+    pub resume_teams: Option<String>,
     pub only: Vec<String>,
     pub swap: bool,
     pub delete_old: bool,
@@ -55,6 +57,7 @@ impl Default for BackfillArgs {
             page_size: 500,
             resume: None,
             resume_users: None,
+            resume_teams: None,
             only: Vec::new(),
             swap: true,
             delete_old: false,
@@ -86,6 +89,7 @@ impl BackfillArgs {
                 }
                 "--resume" => out.resume = Some(value("--resume")?),
                 "--resume-users" => out.resume_users = Some(value("--resume-users")?),
+                "--resume-teams" => out.resume_teams = Some(value("--resume-teams")?),
                 "--match" => out.only.push(value("--match")?),
                 "--no-swap" => out.swap = false,
                 "--delete-old" => out.delete_old = true,
@@ -112,6 +116,10 @@ pub struct BackfillProgress {
     pub users_indexed: u64,
     pub users_removed: u64,
     pub users_failed: u64,
+    pub team_pages: u64,
+    pub teams_indexed: u64,
+    pub teams_removed: u64,
+    pub teams_failed: u64,
     /// Set on the final call, once both phases (and the alias swap, if
     /// requested) have finished.
     pub done: bool,
@@ -132,8 +140,17 @@ struct UserCounts {
     failed: u64,
 }
 
+type TeamCounts = UserCounts;
+
 impl BackfillProgress {
-    fn from_counts(match_pages: u64, c: &Counts, user_pages: u64, u: &UserCounts) -> Self {
+    fn from_counts(
+        match_pages: u64,
+        c: &Counts,
+        user_pages: u64,
+        u: &UserCounts,
+        team_pages: u64,
+        t: &TeamCounts,
+    ) -> Self {
         Self {
             match_pages,
             matches_indexed: c.indexed,
@@ -144,6 +161,10 @@ impl BackfillProgress {
             users_indexed: u.indexed,
             users_removed: u.removed,
             users_failed: u.failed,
+            team_pages,
+            teams_indexed: t.indexed,
+            teams_removed: t.removed,
+            teams_failed: t.failed,
             done: false,
         }
     }
@@ -211,6 +232,7 @@ pub async fn run_against(
     let now = chrono::Utc::now().to_rfc3339();
     let mut counts = Counts::default();
     let user_counts = UserCounts::default();
+    let team_counts = TeamCounts::default();
 
     if !args.only.is_empty() {
         // Targeted repair: just these matches, no alias changes.
@@ -218,7 +240,8 @@ pub async fn run_against(
             record(&mut counts, id, sync_with_retry(os, &dao, id, &now).await);
         }
         log_summary(&counts);
-        let mut progress = BackfillProgress::from_counts(1, &counts, 0, &user_counts);
+        let mut progress =
+            BackfillProgress::from_counts(1, &counts, 0, &user_counts, 0, &team_counts);
         progress.done = true;
         on_progress(progress);
         return if counts.failed == 0 { 0 } else { 1 };
@@ -262,6 +285,8 @@ pub async fn run_against(
             &counts,
             0,
             &user_counts,
+            0,
+            &team_counts,
         ));
         if cursor.is_none() {
             break;
@@ -305,8 +330,55 @@ pub async fn run_against(
             &counts,
             user_pages,
             &user_counts,
+            0,
+            &team_counts,
         ));
         if user_cursor.is_none() {
+            break;
+        }
+    }
+
+    let mut team_counts = team_counts;
+    let mut team_cursor = args.resume_teams.clone();
+    let mut team_pages = 0u64;
+    loop {
+        let page = match list_teams_with_retry(&dao, team_cursor.as_deref(), args.page_size).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(error = %e, resume = ?team_cursor, "listing teams failed; re-run with --resume-teams <cursor> to continue");
+                log_team_summary(&team_counts);
+                return 1;
+            }
+        };
+        let results: Vec<_> = futures::stream::iter(page.items)
+            .map(|id| {
+                let (os, dao, now) = (&os, &dao, &now);
+                async move { (id.clone(), team_sync_with_retry(os, dao, &id, now).await) }
+            })
+            .buffer_unordered(args.concurrency)
+            .collect()
+            .await;
+        for (id, res) in results {
+            record_team(&mut team_counts, &id, res);
+        }
+        team_pages += 1;
+        team_cursor = page.next_cursor;
+        tracing::info!(
+            pages = team_pages,
+            indexed = team_counts.indexed,
+            removed = team_counts.removed,
+            failed = team_counts.failed,
+            "team backfill progress"
+        );
+        on_progress(BackfillProgress::from_counts(
+            pages,
+            &counts,
+            user_pages,
+            &user_counts,
+            team_pages,
+            &team_counts,
+        ));
+        if team_cursor.is_none() {
             break;
         }
     }
@@ -318,14 +390,23 @@ pub async fn run_against(
     }
     log_summary(&counts);
     log_user_summary(&user_counts);
+    log_team_summary(&team_counts);
 
-    if counts.failed > 0 || user_counts.failed > 0 {
+    if counts.failed > 0 || user_counts.failed > 0 || team_counts.failed > 0 {
         tracing::error!(
             matches_failed = counts.failed,
             users_failed = user_counts.failed,
-            "some matches or users failed; aliases NOT moved. Fix the cause and re-run (it's safe to repeat)"
+            teams_failed = team_counts.failed,
+            "some matches, users or teams failed; aliases NOT moved. Fix the cause and re-run (it's safe to repeat)"
         );
-        let mut progress = BackfillProgress::from_counts(pages, &counts, user_pages, &user_counts);
+        let mut progress = BackfillProgress::from_counts(
+            pages,
+            &counts,
+            user_pages,
+            &user_counts,
+            team_pages,
+            &team_counts,
+        );
         progress.done = true;
         on_progress(progress);
         return 1;
@@ -336,8 +417,14 @@ pub async fn run_against(
             let previous = os.alias_targets(&alias).await.unwrap_or_default();
             if let Err(e) = os.point_alias(&def).await {
                 tracing::error!(alias = %alias, error = %e, "could not move alias");
-                let mut progress =
-                    BackfillProgress::from_counts(pages, &counts, user_pages, &user_counts);
+                let mut progress = BackfillProgress::from_counts(
+                    pages,
+                    &counts,
+                    user_pages,
+                    &user_counts,
+                    team_pages,
+                    &team_counts,
+                );
                 progress.done = true;
                 on_progress(progress);
                 return 1;
@@ -355,7 +442,14 @@ pub async fn run_against(
             }
         }
     }
-    let mut progress = BackfillProgress::from_counts(pages, &counts, user_pages, &user_counts);
+    let mut progress = BackfillProgress::from_counts(
+        pages,
+        &counts,
+        user_pages,
+        &user_counts,
+        team_pages,
+        &team_counts,
+    );
     progress.done = true;
     on_progress(progress);
     0
@@ -402,6 +496,26 @@ fn log_user_summary(c: &UserCounts) {
         removed = c.removed,
         failed = c.failed,
         "user backfill finished"
+    );
+}
+
+fn record_team(counts: &mut TeamCounts, id: &str, res: Result<TeamSyncOutcome, String>) {
+    match res {
+        Ok(TeamSyncOutcome::Indexed) => counts.indexed += 1,
+        Ok(TeamSyncOutcome::Removed) => counts.removed += 1,
+        Err(e) => {
+            counts.failed += 1;
+            tracing::error!(team_id = %id, error = %e, "team failed after retries");
+        }
+    }
+}
+
+fn log_team_summary(c: &TeamCounts) {
+    tracing::info!(
+        indexed = c.indexed,
+        removed = c.removed,
+        failed = c.failed,
+        "team backfill finished"
     );
 }
 
@@ -505,6 +619,56 @@ async fn list_users_with_retry(
     Err(last)
 }
 
+/// [`sync_with_retry`], for teams.
+async fn team_sync_with_retry(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    id: &str,
+    now: &str,
+) -> Result<TeamSyncOutcome, String> {
+    let mut delay = Duration::from_millis(500);
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match sync_team(os, dao, id, now, false).await {
+            Ok(o) => return Ok(o),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 4 {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// [`list_with_retry`], for teams.
+async fn list_teams_with_retry(
+    dao: &Dao,
+    cursor: Option<&str>,
+    page_size: u32,
+) -> Result<crate::dao::Page<String>, String> {
+    let mut delay = Duration::from_millis(500);
+    let mut last = String::new();
+    for attempt in 0..5 {
+        match dao
+            .list_entity_ids(EntityKind::Team, false, cursor, page_size)
+            .await
+        {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                last = e.to_string();
+                if attempt < 4 {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
 /// An error from one of the page-level primitives below (used by the
 /// Temporal backfill workflow's activities — see
 /// `crate::opensearch::backfill_workflow`). Plain string-wrapped, same as
@@ -521,7 +685,7 @@ impl From<String> for BackfillError {
 }
 
 /// One page's outcome from [`backfill_match_page`]/[`backfill_user_page`].
-/// `player_rows` is always 0 for the user phase.
+/// `player_rows` is always 0 for the user and team phases.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PageOutcome {
     pub indexed: u64,
@@ -617,6 +781,41 @@ pub async fn backfill_user_page(
         match res {
             Ok(UserSyncOutcome::Indexed) => out.indexed += 1,
             Ok(UserSyncOutcome::Removed) => out.removed += 1,
+            Err(_) => out.failed += 1,
+        }
+    }
+    Ok(out)
+}
+
+/// [`backfill_match_page`], for teams.
+pub async fn backfill_team_page(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    cursor: Option<String>,
+    page_size: u32,
+    concurrency: usize,
+) -> Result<PageOutcome, BackfillError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let page = list_teams_with_retry(dao, cursor.as_deref(), page_size)
+        .await
+        .map_err(BackfillError)?;
+    let next_cursor = page.next_cursor;
+    let results: Vec<_> = futures::stream::iter(page.items)
+        .map(|id| {
+            let (os, dao, now) = (os, dao, &now);
+            async move { team_sync_with_retry(os, dao, &id, now).await }
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await;
+    let mut out = PageOutcome {
+        next_cursor,
+        ..Default::default()
+    };
+    for res in results {
+        match res {
+            Ok(TeamSyncOutcome::Indexed) => out.indexed += 1,
+            Ok(TeamSyncOutcome::Removed) => out.removed += 1,
             Err(_) => out.failed += 1,
         }
     }

@@ -66,6 +66,16 @@ pub enum TeamMatchKind {
     Pickup,
 }
 
+pub(crate) fn kind_tag(k: TeamMatchKind) -> &'static str {
+    match k {
+        TeamMatchKind::League => "league",
+        TeamMatchKind::Cup => "cup",
+        TeamMatchKind::Friendly => "friendly",
+        TeamMatchKind::Squad => "squad",
+        TeamMatchKind::Pickup => "pickup",
+    }
+}
+
 fn kind_from_str(s: &str) -> TeamMatchKind {
     match s {
         "league" => TeamMatchKind::League,

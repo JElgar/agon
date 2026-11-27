@@ -1968,12 +1968,12 @@ pub fn feed_match_from_records(
 /// players) — the search counterpart to [`feed_match_from_records`]. `users`
 /// hydrates side `roster_preview` entries' live name/avatar, same as the
 /// feed. `outcome` is the search client's already-resolved result for the
-/// queried participant, if any (see `SearchClient::search_matches`).
+/// queried participant, if any (see `opensearch::matches::search_matches`).
 pub fn search_match_from_records(
     rec: &MatchRecord,
     sides: &[MatchSideRecord],
     users: &std::collections::HashMap<String, UserRecord>,
-    outcome: Option<agon_services_core::search::MatchOutcome>,
+    outcome: Option<agon_services_core::opensearch::matches::ParticipantOutcome>,
     i_liked: bool,
     tournaments: &std::collections::HashMap<String, TournamentRecord>,
 ) -> SearchMatch {
@@ -2019,12 +2019,15 @@ pub fn search_match_from_records(
     }
 }
 
-/// Map the search client's outcome enum to the API's.
-fn match_outcome_from_search(outcome: agon_services_core::search::MatchOutcome) -> MatchOutcome {
+/// Map the search outcome enum to the API's.
+fn match_outcome_from_search(
+    outcome: agon_services_core::opensearch::matches::ParticipantOutcome,
+) -> MatchOutcome {
+    use agon_services_core::opensearch::matches::ParticipantOutcome;
     match outcome {
-        agon_services_core::search::MatchOutcome::Won => MatchOutcome::Won,
-        agon_services_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
-        agon_services_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
+        ParticipantOutcome::Won => MatchOutcome::Won,
+        ParticipantOutcome::Lost => MatchOutcome::Lost,
+        ParticipantOutcome::Drew => MatchOutcome::Draw,
     }
 }
 
@@ -2594,6 +2597,7 @@ mod tests {
             ends: SeriesEndRecord::Never,
             sides: Vec::new(),
             ranked: false,
+            authority: HashMap::new(),
             status: "active".to_string(),
             occurrences_generated: 1,
             created_at: "2026-06-01T10:00:00.000Z".to_string(),

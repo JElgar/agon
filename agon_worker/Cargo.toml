@@ -5,7 +5,7 @@ edition = "2024"
 
 # The async processing worker. Long-polls the SQS queue fed by DynamoDB Streams
 # (via an EventBridge Pipe) and runs inline handlers: search indexing
-# (Meilisearch) and notification generation.
+# (OpenSearch) and notification generation.
 #
 # Multi-step orchestration (feed fan-out, the accept-invitation saga) lives in
 # the `temporal` module and runs a Temporal worker alongside the consumer loop

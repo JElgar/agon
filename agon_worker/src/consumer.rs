@@ -24,14 +24,12 @@ use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Envelope};
 use crate::handlers;
 use agon_services_core::push::PushClient;
-use agon_services_core::search::SearchClient;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
 #[derive(Clone)]
 pub struct Consumer {
     sqs: SqsClient,
     dao: Dao,
-    search: SearchClient,
     /// `None` when push isn't configured (e.g. local dev) — handled the same
     /// way as the Temporal client's absence in tests: handlers no-op.
     push: Option<PushClient>,
@@ -45,17 +43,10 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn new(
-        sqs: SqsClient,
-        dao: Dao,
-        search: SearchClient,
-        push: Option<PushClient>,
-        config: Config,
-    ) -> Self {
+    pub fn new(sqs: SqsClient, dao: Dao, push: Option<PushClient>, config: Config) -> Self {
         Self {
             sqs,
             dao,
-            search,
             push,
             opensearch: None,
             config: Arc::new(config),
@@ -172,7 +163,6 @@ impl Consumer {
         let now = Utc::now().to_rfc3339();
         handlers::route(
             &self.dao,
-            &self.search,
             self.push.as_ref(),
             self.opensearch.as_ref(),
             self.config.ui_base_url.as_deref(),

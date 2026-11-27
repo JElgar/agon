@@ -10,7 +10,7 @@
 //!
 //! Needs `AGON_TABLE_NAME`, AWS credentials and `OPENSEARCH_URL` (plus the
 //! optional `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and
-//! `OPENSEARCH_INDEX_PREFIX`). It does not need the SQS, Meilisearch or Temporal
+//! `OPENSEARCH_INDEX_PREFIX`). It does not need the SQS or Temporal
 //! settings the worker needs. Set `AWS_ENDPOINT_URL` to read DynamoDB Local
 //! instead (`make backfill-opensearch-local`). It logs the table and endpoint
 //! it reads (`reading dynamodb`) before it starts.

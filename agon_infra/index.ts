@@ -946,108 +946,10 @@ export const e2eTestEmail = config.require("e2eTestEmail");
 export const e2eTestPassword = config.requireSecret("e2eTestPassword");
 
 // ───────────────────────────────────────────────────────────────────────────
-// Meilisearch: search / discovery index
-// Self-hosted search engine backing the discovery endpoints (users / teams /
-// matches). The async worker keeps its indexes in sync off the DynamoDB stream
-// (see docs/async-design.md §7); the API queries it and hydrates from DynamoDB.
-// In-cluster only — reached via the `meilisearch` Service, never exposed
-// publicly (no ingress). State lives on a PVC so index data survives restarts.
-// ───────────────────────────────────────────────────────────────────────────
-
-// Master key, held as a k8s secret. Set it as a stack secret:
-//   pulumi config set --secret meiliMasterKey <key>   (>= 16 bytes)
-const meiliSecret = new k8s.core.v1.Secret("meili-master-key", {
-	metadata: { name: "meili-master-key", namespace: "default" },
-	type: "Opaque",
-	stringData: {
-		MEILI_MASTER_KEY: config.requireSecret("meiliMasterKey"),
-	},
-}, { provider: k8sProvider });
-
-// Persistent storage for the Meilisearch data directory (/meili_data).
-const meiliPvc = new k8s.core.v1.PersistentVolumeClaim("meili-data", {
-	metadata: { name: "meili-data", namespace: "default" },
-	spec: {
-		accessModes: ["ReadWriteOnce"],
-		resources: { requests: { storage: "2Gi" } },
-	},
-}, { provider: k8sProvider });
-
-const meiliAppLabels = { app: "meilisearch" };
-new k8s.apps.v1.Deployment("meilisearch-deployment", {
-	metadata: { name: "meilisearch" },
-	spec: {
-		selector: { matchLabels: meiliAppLabels },
-		replicas: 1,
-		// The index lives on a single RWO volume, so never run two pods at once.
-		strategy: { type: "Recreate" },
-		template: {
-			metadata: { labels: meiliAppLabels },
-			spec: {
-				containers: [
-					{
-						name: "meilisearch",
-						image: "getmeili/meilisearch:v1.11",
-						ports: [{ containerPort: 7700 }],
-						env: [
-							{ name: "MEILI_ENV", value: "production" },
-							// Expose the Prometheus /metrics endpoint (experimental).
-							// Scraped by the ServiceMonitor below. Requires a bearer key
-							// with `metrics.get`, so Prometheus authenticates with the
-							// master key (see the ServiceMonitor's bearerTokenSecret).
-							{ name: "MEILI_EXPERIMENTAL_ENABLE_METRICS", value: "true" },
-							{
-								name: "MEILI_MASTER_KEY",
-								valueFrom: {
-									secretKeyRef: {
-										name: meiliSecret.metadata.name,
-										key: "MEILI_MASTER_KEY",
-									},
-								},
-							},
-						],
-						volumeMounts: [{ name: "data", mountPath: "/meili_data" }],
-						readinessProbe: {
-							httpGet: { path: "/health", port: 7700 },
-							initialDelaySeconds: 5,
-							periodSeconds: 10,
-						},
-						livenessProbe: {
-							httpGet: { path: "/health", port: 7700 },
-							initialDelaySeconds: 10,
-							periodSeconds: 20,
-						},
-					},
-				],
-				volumes: [
-					{
-						name: "data",
-						persistentVolumeClaim: { claimName: meiliPvc.metadata.name },
-					},
-				],
-			},
-		},
-	},
-}, { provider: k8sProvider });
-
-const meiliService = new k8s.core.v1.Service("meilisearch-service", {
-	metadata: { name: "meilisearch" },
-	spec: {
-		selector: meiliAppLabels,
-		// Port is named so the Meilisearch ServiceMonitor can reference it.
-		ports: [{ name: "http", port: 7700, targetPort: 7700 }],
-	},
-}, { provider: k8sProvider });
-
-// Cluster-internal Meilisearch URL for the service and worker.
-const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`);
-
-
-// ───────────────────────────────────────────────────────────────────────────
-// OpenSearch: match + per-player stats store
-// Single node, in-cluster only (no ingress, like Meilisearch), so the security
-// plugin is off. The worker shadow-writes to it off the DynamoDB stream; nothing
-// reads it on a request path yet. DynamoDB stays the source of truth, so the
+// OpenSearch: search + stats store
+// Single node, in-cluster only (no ingress), so the security
+// plugin is off. The worker keeps it in sync off the DynamoDB stream and the API
+// reads it for every search endpoint. DynamoDB stays the source of truth, so the
 // index can always be rebuilt with `agon_worker backfill-opensearch`
 // (see docs/opensearch.md).
 //
@@ -1280,7 +1182,7 @@ const fcmServiceAccountKey = new gcp.serviceaccount.Key("agon-fcm-sender-key", {
 	serviceAccountId: fcmServiceAccount.name,
 });
 
-// A standalone k8s Secret (mirrors `meiliSecret`, not folded into
+// A standalone k8s Secret (not folded into
 // `awsSecret`) so the FCM credential is separately rotatable. GCP returns the
 // key already base64-encoded; decode it so the env var is the raw JSON the
 // worker's `serde_json::from_str` expects.
@@ -1722,34 +1624,10 @@ new k8s.core.v1.Service("grafana-proxy", {
 
 export const grafanaUrl = `https://${grafanaDomain}`;
 
-// ── Meilisearch scraping ──────────────────────────────────────────────────────
-// Meilisearch's /metrics endpoint is experimental (enabled via
-// MEILI_EXPERIMENTAL_ENABLE_METRICS on the deployment) and requires a bearer key
-// with the `metrics.get` action — we use the master key. This ServiceMonitor
-// lives in `default` (same namespace as the meilisearch Service + its master-key
-// secret) and is discovered by the Prometheus Operator, which is configured
-// (serviceMonitorSelectorNilUsesHelmValues: false) to watch all namespaces.
-new k8s.apiextensions.CustomResource("meilisearch-servicemonitor", {
-	apiVersion: "monitoring.coreos.com/v1",
-	kind: "ServiceMonitor",
-	metadata: { name: "meilisearch", namespace: "default" },
-	spec: {
-		selector: { matchLabels: meiliAppLabels },
-		endpoints: [{
-			// References the meilisearch Service's port by name (named "http" below).
-			port: "http",
-			path: "/metrics",
-			interval: "30s",
-			// Authenticate with the master key from the existing secret.
-			bearerTokenSecret: { name: meiliSecret.metadata.name, key: "MEILI_MASTER_KEY" },
-		}],
-	},
-}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
-
 // ── Grafana dashboards ────────────────────────────────────────────────────────
 // The kube-prometheus-stack Grafana runs a sidecar that auto-imports any
-// ConfigMap in its namespace labelled `grafana_dashboard: "1"`. We ship two:
-// the agon API (our custom request metrics) and Meilisearch. Metric names assume
+// ConfigMap in its namespace labelled `grafana_dashboard: "1"`. We ship
+// the agon API (our custom request metrics). Metric names assume
 // Alloy's prometheus exporter suffix conversion (dots→underscores, `_total` on
 // counters, unit `_seconds` on the duration histogram).
 
@@ -1795,43 +1673,6 @@ const agonDashboard = {
 	schemaVersion: 39,
 };
 
-// Meilisearch: index docs, DB size, HTTP request rate, task queue latency.
-const meiliDashboard = {
-	title: "Meilisearch",
-	uid: "meilisearch",
-	timezone: "browser",
-	time: { from: "now-6h", to: "now" },
-	panels: [
-		{
-			id: 1, title: "Documents per index", type: "timeseries",
-			gridPos: { h: 8, w: 12, x: 0, y: 0 },
-			targets: [{ expr: "meilisearch_index_docs_count", legendFormat: "{{index}}" }],
-		},
-		{
-			id: 2, title: "DB size (bytes)", type: "timeseries",
-			gridPos: { h: 8, w: 12, x: 12, y: 0 },
-			targets: [
-				{ expr: "meilisearch_db_size_bytes", legendFormat: "total" },
-				{ expr: "meilisearch_used_db_size_bytes", legendFormat: "used" },
-			],
-		},
-		{
-			id: 3, title: "HTTP requests (req/s)", type: "timeseries",
-			gridPos: { h: 8, w: 12, x: 0, y: 8 },
-			targets: [{
-				expr: "sum by (path) (rate(meilisearch_http_requests_total[5m]))",
-				legendFormat: "{{path}}",
-			}],
-		},
-		{
-			id: 4, title: "Task queue latency (s)", type: "timeseries",
-			gridPos: { h: 8, w: 12, x: 12, y: 8 },
-			targets: [{ expr: "meilisearch_task_queue_latency_seconds", legendFormat: "latency" }],
-		},
-	],
-	schemaVersion: 39,
-};
-
 new k8s.core.v1.ConfigMap("agon-dashboard", {
 	metadata: {
 		name: "agon-dashboard",
@@ -1839,15 +1680,6 @@ new k8s.core.v1.ConfigMap("agon-dashboard", {
 		labels: { grafana_dashboard: "1" },
 	},
 	data: { "agon-api.json": JSON.stringify(agonDashboard) },
-}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
-
-new k8s.core.v1.ConfigMap("meilisearch-dashboard", {
-	metadata: {
-		name: "meilisearch-dashboard",
-		namespace: observabilityNamespace,
-		labels: { grafana_dashboard: "1" },
-	},
-	data: { "meilisearch.json": JSON.stringify(meiliDashboard) },
 }, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
 
 const serviceAppLabels = { app: "agon" };
@@ -1910,19 +1742,6 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 								name: "AGON_YOUTUBE_TOKEN_KEY",
 								value: agonYoutubeTokenKey,
 							},
-							{
-								name: "MEILI_URL",
-								value: meiliUrl,
-							},
-							{
-								name: "MEILI_MASTER_KEY",
-								valueFrom: {
-									secretKeyRef: {
-										name: meiliSecret.metadata.name,
-										key: "MEILI_MASTER_KEY",
-									}
-								},
-							},
 							// OpenSearch: `GET /admin/stats` reads the `users` index's
 							// count from here, and team summary/leaderboard reads use it
 							// too (see the OpenSearch section) — the one index the service
@@ -1956,9 +1775,9 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 // ───────────────────────────────────────────────────────────────────────────
 // agon_worker: async processing worker
 // Long-polls the SQS events queue (fed by the EventBridge Pipe above) and runs
-// the inline handlers — search indexing (Meilisearch), notification
+// the inline handlers — OpenSearch indexing, notification
 // generation, and FCM push delivery. Shares the aws-credentials secret (now
-// carrying the queue URL) plus the Meilisearch URL/key and the fcm-credentials
+// carrying the queue URL) plus the fcm-credentials
 // secret above. No ingress — it only consumes SQS — but it does serve the
 // Temporal SDK's own client/worker metrics (poll latency, task queue backlog,
 // etc.) as Prometheus text on port 9090, scraped below.
@@ -1980,19 +1799,6 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 						// AWS creds + table + queue URL come from the shared secret.
 						envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
 						env: [
-							{
-								name: "MEILI_URL",
-								value: meiliUrl,
-							},
-							{
-								name: "MEILI_MASTER_KEY",
-								valueFrom: {
-									secretKeyRef: {
-										name: meiliSecret.metadata.name,
-										key: "MEILI_MASTER_KEY",
-									}
-								},
-							},
 							// FCM sender credential — only the worker calls FCM (device
 							// registration itself is a plain DynamoDB write from agon_service).
 							{

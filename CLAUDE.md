@@ -18,8 +18,8 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 ### Core Technologies
 - **Web Framework**: Poem with poem-openapi for automatic OpenAPI generation
 - **Database**: DynamoDB, single-table design (`AGON_TABLE_NAME`, default `agon`). Accessed via `aws_sdk_dynamodb` in the `agon_services_core` DAO. See `docs/dynamodb-design.md`.
-- **Search**: OpenSearch serves every search endpoint (`GET /matches`, `GET /users/search`, `GET /teams/search`), kept in sync by `agon_worker`. Meilisearch is being removed (the worker still writes teams to it until that lands), so don't add new search code on it, and don't add a new endpoint to search a resource that already has one: extend the existing endpoint's filters.
-- **Stats store**: OpenSearch holds match documents, per-player match rows (team and player stats and leaderboards) and `users` and `teams` indices. `agon_worker` keeps it in sync; `GET /teams/{id}/summary` and `/leaderboard` (`agon_service/src/team_stats.rs`) and `GET /users/{id}/summary` (`agon_service/src/user_stats.rs`) read the match data, though the UI doesn't use them yet. The whole admin panel's user resource reads `users` (`GET /admin/stats`'s total-users count and `GET /admin/users`'s search/browse) — the admin panel no longer touches Meilisearch. See `docs/opensearch.md`.
+- **Search**: OpenSearch serves every search endpoint (`GET /matches`, `GET /users/search`, `GET /teams/search`), kept in sync by `agon_worker`. Don't add a new endpoint to search a resource that already has one: extend the existing endpoint's filters.
+- **Stats store**: OpenSearch holds match documents, per-player match rows (team and player stats and leaderboards) and `users` and `teams` indices. `agon_worker` keeps it in sync; `GET /teams/{id}/summary` and `/leaderboard` (`agon_service/src/team_stats.rs`) and `GET /users/{id}/summary` (`agon_service/src/user_stats.rs`) read the match data, though the UI doesn't use them yet. The whole admin panel's user resource reads `users` (`GET /admin/stats`'s total-users count and `GET /admin/users`'s search/browse). See `docs/opensearch.md`.
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
 - **Observability**: OTLP export (logs/traces/metrics) from both binaries via
@@ -49,7 +49,7 @@ must skip teams with `tournament_id` set.
 ### Setup
 ```bash
 cp .env.example .env
-docker compose up -d  # Meilisearch, local Supabase Auth, Temporal, DynamoDB Local, SQS, S3
+docker compose up -d  # OpenSearch, local Supabase Auth, Temporal, DynamoDB Local, SQS, S3
 ```
 `agon_service`/`agon_worker` still talk to real/cloud DynamoDB unless you
 point them at the local stack — see `local/README.md`. For a fully local UI
@@ -100,7 +100,7 @@ make generate-schema  # Generates schema.json and rebuilds openapi_client
 Required environment variables (see `.env.example`):
 - `AGON_TABLE_NAME`: DynamoDB table name (default `agon`)
 - `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`: AWS credentials for DynamoDB
-- `MEILI_URL` / `MEILI_MASTER_KEY`: Meilisearch connection
+- `OPENSEARCH_URL`: OpenSearch connection (search endpoints answer 503 without it)
 - `JWT_SECRET`: Secret key for JWT validation
 - `AGON_SERVICE_URL`: Service URL for tests
 

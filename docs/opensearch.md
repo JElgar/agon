@@ -154,7 +154,7 @@ Other flags:
 yet, since nothing has needed to repair one user's document in isolation.
 
 It needs only `AGON_TABLE_NAME`, AWS credentials and the `OPENSEARCH_*`
-variables, not the worker's SQS, Meilisearch or Temporal settings.
+variables, not the worker's SQS or Temporal settings.
 - **In the cluster:** run it as a one-off pod from the worker image, with the
   same `aws-credentials` secret and `OPENSEARCH_URL`.
 - **Locally:** `make backfill-opensearch-local` reads DynamoDB Local. Plain
@@ -187,7 +187,7 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 | `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
 | `GET /users/search?q=` (`agon_service/src/main.rs`) | `users` | The same typo-tolerant prefix query as the match search (`opensearch::text::typo_tolerant_prefix`), over `name` only (never `email`), then profiles hydrated from DynamoDB. One page at the default limit. 503 without OpenSearch |
 | `GET /teams/search?q=&cursor=&limit=` (`agon_service/src/main.rs`) | `teams` | The same typo-tolerant prefix query over `name`, then team rows hydrated from DynamoDB. Offset cursor. 503 without OpenSearch |
-| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | The same typo-tolerant prefix query over `name`/`email`, or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
+| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | The same typo-tolerant prefix query over `name`/`email`, or `match_all` for an empty `q`, sorted newest-first |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 
 Only confirmed matches count. Squad games are left out of a team's `record`,

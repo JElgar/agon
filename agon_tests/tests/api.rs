@@ -2731,7 +2731,7 @@ async fn a_created_user_becomes_searchable() {
     .await
     .expect("create user");
 
-    // The worker indexes the user into Meilisearch off the DynamoDB stream —
+    // The worker indexes the user into OpenSearch off the DynamoDB stream —
     // eventually. Poll until the search finds them by their unique name.
     let found = eventually("created user to be searchable", || {
         let config = &config;
@@ -3503,7 +3503,7 @@ async fn list_matches_rejects_inverted_date_range() {
 /// default `any` (union) mode, and several ids with `all` — head-to-head,
 /// since a match's `team_ids` array must contain every listed id to match.
 /// Exercises the indexed `team_ids` facet end to end (worker indexing +
-/// Meilisearch filter), not just that the endpoint accepts the params.
+/// OpenSearch filter), not just that the endpoint accepts the params.
 #[tokio::test]
 async fn list_matches_filters_by_team() {
     let (owner_config, owner) = new_user().await;
@@ -3564,7 +3564,7 @@ async fn list_matches_filters_by_team() {
         .await
         .expect("create match");
 
-    // Indexing is async (stream -> SQS -> worker -> Meilisearch), so poll a
+    // Indexing is async (stream -> SQS -> worker -> OpenSearch), so poll a
     // single-team lookup until the doc lands before asserting on the
     // multi-team combinators below (which would otherwise just look flaky).
     eventually("match to be searchable by team", || {
@@ -4877,7 +4877,7 @@ fn assert_bad_request<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::
 /// Poll `f` until it returns `Some(v)` or the timeout elapses, then return `v`.
 /// For async pipeline effects (search indexing, notification generation) that
 /// are eventually consistent: the write commits synchronously, but the stream →
-/// SQS → worker → Meilisearch/notification path lands afterwards.
+/// SQS → worker → OpenSearch/notification path lands afterwards.
 async fn eventually<T, F, Fut>(what: &str, f: F) -> T
 where
     F: Fn() -> Fut,

@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /**
  * Full end-to-end tests: a real browser drives the real UI (real Supabase
- * login, real API calls, real DynamoDB/Meilisearch on the far end), unlike
+ * login, real API calls, real DynamoDB/OpenSearch on the far end), unlike
  * `agon_tests`, which talks to the API directly via the generated client and
  * bypasses the browser and Supabase entirely. See `e2e/README.md` for how the
  * two suites complement each other and how to configure a target environment.

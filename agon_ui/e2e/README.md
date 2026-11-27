@@ -2,7 +2,7 @@
 
 Full browser tests: [Playwright](https://playwright.dev) drives the real UI
 against a real running Agon environment — real Supabase login, real API
-calls, real DynamoDB/Meilisearch on the far end. This is deliberately
+calls, real DynamoDB/OpenSearch on the far end. This is deliberately
 different from `agon_tests`, which talks to the API directly via the
 generated OpenAPI client and never touches a browser or Supabase at all (see
 `agon_tests/tests/api.rs`'s doc comment) — that suite is faster and covers
@@ -162,7 +162,7 @@ Everything above targets staging: staging Supabase for auth, staging
 `agon_service` for the API. To run the whole thing — UI, auth, API, worker —
 against your own machine instead:
 
-1. **Bring up the backing services** — Meilisearch, a local Supabase Auth
+1. **Bring up the backing services** — OpenSearch, a local Supabase Auth
    (Postgres + GoTrue + Kong), a local Temporal, and DynamoDB Local + SQS +
    S3 (see `local/README.md` for what's actually in it):
 

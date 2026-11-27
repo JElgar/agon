@@ -202,12 +202,9 @@ enum GetBackfillStatusResponse {
 #[OpenApi]
 impl AdminApi {
     /// Admin panel: usage aggregates shown at the top of each resource page.
-    /// Reads the `users`/`matches` OpenSearch indices, not Meilisearch: an
-    /// exact document count via OpenSearch's own `_count` endpoint, not
-    /// coupled to Meilisearch's stats response shape (which varies enough
-    /// across versions to break a naive count). `GET /admin/users` and `GET
-    /// /admin/matches` below read the same indices too; the user-facing
-    /// search endpoints are separate and still on Meilisearch.
+    /// Reads the `users`/`matches` OpenSearch indices: an exact document
+    /// count via OpenSearch's own `_count` endpoint. `GET /admin/users` and
+    /// `GET /admin/matches` below read the same indices too.
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
@@ -298,7 +295,7 @@ impl AdminApi {
 
     /// Admin panel: list/search every user, full account detail. Reads the
     /// `users` OpenSearch index (`agon_services_core::opensearch::users`),
-    /// not Meilisearch — an empty `q` browses everyone, newest first.
+    /// an empty `q` browses everyone, newest first.
     /// Series/teams get their own `/admin/...` list endpoints as those
     /// resources are added to the panel.
     #[oai(path = "/admin/users", method = "get")]

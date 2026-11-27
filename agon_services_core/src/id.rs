@@ -11,8 +11,7 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 /// Generate a new opaque id: base64url-no-pad of 16 random bytes.
 ///
 /// NO_PAD: the URL-safe alphabet (`-`/`_`) is fine, but trailing `=` padding
-/// is not — these ids are used verbatim as Meilisearch document ids, and
-/// Meili rejects `=` (only alphanumerics, `-`, `_` are allowed).
+/// is not — these ids are used verbatim as search document ids and in URLs.
 pub fn new_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];

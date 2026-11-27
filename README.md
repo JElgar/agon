@@ -8,7 +8,7 @@ docker compose up -d
 make run
 ```
 
-`docker compose up -d` starts everything: Meilisearch, local Supabase Auth,
+`docker compose up -d` starts everything: OpenSearch, local Supabase Auth,
 Temporal, DynamoDB Local, SQS (ElasticMQ), S3 (MinIO). DynamoDB/SQS/S3 stay
 real/cloud for `agon_service`/`agon_worker` unless you point them at the
 local stack — see `local/README.md`. For a fully local UI e2e run, see

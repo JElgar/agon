@@ -10,7 +10,7 @@
 //! result into new ratings; whether a match is rated at all is the caller's
 //! question (see "What this module does *not* know" below).
 //!
-//! Everything in here is a pure function: no DynamoDB, no Meilisearch, no
+//! Everything in here is a pure function: no DynamoDB, no OpenSearch, no
 //! clock, no ids minted. Give it ratings in, get ratings out. That is
 //! deliberate and load-bearing rather than tidiness: the planned repair path
 //! (`RepairRatings`) has to be able to replay a player's whole history from

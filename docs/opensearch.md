@@ -1,11 +1,12 @@
-# OpenSearch: match, per-player stats and users store
+# OpenSearch: match, per-player stats, users and teams store
 
-**Status: synced, with six read endpoints.** The worker keeps OpenSearch in
+**Status: synced, with seven read endpoints.** The worker keeps OpenSearch in
 sync. `GET /teams/{id}/summary` and `GET /teams/{id}/leaderboard` read the
 match data (see [Reads](#reads)) — the UI doesn't call them yet; switch it
 over once the backfill has run. The whole admin panel's user resource —
 `GET /admin/stats` (total-users count) and `GET /admin/users` (search/browse)
-— reads the `users` index, and so does the user-facing `GET /users/search`.
+— reads the `users` index, and so does the user-facing `GET /users/search`. `GET /teams/search` reads the
+`teams` index.
 DynamoDB is the source of truth throughout, and every index
 here can be rebuilt from it at any time.
 
@@ -16,6 +17,7 @@ here can be rebuilt from it at any time.
 | `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year, whether it has an open-join policy (`open`) and currently has room for another individual arrival (`open_has_space`, same approximation as `agon_services_core::dao::open_join::open_has_space`). Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
+| `teams` | searchable team: id, name (text), creation time. Tournament squad teams are never indexed | `GET /teams/search` (`agon_service/src/main.rs`) |
 
 - `open`/`open_has_space` and the roster/outcome id lists (`roster_ids`,
   `winning_/losing_/drawing_participant_ids`) exist for `GET /matches`.
@@ -67,7 +69,9 @@ counters, the handler skips the match without reading anything.
 
 The same handler also runs on every user `#PROFILE` write, rebuilding that
 user's `users` document (`agon_services_core::opensearch::sync_user`) — just
-an index, no player rows or stale-row cleanup to do.
+an index, no player rows or stale-row cleanup to do. A team's `#META` write
+rebuilds its `teams` document the same way (`sync_team`), removing it if the
+team is gone or is a tournament squad.
 
 A failure is logged (`opensearch: match/user sync failed`) and **not
 retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
@@ -137,11 +141,11 @@ agon_worker backfill-opensearch --match m_123 --match m_456   # repair specific 
 ```
 
 ```bash
-agon_worker backfill-opensearch --resume <cursor> --resume-users <cursor>   # continue from logged cursors
+agon_worker backfill-opensearch --resume <cursor> --resume-users <cursor> --resume-teams <cursor>   # continue from logged cursors
 ```
 
 Other flags:
-- `--concurrency N`: matches and users synced in parallel (each has its own pool). Default 8.
+- `--concurrency N`: matches, users and teams synced in parallel (each has its own pool). Default 8.
 - `--page-size N`: ids per page read from the entity index. Default 500.
 - `--no-swap`: fill the indices without moving the aliases.
 - `--delete-old`: after the swap, delete the superseded index versions.
@@ -157,7 +161,7 @@ variables, not the worker's SQS, Meilisearch or Temporal settings.
   `cargo run -p agon_worker -- backfill-opensearch` reads whatever DynamoDB the
   `AWS_*` settings point at.
 
-It lists matches and users from the entity index (GSI4), not a table scan. On
+It lists matches, users and teams from the entity index (GSI4), not a table scan. On
 a table that predates the index, run the entity-index migration first
 (`claude/entity-index-migration`), or items without index keys are skipped.
 `--match` reads matches directly and doesn't need the index.
@@ -182,6 +186,7 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 | `GET /matches?q=&participant=&team_id=&team_match=&match_type=&status=&open=&open_has_space=&kind=&tournament_id=&from=&to=&sort=&cursor=&limit=` (`agon_service/src/main.rs`) | `matches` | One filtered search (`agon_services_core::opensearch::matches::search_query`). `q` is a typo-tolerant name match: `bool_prefix` with `fuzziness: AUTO` (every word but the last is fuzzy, the last is a prefix) OR'd with a plain fuzzy `match` (a typo in a fully typed last word). `participant` is a term on `roster_ids`; `team_id` is a `terms` filter, or one `term` per team with `team_match=all` (head-to-head); `from`/`to` bound `starts_at`; newest first unless `sort=asc`, with `match_id` as the tie-break. Reads back only the ids (and, with `participant`, the outcome lists); the matches are hydrated from DynamoDB. Offset pagination. 503 without OpenSearch |
 | `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
 | `GET /users/search?q=` (`agon_service/src/main.rs`) | `users` | The same typo-tolerant prefix query as the match search (`opensearch::text::typo_tolerant_prefix`), over `name` only (never `email`), then profiles hydrated from DynamoDB. One page at the default limit. 503 without OpenSearch |
+| `GET /teams/search?q=&cursor=&limit=` (`agon_service/src/main.rs`) | `teams` | The same typo-tolerant prefix query over `name`, then team rows hydrated from DynamoDB. Offset cursor. 503 without OpenSearch |
 | `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | The same typo-tolerant prefix query over `name`/`email`, or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 

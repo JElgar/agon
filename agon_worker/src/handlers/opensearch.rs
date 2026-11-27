@@ -4,7 +4,8 @@
 //! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
 //! documents from DynamoDB with [`agon_services_core::opensearch::sync_match`].
 //! On any write to a user's `#PROFILE`, rebuild their `users` document with
-//! [`agon_services_core::opensearch::sync_user`].
+//! [`agon_services_core::opensearch::sync_user`]; likewise a team's `#META`
+//! and its `teams` document ([`agon_services_core::opensearch::sync_team`]).
 //!
 //! **Resilience.** A failure here is logged and swallowed rather than failing
 //! the message: an OpenSearch outage must not push stream events into the DLQ
@@ -22,7 +23,8 @@
 use agon_services_core::dao::Dao;
 use agon_services_core::dao::keys::{Pk, Sk};
 use agon_services_core::opensearch::{
-    OpenSearchClient, SyncOutcome, UserSyncOutcome, sync_match, sync_user,
+    OpenSearchClient, SyncOutcome, TeamSyncOutcome, UserSyncOutcome, sync_match, sync_team,
+    sync_user,
 };
 
 use crate::error::WorkerResult;
@@ -43,6 +45,7 @@ pub async fn handle(
     match &ev.pk {
         Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
         Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,
+        Pk::Team(team_id) => handle_team(os, dao, team_id, ev, now).await,
         _ => Ok(()),
     }
 }
@@ -105,6 +108,35 @@ async fn handle_user(
                 user_id = %user_id,
                 error = %e,
                 "opensearch: user sync failed (not retried; the backfill repairs it)"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn handle_team(
+    os: &OpenSearchClient,
+    dao: &Dao,
+    team_id: &str,
+    ev: &ChangeEvent,
+    now: &str,
+) -> WorkerResult<()> {
+    if ev.sk != Sk::Meta {
+        return Ok(());
+    }
+
+    match sync_team(os, dao, team_id, now, true).await {
+        Ok(TeamSyncOutcome::Indexed) => {
+            tracing::debug!(team_id = %team_id, "opensearch: team synced");
+        }
+        Ok(TeamSyncOutcome::Removed) => {
+            tracing::debug!(team_id = %team_id, "opensearch: team removed");
+        }
+        Err(e) => {
+            tracing::warn!(
+                team_id = %team_id,
+                error = %e,
+                "opensearch: team sync failed (not retried; the backfill repairs it)"
             );
         }
     }

@@ -493,6 +493,31 @@ pub fn build_user_doc(user: &crate::dao::records::UserRecord, now: &str) -> User
     }
 }
 
+/// One searchable team (index `teams`). Holds only what the search matches
+/// and sorts on; the endpoint hydrates the rest from DynamoDB.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TeamDoc {
+    pub team_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub indexed_at: String,
+}
+
+/// Build a team's document, or `None` for a tournament squad team (which only
+/// exists inside its tournament and is never searchable). `now` is stamped as
+/// `indexed_at`.
+pub fn build_team_doc(team: &crate::dao::records::TeamRecord, now: &str) -> Option<TeamDoc> {
+    if team.is_tournament_team() {
+        return None;
+    }
+    Some(TeamDoc {
+        team_id: team.id.clone(),
+        name: team.name.clone(),
+        created_at: team.created_at.clone(),
+        indexed_at: now.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +526,26 @@ mod tests {
         MatchRecord, MatchSideRecord, ScoreRecord, UserRecord,
     };
     use crate::sports::football::FootballSideResultRecord;
+
+    #[test]
+    fn team_doc_skips_tournament_squads() {
+        let team = |extra: serde_json::Value| -> crate::dao::records::TeamRecord {
+            let mut v = serde_json::json!({
+                "id": "t1", "name": "Rovers", "created_at": "2026-01-01T00:00:00Z"
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(v).unwrap()
+        };
+        let doc = build_team_doc(&team(serde_json::json!({})), "now").unwrap();
+        assert_eq!(doc.team_id, "t1");
+        assert_eq!(doc.name, "Rovers");
+        assert_eq!(doc.indexed_at, "now");
+        assert!(
+            build_team_doc(&team(serde_json::json!({"tournament_id": "tour"})), "now").is_none()
+        );
+    }
 
     #[test]
     fn user_doc_carries_name_email_admin_flag_and_creation_time() {

@@ -24,20 +24,18 @@ pub type SearchResult<T> = Result<T, SearchError>;
 /// The Meilisearch indexes maintained by the worker (see docs/async-design.md §7).
 #[derive(Debug, Clone, Copy)]
 pub enum Index {
-    Users,
     Teams,
 }
 
 impl Index {
     fn name(self) -> &'static str {
         match self {
-            Index::Users => "users",
             Index::Teams => "teams",
         }
     }
 
     /// Every index the worker maintains, for bootstrap iteration.
-    pub const ALL: [Index; 2] = [Index::Users, Index::Teams];
+    pub const ALL: [Index; 1] = [Index::Teams];
 }
 
 /// A page of matching document ids, with an offset to fetch the next page.

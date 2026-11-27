@@ -12,16 +12,18 @@
 //! duplicate attempt never writes stale data. See docs/opensearch.md.
 
 use agon_services_core::dao::Dao;
-use agon_services_core::opensearch::{OpenSearchClient, sync_match, sync_user};
+use agon_services_core::opensearch::{OpenSearchClient, sync_match, sync_team, sync_user};
 use serde::{Deserialize, Serialize};
 
 use crate::error::WorkerResult;
 
-/// What a sync re-syncs: one match's documents or one user's `users` doc.
+/// What a sync re-syncs: one match's documents, one user's `users` doc, or
+/// one team's `teams` doc.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenSearchSyncTarget {
     Match(String),
     User(String),
+    Team(String),
 }
 
 /// Re-sync `target` to OpenSearch now, using `dao` to read current state.
@@ -37,6 +39,9 @@ pub async fn sync(
         }
         OpenSearchSyncTarget::User(id) => {
             sync_user(opensearch, dao, id, &now, true).await?;
+        }
+        OpenSearchSyncTarget::Team(id) => {
+            sync_team(opensearch, dao, id, &now, true).await?;
         }
     }
     tracing::debug!(?target, "opensearch synced");
@@ -54,6 +59,10 @@ mod tests {
         assert_eq!(serde_json::from_str::<OpenSearchSyncTarget>(&s).unwrap(), t);
 
         let t = OpenSearchSyncTarget::Match("m1".into());
+        let s = serde_json::to_string(&t).unwrap();
+        assert_eq!(serde_json::from_str::<OpenSearchSyncTarget>(&s).unwrap(), t);
+
+        let t = OpenSearchSyncTarget::Team("t1".into());
         let s = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<OpenSearchSyncTarget>(&s).unwrap(), t);
     }

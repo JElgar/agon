@@ -4,9 +4,9 @@
 //! On any write to a match's `#META` (score, sides, status, date, ...) or to
 //! its roster (`PLAYER#` items, which don't touch `#META`), the match needs
 //! re-syncing. On any write to a user's `#PROFILE`, so does their `users`
-//! document. No DynamoDB or OpenSearch I/O happens here — [`target_for`]
-//! just decides, from the event's keys and images, whether a sync is
-//! warranted and what it targets.
+//! document; likewise a team's `#META` and its `teams` document. No DynamoDB
+//! or OpenSearch I/O happens here — [`target_for`] just decides, from the
+//! event's keys and images, whether a sync is warranted and what it targets.
 //!
 //! The actual sync (reading current state from DynamoDB, writing to
 //! OpenSearch) happens in `opensearch_sync::sync`, called from
@@ -50,6 +50,12 @@ pub fn target_for(ev: &ChangeEvent) -> Option<OpenSearchSyncTarget> {
                 return None;
             }
             Some(OpenSearchSyncTarget::User(user_id.clone()))
+        }
+        Pk::Team(team_id) => {
+            if ev.sk != Sk::Meta {
+                return None;
+            }
+            Some(OpenSearchSyncTarget::Team(team_id.clone()))
         }
         _ => None,
     }
@@ -171,8 +177,23 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_write_has_no_target() {
+    fn team_meta_write_targets_the_team() {
         let ev = event("TEAM#t1", "#META", ChangeKind::Modify, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Team("t1".into()))
+        );
+    }
+
+    #[test]
+    fn team_non_meta_write_has_no_target() {
+        let ev = event("TEAM#t1", "MEMBER#u1", ChangeKind::Insert, None, None);
+        assert_eq!(target_for(&ev), None);
+    }
+
+    #[test]
+    fn unrelated_write_has_no_target() {
+        let ev = event("INVITATION#i1", "#META", ChangeKind::Modify, None, None);
         assert_eq!(target_for(&ev), None);
     }
 }

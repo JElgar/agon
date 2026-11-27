@@ -110,5 +110,9 @@ pub struct BackfillStatus {
     pub users_indexed: u64,
     pub users_removed: u64,
     pub users_failed: u64,
+    pub team_pages: u64,
+    pub teams_indexed: u64,
+    pub teams_removed: u64,
+    pub teams_failed: u64,
     pub error: Option<String>,
 }

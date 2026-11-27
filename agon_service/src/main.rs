@@ -3745,29 +3745,29 @@ impl Api {
     async fn search_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         AuthSchema(jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
     ) -> Result<SearchUsersResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Searching users with query: {}", query);
 
-        // Search the users index for matching ids, then hydrate full profiles
-        // from DynamoDB (the index stores only id/name). This response is a plain
-        // list (no cursor), so we return one page at the default limit.
-        let q = agon_services_core::search::SearchQuery {
-            q: query,
-            limit: page_limit(None),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_services_core::search::Index::Users, &q)
-            .await
-            .map_err(search_internal)?;
+        // Search the OpenSearch users index by name for matching ids, then
+        // hydrate full profiles from DynamoDB (the index stores only a few
+        // fields). This response is a plain list (no cursor), so we return one
+        // page at the default limit. Never matches on email.
+        let os = crate::team_stats::store(stats)?;
+        let (ids, _total) = agon_services_core::opensearch::search_users(
+            os,
+            Some(&query),
+            agon_services_core::opensearch::UserSearchFields::Name,
+            0,
+            page_limit(None),
+        )
+        .await
+        .map_err(opensearch_internal)?;
 
-        let profiles = self
-            .hydrate_user_profiles(dao, &hits.ids, Some(&uid))
-            .await?;
+        let profiles = self.hydrate_user_profiles(dao, &ids, Some(&uid)).await?;
         Ok(SearchUsersResponse::Users(Json(profiles)))
     }
 
@@ -8689,7 +8689,7 @@ impl Api {
     async fn search_teams(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         AuthSchema(_jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
         /// Opaque cursor from the previous page's `next_cursor`.
@@ -8708,29 +8708,27 @@ impl Api {
                 })));
             }
         };
-        let q = agon_services_core::search::SearchQuery {
-            q: query,
-            offset,
-            limit: page_limit(limit),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_services_core::search::Index::Teams, &q)
-            .await
-            .map_err(search_internal)?;
+        let limit = page_limit(limit);
+        let os = crate::team_stats::store(stats)?;
+        let (ids, total) =
+            agon_services_core::opensearch::search_teams(os, Some(&query), offset, limit)
+                .await
+                .map_err(opensearch_internal)?;
+        let consumed = offset.saturating_add(ids.len() as u32);
+        let next_offset = (u64::from(consumed) < total && !ids.is_empty()).then_some(consumed);
 
         // Hydrate team meta (name + follower count) for each hit. Being able to
         // find a team via search doesn't imply the caller follows it.
         // TODO: BatchGet these (N+1 for now).
-        let mut items = Vec::with_capacity(hits.ids.len());
-        for id in &hits.ids {
+        let mut items = Vec::with_capacity(ids.len());
+        for id in &ids {
             if let Some(team) = dao.get_team_meta(id).await.map_err(dao_internal)? {
                 items.push(team_list_item_from_record(&team, false));
             }
         }
         Ok(ListTeamsResponse::Teams(Json(TeamPage {
             items,
-            next_cursor: search_cursor(hits.next_offset),
+            next_cursor: search_cursor(next_offset),
         })))
     }
 
@@ -13772,7 +13770,7 @@ fn feed_page_limit(limit: Option<u32>) -> u32 {
 }
 
 /// Decode a search-endpoint cursor into a zero-based offset. Search pagination
-/// is offset-based (Meilisearch), so unlike the DynamoDB `LastEvaluatedKey`
+/// is offset-based, so unlike the DynamoDB `LastEvaluatedKey`
 /// cursors elsewhere, the cursor is simply the stringified next offset. An
 /// absent cursor means the first page; a malformed one is an error the caller
 /// surfaces as a 400.

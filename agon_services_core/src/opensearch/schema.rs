@@ -36,8 +36,8 @@ impl IndexDef {
 }
 
 /// Every index the worker keeps in sync, in creation order.
-pub fn all_indices() -> [IndexDef; 3] {
-    [MATCHES, MATCH_STATS, USERS]
+pub fn all_indices() -> [IndexDef; 4] {
+    [MATCHES, MATCH_STATS, USERS, TEAMS]
 }
 
 /// Single node: one shard (exact aggregations) and no replicas (there's nowhere
@@ -198,6 +198,29 @@ fn users_body() -> Value {
     })
 }
 
+/// One document per searchable team. See [`crate::opensearch::docs::TeamDoc`].
+/// Backs `GET /teams/search`. A tournament's squad teams are never indexed.
+pub const TEAMS: IndexDef = IndexDef {
+    name: "teams",
+    version: 1,
+    body: teams_body,
+};
+
+fn teams_body() -> Value {
+    json!({
+        "settings": settings(),
+        "mappings": {
+            "dynamic": "strict",
+            "properties": {
+                "team_id": { "type": "keyword" },
+                "name": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 256 } } },
+                "created_at": { "type": "date" },
+                "indexed_at": { "type": "date" }
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +230,7 @@ mod tests {
         assert_eq!(MATCHES.physical(""), "matches_v4");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
         assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v3");
+        assert_eq!(TEAMS.physical(""), "teams_v1");
     }
 
     #[test]

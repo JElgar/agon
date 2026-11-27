@@ -11,7 +11,7 @@
 //! `agon_worker` registers it on its existing worker/task queue alongside its
 //! other workflows (see `agon_worker::temporal::worker::run`).
 //!
-//! Each page (of matches, then of users) is its own activity, same as
+//! Each page (of matches, then users, then teams) is its own activity, same as
 //! `FanOutMatch`'s feed chunks in `agon_worker` — a crash resumes from the
 //! last completed page's cursor, not from the top. The workflow id is the
 //! fixed [`WORKFLOW_ID`] (there's only ever one backfill at a time); starting
@@ -71,7 +71,7 @@ impl Default for BackfillWorkflowInput {
 /// output, and the workflow's final result.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackfillWorkflowStatus {
-    /// "matches" | "users" | "finishing" | "done".
+    /// "matches" | "users" | "teams" | "finishing" | "done".
     pub phase: String,
     pub delete_old: bool,
     pub match_pages: u64,
@@ -82,6 +82,10 @@ pub struct BackfillWorkflowStatus {
     pub users_indexed: u64,
     pub users_removed: u64,
     pub users_failed: u64,
+    pub team_pages: u64,
+    pub teams_indexed: u64,
+    pub teams_removed: u64,
+    pub teams_failed: u64,
 }
 
 impl BackfillWorkflowStatus {
@@ -98,9 +102,16 @@ impl BackfillWorkflowStatus {
         self.users_removed += outcome.removed;
         self.users_failed += outcome.failed;
     }
+
+    fn record_team_page(&mut self, outcome: &PageOutcome) {
+        self.team_pages += 1;
+        self.teams_indexed += outcome.indexed;
+        self.teams_removed += outcome.removed;
+        self.teams_failed += outcome.failed;
+    }
 }
 
-/// Backfills both OpenSearch indices from DynamoDB, page by page, then swaps
+/// Backfills every OpenSearch index from DynamoDB, page by page, then swaps
 /// their aliases onto this version. Workflow id: the fixed [`WORKFLOW_ID`].
 #[workflow]
 #[derive(Default)]
@@ -165,6 +176,28 @@ impl BackfillOpenSearch {
             }
         }
 
+        ctx.state_mut(|w| w.status.phase = "teams".to_string());
+
+        let mut cursor: Option<String> = None;
+        loop {
+            let outcome = ctx
+                .start_activity(
+                    BackfillActivities::backfill_team_page,
+                    PageInput {
+                        cursor: cursor.clone(),
+                        page_size: input.page_size,
+                        concurrency: input.concurrency,
+                    },
+                    activity_opts(),
+                )
+                .await?;
+            cursor = outcome.next_cursor.clone();
+            ctx.state_mut(|w| w.status.record_team_page(&outcome));
+            if cursor.is_none() {
+                break;
+            }
+        }
+
         ctx.state_mut(|w| w.status.phase = "finishing".to_string());
         ctx.start_activity(
             BackfillActivities::finish,
@@ -188,7 +221,7 @@ impl BackfillOpenSearch {
     }
 }
 
-/// One page request, for both the match and user phases.
+/// One page request, for the match, user and team phases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageInput {
     pub cursor: Option<String>,
@@ -248,6 +281,23 @@ impl BackfillActivities {
         input: PageInput,
     ) -> Result<PageOutcome, ActivityError> {
         backfill::backfill_user_page(
+            &self.os,
+            &self.dao,
+            input.cursor,
+            input.page_size,
+            input.concurrency,
+        )
+        .await
+        .map_err(ActivityError::from)
+    }
+
+    #[activity]
+    pub async fn backfill_team_page(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        input: PageInput,
+    ) -> Result<PageOutcome, ActivityError> {
+        backfill::backfill_team_page(
             &self.os,
             &self.dao,
             input.cursor,

@@ -3745,29 +3745,29 @@ impl Api {
     async fn search_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         AuthSchema(jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
     ) -> Result<SearchUsersResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Searching users with query: {}", query);
 
-        // Search the users index for matching ids, then hydrate full profiles
-        // from DynamoDB (the index stores only id/name). This response is a plain
-        // list (no cursor), so we return one page at the default limit.
-        let q = agon_services_core::search::SearchQuery {
-            q: query,
-            limit: page_limit(None),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_services_core::search::Index::Users, &q)
-            .await
-            .map_err(search_internal)?;
+        // Search the OpenSearch users index by name for matching ids, then
+        // hydrate full profiles from DynamoDB (the index stores only a few
+        // fields). This response is a plain list (no cursor), so we return one
+        // page at the default limit. Never matches on email.
+        let os = crate::team_stats::store(stats)?;
+        let (ids, _total) = agon_services_core::opensearch::search_users(
+            os,
+            Some(&query),
+            agon_services_core::opensearch::UserSearchFields::Name,
+            0,
+            page_limit(None),
+        )
+        .await
+        .map_err(opensearch_internal)?;
 
-        let profiles = self
-            .hydrate_user_profiles(dao, &hits.ids, Some(&uid))
-            .await?;
+        let profiles = self.hydrate_user_profiles(dao, &ids, Some(&uid)).await?;
         Ok(SearchUsersResponse::Users(Json(profiles)))
     }
 

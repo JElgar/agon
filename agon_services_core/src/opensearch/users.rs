@@ -10,17 +10,32 @@ use serde_json::{Value, json};
 
 use super::client::{OpenSearchClient, OpenSearchResult};
 use super::schema::USERS;
+use super::text::typo_tolerant_prefix;
+
+/// Which fields a user search matches against.
+#[derive(Debug, Clone, Copy)]
+pub enum UserSearchFields {
+    /// What anyone may search by.
+    Name,
+    /// For the admin panel, which also finds a user by email.
+    NameAndEmail,
+}
+
+impl UserSearchFields {
+    fn fields(self) -> &'static [&'static str] {
+        match self {
+            UserSearchFields::Name => &["name"],
+            UserSearchFields::NameAndEmail => &["name", "email"],
+        }
+    }
+}
 
 /// The `users` query behind [`search_users`]. An empty/absent `q` browses
-/// everyone, newest first. A non-empty `q` matches `name`/`email` as a
-/// prefix on the last term (`bool_prefix`) — not typo-tolerant like
-/// Meilisearch, but good enough for an admin operator typing a few
-/// characters of a name or email.
-pub fn search_query(q: Option<&str>, from: u32, size: u32) -> Value {
+/// everyone, newest first. A non-empty `q` is a typo-tolerant prefix match on
+/// `fields` (see [`typo_tolerant_prefix`]).
+pub fn search_query(q: Option<&str>, fields: UserSearchFields, from: u32, size: u32) -> Value {
     let query = match q.map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => json!({
-            "multi_match": { "query": q, "type": "bool_prefix", "fields": ["name", "email"] }
-        }),
+        Some(q) => typo_tolerant_prefix(q, fields.fields()),
         None => json!({ "match_all": {} }),
     };
     json!({
@@ -51,11 +66,15 @@ pub fn parse_search(resp: &Value) -> (Vec<String>, u64) {
 pub async fn search_users(
     os: &OpenSearchClient,
     q: Option<&str>,
+    fields: UserSearchFields,
     from: u32,
     size: u32,
 ) -> OpenSearchResult<(Vec<String>, u64)> {
     let resp = os
-        .search(&USERS.alias(os.prefix()), search_query(q, from, size))
+        .search(
+            &USERS.alias(os.prefix()),
+            search_query(q, fields, from, size),
+        )
         .await?;
     Ok(parse_search(&resp))
 }
@@ -66,26 +85,25 @@ mod tests {
 
     #[test]
     fn empty_query_browses_everyone_newest_first() {
-        let q = search_query(None, 0, 20);
+        let q = search_query(None, UserSearchFields::Name, 0, 20);
         assert_eq!(q["query"], json!({ "match_all": {} }));
         assert_eq!(q["sort"][1], json!({ "created_at": "desc" }));
         assert_eq!(q["from"], 0);
         assert_eq!(q["size"], 20);
 
         assert_eq!(
-            search_query(Some("  "), 0, 20)["query"],
+            search_query(Some("  "), UserSearchFields::Name, 0, 20)["query"],
             json!({ "match_all": {} })
         );
     }
 
     #[test]
-    fn non_empty_query_matches_name_and_email_as_a_prefix() {
-        let q = search_query(Some("jam"), 40, 20);
-        assert_eq!(
-            q["query"],
-            json!({ "multi_match": { "query": "jam", "type": "bool_prefix", "fields": ["name", "email"] } })
-        );
+    fn non_empty_query_is_a_typo_tolerant_prefix_on_the_chosen_fields() {
+        let q = search_query(Some("jam"), UserSearchFields::Name, 40, 20);
+        assert_eq!(q["query"], typo_tolerant_prefix("jam", &["name"]));
         assert_eq!(q["from"], 40);
+        let q = search_query(Some("jam"), UserSearchFields::NameAndEmail, 0, 20);
+        assert_eq!(q["query"], typo_tolerant_prefix("jam", &["name", "email"]));
     }
 
     #[test]

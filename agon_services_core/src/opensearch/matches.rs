@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use super::client::{OpenSearchClient, OpenSearchResult};
 use super::schema::MATCHES;
+use super::text::typo_tolerant_prefix;
 
 /// One match row, as read off the `matches` index for the admin list — just
 /// what that list shows, not the full match detail (which the admin panel
@@ -129,20 +130,7 @@ pub fn search_query(filters: MatchFilters, offset: u32, size: u32) -> Value {
         }
     }
     let must = match q.map(str::trim).filter(|q| !q.is_empty()) {
-        // `fuzziness` on `bool_prefix` covers every word but the last (which is
-        // only prefix-matched), so the plain fuzzy `match` catches a typo in a
-        // fully typed last word.
-        Some(q) => vec![json!({
-            "bool": {
-                "should": [
-                    { "multi_match": {
-                        "query": q, "type": "bool_prefix", "fields": ["name"], "fuzziness": "AUTO"
-                    } },
-                    { "match": { "name": { "query": q, "fuzziness": "AUTO" } } }
-                ],
-                "minimum_should_match": 1
-            }
-        })],
+        Some(q) => vec![typo_tolerant_prefix(q, &["name"])],
         None => Vec::new(),
     };
 
@@ -283,15 +271,7 @@ mod tests {
         );
         assert_eq!(
             q["query"]["bool"]["must"][0],
-            json!({ "bool": {
-                "should": [
-                    { "multi_match": {
-                        "query": "derby", "type": "bool_prefix", "fields": ["name"], "fuzziness": "AUTO"
-                    } },
-                    { "match": { "name": { "query": "derby", "fuzziness": "AUTO" } } }
-                ],
-                "minimum_should_match": 1
-            } })
+            typo_tolerant_prefix("derby", &["name"])
         );
         assert_eq!(q["from"], 40);
     }

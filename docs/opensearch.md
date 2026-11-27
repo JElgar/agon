@@ -50,41 +50,45 @@ callers never build query JSON themselves:
 
 ## How it stays in sync
 
-`agon_worker` runs `handlers/opensearch.rs` on every match `#META` write and
-every roster (`PLAYER#`) write. It rebuilds that match's documents from DynamoDB
-(`agon_services_core::opensearch::sync_match`):
-1. Index the match document and its player rows in one bulk request.
-2. Delete any of that match's player rows that no longer apply.
+The DynamoDB-stream pipeline fans every change event out into one SQS
+message per handler (`agon_worker::action_consumer`), so a failure in any one
+handler only redelivers that handler's own message, never its neighbours'.
+OpenSearch is the one handler kept off that shared queue: `handlers/
+opensearch.rs::target_for` is a pure (no I/O) decision — does this match
+`#META`/roster write, or this user `#PROFILE` write, call for a sync, and for
+what target — and if so, the main consumer sends the target to its own
+dedicated SQS queue, **`agon-opensearch-sync`**, instead of syncing inline.
+`opensearch_sync::SyncConsumer` is the independent poll loop that actually
+does the read-from-DynamoDB, write-to-OpenSearch work
+(`agon_services_core::opensearch::sync_match`/`sync_user`):
+1. Index the match document and its player rows in one bulk request (or just
+   the user document, for a user sync).
+2. For a match: delete any of that match's player rows that no longer apply.
 
-Likes and comments rewrite `#META` too. When the only change is to those
-counters, the handler skips the match without reading anything.
+Likes and comments rewrite a match's `#META` too. When the only change is to
+those counters, `target_for` skips it without a DynamoDB read.
 
-The same handler also runs on every user `#PROFILE` write, rebuilding that
-user's `users` document (`agon_services_core::opensearch::sync_user`) — just
-an index, no player rows or stale-row cleanup to do.
+OpenSearch gets its own queue, rather than sharing `agon-actions` with the
+other six handlers, because it needs a much longer retry window:
+- **`agon-opensearch-sync`**'s visibility timeout (10 minutes) and redrive
+  policy (`maxReceiveCount: 3`) are the retry — roughly 30 minutes of
+  tolerance for an OpenSearch blip before a target moves to
+  `agon-opensearch-sync-dlq`. Mixing that into the shared actions queue would
+  mean either every other handler waits 10 minutes to redeliver, or
+  OpenSearch gets the same 1-minute window they do.
+- Each attempt re-syncs from DynamoDB's *current* state, so a late or
+  duplicate attempt never writes stale data.
+- Without `OPENSEARCH_URL` or `AGON_OPENSEARCH_SYNC_QUEUE_URL` set (e.g.
+  local dev without OpenSearch), syncing is simply off — there's no inline
+  fallback any more, since all syncing goes through this queue.
 
-A failed sync doesn't fail the stream message — that would replay every other
-handler for the event (indexing, notifications, push, stats, tournament,
-rating), and during an OpenSearch outage it would push unrelated events into
-the main DLQ. Instead the target (a match or user id) is sent to its own SQS
-queue, **`agon-opensearch-repair`**, which the worker also consumes:
-- That queue's visibility timeout (10 minutes) and redrive policy
-  (`maxReceiveCount: 3`) are the retry — roughly 30 minutes of tolerance for
-  an OpenSearch blip before a target moves to `agon-opensearch-repair-dlq`.
-- Each attempt re-syncs from DynamoDB's *current* state
-  (`sync_match`/`sync_user`), so a late or duplicate attempt never writes
-  stale data.
-- Without `AGON_OPENSEARCH_REPAIR_QUEUE_URL` (local dev), a failed sync is
-  just logged, same as before this queue existed.
-
-Watch for `opensearch: sync failed` in the worker logs, and the
-`agon-opensearch-repair-dlq` queue's depth (`ApproximateNumberOfMessages`) —
-anything landing there means OpenSearch was unreachable for longer than the
-retry window and needs a look; run the backfill (`--match <id>` /
-`--resume`) to repair it once OpenSearch is healthy again. There's no
-Grafana alert wired to that depth yet (alerting is off for this stack —
-see `agon_infra`'s `kube-prometheus-stack` config); for now, watch it via
-the AWS console or `aws sqs get-queue-attributes`.
+Watch the `agon-opensearch-sync-dlq` queue's depth
+(`ApproximateNumberOfMessages`) — anything landing there means OpenSearch was
+unreachable for longer than the retry window and needs a look; run the
+backfill (`--match <id>` / `--resume`) to repair it once OpenSearch is
+healthy again. There's no Grafana alert wired to that depth yet (alerting is
+off for this stack — see `agon_infra`'s `kube-prometheus-stack` config); for
+now, watch it via the AWS console or `aws sqs get-queue-attributes`.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.

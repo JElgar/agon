@@ -28,8 +28,8 @@
 //! indexing always reflects the latest committed state).
 
 use agon_services_core::dao::keys::{KeyError, Pk, Sk};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 /// A DynamoDB item image in attribute-value wire shape. `serde_dynamo::Item` is
 /// `HashMap<String, serde_dynamo::AttributeValue>`, and its `AttributeValue`
@@ -38,7 +38,7 @@ pub type Image = serde_dynamo::Item;
 
 /// The kind of change captured off the stream. Mirrors the DynamoDB Streams
 /// `eventName` (`INSERT` / `MODIFY` / `REMOVE`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum ChangeKind {
     Insert,
@@ -55,7 +55,13 @@ impl ChangeKind {
 
 /// The raw envelope as delivered on SQS (one per message body). Images are
 /// present only for the relevant change kinds (see module docs).
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `Serialize` is for `action::ActionMessage`: the main consumer re-serializes
+/// the same envelope it just parsed when it fans an event out to
+/// `agon-actions`, so the standard derive (plain `null` for `None`) is fine —
+/// it's never round-tripped through the EventBridge Pipe's rendering again,
+/// only through our own producer/consumer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub event: ChangeKind,
     pub pk: String,

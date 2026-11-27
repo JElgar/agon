@@ -1,45 +1,46 @@
-//! The SQS consumer loop.
+//! The main SQS consumer loop.
 //!
-//! Long-polls the events queue, parses each message into a [`ChangeEvent`], runs
-//! the inline handlers, and **deletes the message only after the work succeeds**
-//! — this is the ACK discipline that gives at-least-once processing (see
-//! docs/async-design.md §3). On a transient failure the message is left on the
-//! queue and redelivered after its visibility timeout; on a permanent failure
-//! (unparseable body / bad keys) the message is deleted so it can't loop, with
-//! the DLQ redrive policy as the ultimate backstop.
+//! Long-polls the events queue, parses each message into a [`ChangeEvent`],
+//! and fans it out: once per [`crate::action::Action`] onto the shared
+//! `agon-actions` queue (`action_consumer::ActionProducer`), plus — if
+//! `handlers::opensearch::target_for` says this event needs one — an
+//! OpenSearch sync target onto its own queue
+//! (`opensearch_sync::SyncProducer`). It no longer runs any handler itself.
+//!
+//! **Deletes the message only after every send succeeds** — this is the ACK
+//! discipline that gives at-least-once processing. On a transient failure the
+//! message is left on the queue and redelivered after its visibility timeout;
+//! on a permanent failure (unparseable body / bad keys) the message is
+//! deleted so it can't loop, with the DLQ redrive policy as the ultimate
+//! backstop. Re-sending every action on a redelivery is harmless: every
+//! handler is idempotent, and a duplicate fan-out just means some action
+//! messages are processed twice.
 //!
 //! Messages within a single receive batch are processed concurrently and each
 //! is independently ACKed, so one poison message never blocks its neighbours.
 
 use std::sync::Arc;
 
-use agon_services_core::dao::Dao;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sqs::types::Message;
-use chrono::Utc;
 use futures::future::join_all;
 
+use crate::action_consumer::ActionProducer;
 use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Envelope};
 use crate::handlers;
-use agon_services_core::push::PushClient;
-use agon_services_core::search::SearchClient;
+use crate::opensearch_sync::SyncProducer;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
 #[derive(Clone)]
 pub struct Consumer {
     sqs: SqsClient,
-    dao: Dao,
-    search: SearchClient,
-    /// `None` when push isn't configured (e.g. local dev) — handled the same
-    /// way as the Temporal client's absence in tests: handlers no-op.
-    push: Option<PushClient>,
-    /// `None` when `OPENSEARCH_URL` is unset: the OpenSearch shadow write is off.
-    opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
-    /// `None` when `AGON_OPENSEARCH_REPAIR_QUEUE_URL` is unset (e.g. local dev):
-    /// a failed sync is then just logged, same as before this queue existed.
-    opensearch_repair: Option<crate::opensearch_repair::RepairProducer>,
+    actions: ActionProducer,
+    /// `None` when `AGON_OPENSEARCH_SYNC_QUEUE_URL` (or `OPENSEARCH_URL`) is
+    /// unset — then a target is never sent, and syncing is simply off, same
+    /// as any other optional integration without its env var.
+    opensearch_sync: Option<SyncProducer>,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -48,40 +49,19 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn new(
-        sqs: SqsClient,
-        dao: Dao,
-        search: SearchClient,
-        push: Option<PushClient>,
-        config: Config,
-    ) -> Self {
+    pub fn new(sqs: SqsClient, actions: ActionProducer, config: Config) -> Self {
         Self {
             sqs,
-            dao,
-            search,
-            push,
-            opensearch: None,
-            opensearch_repair: None,
+            actions,
+            opensearch_sync: None,
             config: Arc::new(config),
             temporal: None,
         }
     }
 
-    /// Turn on the OpenSearch shadow write.
-    pub fn with_opensearch(
-        mut self,
-        client: agon_services_core::opensearch::OpenSearchClient,
-    ) -> Self {
-        self.opensearch = Some(client);
-        self
-    }
-
-    /// Turn on retrying failed OpenSearch syncs via the repair queue.
-    pub fn with_opensearch_repair(
-        mut self,
-        producer: crate::opensearch_repair::RepairProducer,
-    ) -> Self {
-        self.opensearch_repair = Some(producer);
+    /// Turn on sending OpenSearch sync targets.
+    pub fn with_opensearch_sync(mut self, producer: SyncProducer) -> Self {
+        self.opensearch_sync = Some(producer);
         self
     }
 
@@ -171,8 +151,8 @@ impl Consumer {
         }
     }
 
-    /// Parse and handle one message. Errors classify as permanent (bad data) or
-    /// transient (retryable) via [`WorkerError::is_permanent`].
+    /// Parse and fan out one message. Errors classify as permanent (bad data)
+    /// or transient (retryable) via [`WorkerError::is_permanent`].
     async fn process(&self, msg: &Message) -> WorkerResult<()> {
         let body = msg
             .body()
@@ -182,20 +162,14 @@ impl Consumer {
             .map_err(|e| WorkerError::Malformed(format!("bad envelope: {e}")))?;
         let event = ChangeEvent::from_envelope(&envelope)?;
 
-        let now = Utc::now().to_rfc3339();
-        handlers::route(
-            &self.dao,
-            &self.search,
-            self.push.as_ref(),
-            handlers::opensearch::Sinks {
-                opensearch: self.opensearch.as_ref(),
-                repair: self.opensearch_repair.as_ref(),
-            },
-            self.config.ui_base_url.as_deref(),
-            &event,
-            &now,
-        )
-        .await?;
+        self.actions.fan_out(&envelope).await?;
+
+        if let (Some(sync), Some(target)) = (
+            &self.opensearch_sync,
+            handlers::opensearch::target_for(&event),
+        ) {
+            sync.send(&target).await;
+        }
 
         // Multi-step work: start the relevant Temporal workflow (idempotent via
         // deterministic ids). A start failure is transient, so the message is left

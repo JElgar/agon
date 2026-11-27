@@ -1,141 +1,59 @@
-//! Inline handler: shadow-write match and user changes to OpenSearch.
+//! Pure decision step: does this stream event call for an OpenSearch sync,
+//! and for what target?
 //!
-//! On any write to a match's `#META` (score, sides, status, date, ...) or to its
-//! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
-//! documents from DynamoDB with [`agon_services_core::opensearch::sync_match`].
-//! On any write to a user's `#PROFILE`, rebuild their `users` document with
-//! [`agon_services_core::opensearch::sync_user`].
+//! On any write to a match's `#META` (score, sides, status, date, ...) or to
+//! its roster (`PLAYER#` items, which don't touch `#META`), the match needs
+//! re-syncing. On any write to a user's `#PROFILE`, so does their `users`
+//! document. No DynamoDB or OpenSearch I/O happens here — [`target_for`]
+//! just decides, from the event's keys and images, whether a sync is
+//! warranted and what it targets.
 //!
-//! **Resilience.** A failed sync never fails this message: that would replay
-//! every other inline handler for this event (indexing, notifications, push,
-//! stats, tournament, rating), and during an OpenSearch outage it would push
-//! stream events into the main DLQ for a problem that has nothing to do with
-//! them. Instead the target is handed to [`crate::opensearch_repair`]'s
-//! [`RepairProducer`], which sends it to its own SQS queue
-//! (`agon-opensearch-repair`). That queue's native redrive policy — retry a
-//! few times, then its own DLQ — is the retry; see docs/opensearch.md. The
-//! backfill (`agon_worker backfill-opensearch`) is the last resort if that
-//! queue's retries are exhausted or a repair producer isn't configured
-//! (local dev without `AGON_OPENSEARCH_REPAIR_QUEUE_URL`).
+//! The actual sync (reading current state from DynamoDB, writing to
+//! OpenSearch) always happens in `opensearch_sync::SyncConsumer`, off its own
+//! dedicated SQS queue: the main consumer (`consumer.rs`) calls
+//! [`target_for`] and, if it returns `Some`, sends the target there instead
+//! of syncing inline. That queue's own (longer) retry window is isolated
+//! from the shared `agon-actions` queue the other handlers fan out onto —
+//! see `opensearch_sync`'s module docs and docs/opensearch.md.
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a
 //! `#META` modify whose images differ only in those counters is skipped
 //! without a read.
 
-use agon_services_core::dao::Dao;
 use agon_services_core::dao::keys::{Pk, Sk};
-use agon_services_core::opensearch::{
-    OpenSearchClient, SyncOutcome, UserSyncOutcome, sync_match, sync_user,
-};
 
-use crate::error::WorkerResult;
 use crate::event::{ChangeEvent, ChangeKind, Image};
-use crate::opensearch_repair::{OpenSearchSyncTarget, RepairProducer};
+use crate::opensearch_sync::OpenSearchSyncTarget;
 
 /// `#META` attributes whose changes never affect an OpenSearch document.
 const NOISE_ATTRS: &[&str] = &["like_count", "comment_count", "live_seq", "live_tip_seq"];
 
-/// What the handler writes through: the OpenSearch client (`None` turns the
-/// handler off) and the repair producer a failed sync is handed to. Bundled
-/// together to keep `route` under clippy's argument limit.
-#[derive(Clone, Copy, Default)]
-pub struct Sinks<'a> {
-    pub opensearch: Option<&'a OpenSearchClient>,
-    pub repair: Option<&'a RepairProducer>,
-}
-
-pub async fn handle(dao: &Dao, sinks: Sinks<'_>, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
-    let (Some(os), repair) = (sinks.opensearch, sinks.repair) else {
-        return Ok(());
-    };
+/// `None` if this event needs no OpenSearch sync at all.
+pub fn target_for(ev: &ChangeEvent) -> Option<OpenSearchSyncTarget> {
     match &ev.pk {
-        Pk::Match(match_id) => handle_match(os, repair, dao, match_id, ev, now).await,
-        Pk::User(user_id) => handle_user(os, repair, dao, user_id, ev, now).await,
-        _ => Ok(()),
-    }
-}
-
-async fn handle_match(
-    os: &OpenSearchClient,
-    repair: Option<&RepairProducer>,
-    dao: &Dao,
-    match_id: &str,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    match &ev.sk {
-        Sk::Meta => {
-            if ev.kind == ChangeKind::Modify && only_noise_changed(&ev.old_image, &ev.new_image) {
-                return Ok(());
+        Pk::Match(match_id) => {
+            match &ev.sk {
+                Sk::Meta => {
+                    if ev.kind == ChangeKind::Modify
+                        && only_noise_changed(&ev.old_image, &ev.new_image)
+                    {
+                        return None;
+                    }
+                }
+                Sk::Player(_) => {}
+                _ => return None,
             }
+            Some(OpenSearchSyncTarget::Match(match_id.clone()))
         }
-        Sk::Player(_) => {}
-        _ => return Ok(()),
+        Pk::User(user_id) => {
+            if ev.sk != Sk::Profile {
+                return None;
+            }
+            Some(OpenSearchSyncTarget::User(user_id.clone()))
+        }
+        _ => None,
     }
-
-    match sync_match(os, dao, match_id, now, true).await {
-        Ok(SyncOutcome::Indexed { player_rows }) => {
-            tracing::debug!(match_id = %match_id, player_rows, "opensearch: match synced");
-        }
-        Ok(SyncOutcome::Removed) => {
-            tracing::debug!(match_id = %match_id, "opensearch: match removed");
-        }
-        Err(e) => {
-            schedule_repair(
-                repair,
-                OpenSearchSyncTarget::Match(match_id.to_string()),
-                &e,
-            )
-            .await;
-        }
-    }
-    Ok(())
-}
-
-async fn handle_user(
-    os: &OpenSearchClient,
-    repair: Option<&RepairProducer>,
-    dao: &Dao,
-    user_id: &str,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    if ev.sk != Sk::Profile {
-        return Ok(());
-    }
-
-    match sync_user(os, dao, user_id, now, true).await {
-        Ok(UserSyncOutcome::Indexed) => {
-            tracing::debug!(user_id = %user_id, "opensearch: user synced");
-        }
-        Ok(UserSyncOutcome::Removed) => {
-            tracing::debug!(user_id = %user_id, "opensearch: user removed");
-        }
-        Err(e) => {
-            schedule_repair(repair, OpenSearchSyncTarget::User(user_id.to_string()), &e).await;
-        }
-    }
-    Ok(())
-}
-
-/// Hand a failed sync to the repair queue. Never returns an error: see the
-/// module doc's **Resilience** section.
-async fn schedule_repair(
-    repair: Option<&RepairProducer>,
-    target: OpenSearchSyncTarget,
-    error: &dyn std::fmt::Display,
-) {
-    let Some(repair) = repair else {
-        tracing::warn!(
-            ?target,
-            error = %error,
-            "opensearch: sync failed; no repair queue configured (run the backfill to repair)"
-        );
-        return;
-    };
-    tracing::warn!(?target, error = %error, "opensearch: sync failed");
-    repair.schedule(&target).await;
 }
 
 /// True when both images exist and differ only in [`NOISE_ATTRS`].
@@ -156,9 +74,27 @@ fn only_noise_changed(old: &Option<Image>, new: &Option<Image>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Envelope;
 
     fn image(json: serde_json::Value) -> Image {
         serde_json::from_value(json).expect("image")
+    }
+
+    fn event(
+        pk: &str,
+        sk: &str,
+        kind: ChangeKind,
+        old: Option<Image>,
+        new: Option<Image>,
+    ) -> ChangeEvent {
+        ChangeEvent::from_envelope(&Envelope {
+            event: kind,
+            pk: pk.into(),
+            sk: sk.into(),
+            old_image: old,
+            new_image: new,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -187,5 +123,57 @@ mod tests {
     fn missing_old_image_is_never_noise() {
         let new = image(serde_json::json!({ "status": { "S": "completed" } }));
         assert!(!only_noise_changed(&None, &Some(new)));
+    }
+
+    #[test]
+    fn match_meta_write_targets_the_match() {
+        let new = image(serde_json::json!({ "status": { "S": "completed" } }));
+        let ev = event("MATCH#m1", "#META", ChangeKind::Modify, None, Some(new));
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Match("m1".into()))
+        );
+    }
+
+    #[test]
+    fn match_like_only_meta_write_has_no_target() {
+        let old = image(
+            serde_json::json!({ "status": { "S": "completed" }, "like_count": { "N": "1" } }),
+        );
+        let new = image(
+            serde_json::json!({ "status": { "S": "completed" }, "like_count": { "N": "2" } }),
+        );
+        let ev = event(
+            "MATCH#m1",
+            "#META",
+            ChangeKind::Modify,
+            Some(old),
+            Some(new),
+        );
+        assert_eq!(target_for(&ev), None);
+    }
+
+    #[test]
+    fn match_player_write_targets_the_match() {
+        let ev = event("MATCH#m1", "PLAYER#u1", ChangeKind::Insert, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Match("m1".into()))
+        );
+    }
+
+    #[test]
+    fn user_profile_write_targets_the_user() {
+        let ev = event("USER#u1", "#PROFILE", ChangeKind::Modify, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::User("u1".into()))
+        );
+    }
+
+    #[test]
+    fn unrelated_write_has_no_target() {
+        let ev = event("TEAM#t1", "#META", ChangeKind::Modify, None, None);
+        assert_eq!(target_for(&ev), None);
     }
 }

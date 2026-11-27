@@ -44,6 +44,7 @@ pub mod matches;
 pub mod schema;
 pub mod sync;
 pub mod team_stats;
+pub mod text;
 pub mod user_stats;
 pub mod users;
 
@@ -52,4 +53,4 @@ pub use docs::{MatchDocs, build_match_docs, build_user_doc};
 pub use matches::{MatchFilters, search_matches};
 pub use schema::{IndexDef, MATCH_STATS, MATCHES, USERS, all_indices};
 pub use sync::{SyncError, SyncOutcome, UserSyncOutcome, sync_match, sync_user};
-pub use users::search_users;
+pub use users::{UserSearchFields, search_users};

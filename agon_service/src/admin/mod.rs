@@ -319,10 +319,15 @@ impl AdminApi {
             }
         };
         let limit = page_limit(limit);
-        let (ids, total) =
-            agon_services_core::opensearch::search_users(os, query.as_deref(), offset, limit)
-                .await
-                .map_err(opensearch_internal)?;
+        let (ids, total) = agon_services_core::opensearch::search_users(
+            os,
+            query.as_deref(),
+            agon_services_core::opensearch::UserSearchFields::NameAndEmail,
+            offset,
+            limit,
+        )
+        .await
+        .map_err(opensearch_internal)?;
 
         let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
         let items = ids

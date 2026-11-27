@@ -1,7 +1,7 @@
 //! The individual inline handlers for stream events (single-step, idempotent
 //! work), each run by exactly one fanned-out message now — see
-//! `action_consumer` for the dispatch and `opensearch_sync` for the one
-//! handler (OpenSearch) that isn't a plain [`crate::action::Action`].
+//! `action_consumer` for the dispatch, and `opensearch_sync` for the actual
+//! sync work the `opensearch` handler's decision (`target_for`) feeds into.
 //!
 //! Each handler is total over the event space: it inspects the event's keys and
 //! does nothing for events it doesn't care about.

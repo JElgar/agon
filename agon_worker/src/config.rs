@@ -18,14 +18,9 @@ pub struct Config {
     pub asset_events_queue_url: String,
     /// SQS queue URL for the fanned-out actions (`AGON_ACTIONS_QUEUE_URL`,
     /// see `action_consumer`) — required, not optional: every stream event's
-    /// `index`/`notify`/`push`/`stats`/`tournament`/`rating` handling goes
-    /// through it now, so there's no sensible "disabled" state for it.
+    /// handling, OpenSearch syncing included, goes through it now, so
+    /// there's no sensible "disabled" state for it.
     pub actions_queue_url: String,
-    /// SQS queue URL for OpenSearch syncs (`AGON_OPENSEARCH_SYNC_QUEUE_URL`,
-    /// see `opensearch_sync`). Optional: unset (e.g. local dev, or
-    /// `OPENSEARCH_URL` itself unset) just means OpenSearch syncing is off,
-    /// same as any other optional integration.
-    pub opensearch_sync_queue_url: Option<String>,
     /// CloudFront base URL used to build the canonical serving URL stored on an
     /// asset when it uploads (`AGON_ASSETS_CDN_URL`).
     pub assets_cdn_url: String,
@@ -64,7 +59,6 @@ impl Config {
             events_queue_url: required("AGON_EVENTS_QUEUE_URL")?,
             asset_events_queue_url: required("AGON_ASSET_EVENTS_QUEUE_URL")?,
             actions_queue_url: required("AGON_ACTIONS_QUEUE_URL")?,
-            opensearch_sync_queue_url: env::var("AGON_OPENSEARCH_SYNC_QUEUE_URL").ok(),
             assets_cdn_url: required("AGON_ASSETS_CDN_URL")?
                 .trim_end_matches('/')
                 .to_string(),

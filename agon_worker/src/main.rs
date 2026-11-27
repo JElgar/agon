@@ -2,14 +2,12 @@
 //!
 //! Long-polls the SQS events queue (fed by DynamoDB Streams via an EventBridge
 //! Pipe). The main consumer (`consumer.rs`) doesn't run any handler itself: for
-//! each event it fans out onto the shared `agon-actions` queue (one message
+//! each event it fans out onto the shared `agon-actions` queue, one message
 //! per `action::Action` — indexing, notifications, push, stats, tournament,
-//! rating) and, if OpenSearch syncing applies, onto its own dedicated queue
-//! (`opensearch_sync`). `action_consumer::ActionConsumer` and
-//! `opensearch_sync::SyncConsumer` are the independent poll loops that
-//! actually run those handlers, each with its own retry/DLQ, so a failure in
-//! one can never hold up or replay another. See docs/opensearch.md for why
-//! OpenSearch gets a queue of its own instead of sharing `agon-actions`.
+//! rating, and OpenSearch syncing. `action_consumer::ActionConsumer` is the
+//! independent poll loop that actually runs those handlers, with its own
+//! retry/DLQ, so a failure in one can never hold up or replay another. See
+//! docs/opensearch.md.
 //!
 //! Multi-step orchestration (feed fan-out, the accept-invitation saga) lives
 //! in the `temporal` module and runs a Temporal worker alongside the consumer
@@ -106,25 +104,6 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
-    let config_arc = std::sync::Arc::new(config.clone());
-    let action_consumer = ActionConsumer::new(
-        sqs.clone(),
-        dao.clone(),
-        search.clone(),
-        push,
-        config.actions_queue_url.clone(),
-        config_arc.clone(),
-    );
-    let actions = ActionProducer::new(sqs.clone(), config.actions_queue_url.clone());
-
-    // Captured before `sqs`/`config` move into the main consumer below; used
-    // by the OpenSearch sync consumer, which is a second, independent poll
-    // loop over its own queue.
-    let sync_sqs = sqs.clone();
-    let opensearch_sync_queue_url = config.opensearch_sync_queue_url.clone();
-
-    let mut consumer = Consumer::new(sqs, actions, config);
-
     // OpenSearch: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a failure here
     // is not fatal, since nothing reads OpenSearch yet; the worker runs
     // without it and the backfill can catch up later.
@@ -134,8 +113,8 @@ async fn main() {
             None
         });
     // Also handed to the Temporal worker (for the backfill workflow's
-    // activities) and to the sync consumer below — kept outside the `if let`
-    // so it survives the clone each of those takes its own copy from.
+    // activities) and to the action consumer below — kept outside the `if
+    // let` so it survives the clone each of those takes its own copy from.
     let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;
@@ -154,30 +133,19 @@ async fn main() {
         tracing::info!("OPENSEARCH_URL unset; opensearch syncing disabled");
     }
 
-    // Sending/consuming OpenSearch sync targets: needs both the client above
-    // and AGON_OPENSEARCH_SYNC_QUEUE_URL. Either missing just means OpenSearch
-    // syncing is off, same as any other optional integration.
-    let sync_consumer = match (opensearch_ready.clone(), opensearch_sync_queue_url) {
-        (Some(os), Some(queue_url)) => {
-            consumer = consumer.with_opensearch_sync(opensearch_sync::SyncProducer::new(
-                sync_sqs.clone(),
-                queue_url.clone(),
-            ));
-            Some(opensearch_sync::SyncConsumer::new(
-                sync_sqs,
-                dao.clone(),
-                os,
-                queue_url,
-                config_arc,
-            ))
-        }
-        (os, queue_url) => {
-            if os.is_some() && queue_url.is_none() {
-                tracing::info!("AGON_OPENSEARCH_SYNC_QUEUE_URL unset; opensearch syncing disabled");
-            }
-            None
-        }
-    };
+    let config_arc = std::sync::Arc::new(config.clone());
+    let action_consumer = ActionConsumer::new(
+        sqs.clone(),
+        dao.clone(),
+        search.clone(),
+        push,
+        opensearch_ready.clone(),
+        config.actions_queue_url.clone(),
+        config_arc.clone(),
+    );
+    let actions = ActionProducer::new(sqs.clone(), config.actions_queue_url.clone());
+
+    let consumer = Consumer::new(sqs, actions, config);
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.
@@ -198,7 +166,6 @@ async fn main() {
     let events_shutdown = subscribe_shutdown(&shutdown_tx);
     let asset_shutdown = subscribe_shutdown(&shutdown_tx);
     let action_shutdown = subscribe_shutdown(&shutdown_tx);
-    let sync_shutdown = subscribe_shutdown(&shutdown_tx);
     let signal_fut = async move {
         shutdown_signal().await;
         // Best-effort broadcast; receivers stop on the first (or a lagged) recv.
@@ -208,13 +175,6 @@ async fn main() {
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let action_fut = action_consumer.run(Box::pin(action_shutdown));
-    // Resolves immediately (a no-op) if OpenSearch syncing isn't configured;
-    // the other futures keep the process alive regardless.
-    let sync_fut = async {
-        if let Some(sync_consumer) = sync_consumer {
-            sync_consumer.run(Box::pin(sync_shutdown)).await;
-        }
-    };
     let temporal_fut = async {
         if let Err(e) = temporal::worker::run(dao, search, opensearch_ready).await {
             tracing::error!(error = %e, "temporal worker exited with error");
@@ -225,7 +185,6 @@ async fn main() {
         consumer_fut,
         asset_fut,
         action_fut,
-        sync_fut,
         temporal_fut
     );
 

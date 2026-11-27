@@ -9,12 +9,11 @@
 //! warranted and what it targets.
 //!
 //! The actual sync (reading current state from DynamoDB, writing to
-//! OpenSearch) always happens in `opensearch_sync::SyncConsumer`, off its own
-//! dedicated SQS queue: the main consumer (`consumer.rs`) calls
-//! [`target_for`] and, if it returns `Some`, sends the target there instead
-//! of syncing inline. That queue's own (longer) retry window is isolated
-//! from the shared `agon-actions` queue the other handlers fan out onto —
-//! see `opensearch_sync`'s module docs and docs/opensearch.md.
+//! OpenSearch) happens in `opensearch_sync::sync`, called from
+//! `action_consumer::ActionConsumer`'s `Action::OpenSearchSync` case: for
+//! every event, [`target_for`] decides whether that sync is warranted and
+//! for what target. It shares the same `agon-actions` queue and retry
+//! settings as every other action — see docs/opensearch.md.
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a

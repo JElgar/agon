@@ -1,11 +1,10 @@
 //! The main SQS consumer loop.
 //!
 //! Long-polls the events queue, parses each message into a [`ChangeEvent`],
-//! and fans it out: once per [`crate::action::Action`] onto the shared
-//! `agon-actions` queue (`action_consumer::ActionProducer`), plus — if
-//! `handlers::opensearch::target_for` says this event needs one — an
-//! OpenSearch sync target onto its own queue
-//! (`opensearch_sync::SyncProducer`). It no longer runs any handler itself.
+//! and fans it out once per [`crate::action::Action`] onto the shared
+//! `agon-actions` queue (`action_consumer::ActionProducer`) — including
+//! OpenSearch syncing, which is just another action now (see
+//! `opensearch_sync`). It no longer runs any handler itself.
 //!
 //! **Deletes the message only after every send succeeds** — this is the ACK
 //! discipline that gives at-least-once processing. On a transient failure the
@@ -29,18 +28,12 @@ use crate::action_consumer::ActionProducer;
 use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Envelope};
-use crate::handlers;
-use crate::opensearch_sync::SyncProducer;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
 #[derive(Clone)]
 pub struct Consumer {
     sqs: SqsClient,
     actions: ActionProducer,
-    /// `None` when `AGON_OPENSEARCH_SYNC_QUEUE_URL` (or `OPENSEARCH_URL`) is
-    /// unset — then a target is never sent, and syncing is simply off, same
-    /// as any other optional integration without its env var.
-    opensearch_sync: Option<SyncProducer>,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -53,16 +46,9 @@ impl Consumer {
         Self {
             sqs,
             actions,
-            opensearch_sync: None,
             config: Arc::new(config),
             temporal: None,
         }
-    }
-
-    /// Turn on sending OpenSearch sync targets.
-    pub fn with_opensearch_sync(mut self, producer: SyncProducer) -> Self {
-        self.opensearch_sync = Some(producer);
-        self
     }
 
     /// Attach a Temporal client so multi-step events start workflows.
@@ -163,13 +149,6 @@ impl Consumer {
         let event = ChangeEvent::from_envelope(&envelope)?;
 
         self.actions.fan_out(&envelope).await?;
-
-        if let (Some(sync), Some(target)) = (
-            &self.opensearch_sync,
-            handlers::opensearch::target_for(&event),
-        ) {
-            sync.send(&target).await;
-        }
 
         // Multi-step work: start the relevant Temporal workflow (idempotent via
         // deterministic ids). A start failure is transient, so the message is left

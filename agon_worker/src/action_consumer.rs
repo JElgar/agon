@@ -1,14 +1,14 @@
 //! Fan out one stream event into one SQS message per [`Action`], and
 //! consume them.
 //!
-//! The main consumer (`consumer.rs`) no longer runs `index`/`notify`/`push`/
-//! `stats`/`tournament`/`rating` inline for a stream event: it hands the
-//! same envelope to [`ActionProducer`], which sends it once per [`Action`]
-//! to the shared `agon-actions` queue. [`ActionConsumer`] is the independent
-//! poll loop over that queue: it runs exactly one handler per message. A
-//! failure in one handler only redelivers that handler's own message — it
-//! can no longer replay its neighbours, which running all of them inline in
-//! one SQS message used to mean.
+//! The main consumer (`consumer.rs`) no longer runs any handler inline for a
+//! stream event: it hands the same envelope to [`ActionProducer`], which
+//! sends it once per [`Action`] (including OpenSearch syncing — see
+//! `opensearch_sync`) to the shared `agon-actions` queue. [`ActionConsumer`]
+//! is the independent poll loop over that queue: it runs exactly one
+//! handler per message. A failure in one handler only redelivers that
+//! handler's own message — it can no longer replay its neighbours, which
+//! running all of them inline in one SQS message used to mean.
 //!
 //! ACK discipline mirrors the other consumers: delete only on success, so a
 //! transient failure redelivers after the queue's visibility timeout, and
@@ -25,6 +25,7 @@
 use std::sync::Arc;
 
 use agon_services_core::dao::Dao;
+use agon_services_core::opensearch::OpenSearchClient;
 use agon_services_core::push::PushClient;
 use agon_services_core::search::SearchClient;
 use aws_sdk_sqs::Client as SqsClient;
@@ -36,7 +37,8 @@ use crate::action::{Action, ActionMessage};
 use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, Envelope};
-use crate::handlers::{index, notify, push, rating, stats, tournament};
+use crate::handlers::{self, index, notify, push, rating, stats, tournament};
+use crate::opensearch_sync;
 
 /// Sends one message per [`Action::ALL`] to the shared actions queue.
 #[derive(Clone)]
@@ -84,6 +86,9 @@ pub struct ActionConsumer {
     dao: Dao,
     search: SearchClient,
     push: Option<PushClient>,
+    /// `None` when OpenSearch syncing isn't configured (e.g. local dev) —
+    /// then `Action::OpenSearchSync` messages are simply acked as no-ops.
+    opensearch: Option<OpenSearchClient>,
     queue_url: String,
     config: Arc<Config>,
 }
@@ -94,6 +99,7 @@ impl ActionConsumer {
         dao: Dao,
         search: SearchClient,
         push: Option<PushClient>,
+        opensearch: Option<OpenSearchClient>,
         queue_url: String,
         config: Arc<Config>,
     ) -> Self {
@@ -102,6 +108,7 @@ impl ActionConsumer {
             dao,
             search,
             push,
+            opensearch,
             queue_url,
             config,
         }
@@ -190,6 +197,12 @@ impl ActionConsumer {
             Action::Stats => stats::handle(&self.dao, &ev).await,
             Action::Tournament => tournament::handle(&self.dao, &ev).await,
             Action::Rating => rating::handle(&self.dao, &ev, &now).await,
+            Action::OpenSearchSync => {
+                match (handlers::opensearch::target_for(&ev), &self.opensearch) {
+                    (Some(target), Some(os)) => opensearch_sync::sync(&target, &self.dao, os).await,
+                    _ => Ok(()),
+                }
+            }
         }
     }
 

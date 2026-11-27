@@ -1,12 +1,13 @@
 //! The action tag a fanned-out message carries.
 //!
-//! The main consumer no longer runs the inline handlers itself: for every
-//! stream event it fans the same envelope out into one message per
-//! [`Action`] on the shared `agon-actions` queue (see `action_consumer`), so
-//! a failure in one handler only redelivers that handler's own message —
-//! never its neighbours'. OpenSearch is the one exception: it needs a much
-//! longer retry window than a few minutes, so it gets its own dedicated
-//! queue instead of sharing this one — see `opensearch_sync`.
+//! The main consumer no longer runs any handler itself: for every stream
+//! event it fans the same envelope out into one message per [`Action`] on
+//! the shared `agon-actions` queue (see `action_consumer`), so a failure in
+//! one handler only redelivers that handler's own message — never its
+//! neighbours'. OpenSearch sync is one of these actions like any other
+//! (dispatched via `handlers::opensearch::target_for` — see
+//! `opensearch_sync`), sharing the same queue and retry settings as the rest
+//! rather than needing a queue of its own — see docs/opensearch.md.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,17 +23,19 @@ pub enum Action {
     Stats,
     Tournament,
     Rating,
+    OpenSearchSync,
 }
 
 impl Action {
     /// Every action, fanned out for each stream event.
-    pub const ALL: [Action; 6] = [
+    pub const ALL: [Action; 7] = [
         Action::Index,
         Action::Notify,
         Action::Push,
         Action::Stats,
         Action::Tournament,
         Action::Rating,
+        Action::OpenSearchSync,
     ];
 }
 

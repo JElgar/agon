@@ -34,8 +34,9 @@ here can be rebuilt from it at any time.
 
 `kind` is derived for now (`league` / `cup` from the tournament format, `squad`
 when every side is the same team, `friendly` when at least one side has a team,
-otherwise `pickup`), until match setup stores it. `year` is the start time's year
-in the tournament's timezone, or UTC.
+otherwise `pickup`), until match setup stores it. `year` is the start time's
+UTC calendar year — the API is timezone agnostic, so this never reads
+`starts_at` in a tournament's own timezone.
 
 ## Client and typing
 

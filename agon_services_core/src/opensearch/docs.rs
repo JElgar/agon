@@ -171,6 +171,8 @@ pub struct PlayerStatDoc {
     /// 0-based round (knockout) or matchday (league) within the tournament.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tournament_round: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
     pub starts_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
@@ -320,6 +322,7 @@ pub fn build_match_docs(
                         ranked: m.ranked,
                         tournament_id: m.tournament_id.clone(),
                         tournament_round: m.tournament_round.map(|r| r.round),
+                        series_id: m.series_id.clone(),
                         starts_at: m.starts_at.clone(),
                         year,
                         played: 1,

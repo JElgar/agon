@@ -132,6 +132,7 @@ fn iso_offset_hours(hours: i64) -> String {
 /// Scheduled in the future (no score), so it passes create-time validation.
 fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
     models::CreateMatchInput {
+        tournament_id: None,
         name: "Test Match".to_string(),
         description: "A test match".to_string(),
         match_type: models::MatchType::Tennis,
@@ -139,6 +140,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         location: None,
         sides: vec![
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
@@ -147,6 +149,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 team_join_enabled: None,
             },
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
@@ -156,6 +159,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
             },
         ],
         invites: vec![models::CreateMatchInviteInput {
+            reserve_spot: None,
             side_client_id: Some("a".to_string()),
             invited_user_ids: vec![invited_user_id.to_string()],
             invited_externals: vec![],
@@ -181,11 +185,13 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
 /// is any player with a linked user id, and there's no self-invite guard.
 fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::CreateMatchInput {
     let invite_side = |client_id: &str, ids: &[&str]| models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some(client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
         invited_externals: vec![],
     };
     models::CreateMatchInput {
+        tournament_id: None,
         name: name.to_string(),
         description: "A test match".to_string(),
         match_type: models::MatchType::Tennis,
@@ -193,6 +199,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         location: None,
         sides: vec![
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
@@ -201,6 +208,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 team_join_enabled: None,
             },
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
@@ -223,6 +231,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
 /// Invite one or more Agon users onto a side.
 fn invite_users(side_client_id: &str, ids: &[&str]) -> models::CreateMatchInviteInput {
     models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
         invited_externals: vec![],
@@ -236,6 +245,7 @@ fn invite_users(side_client_id: &str, ids: &[&str]) -> models::CreateMatchInvite
 /// client would generate one per tagged guest before the match exists.
 fn invite_externals(side_client_id: &str, names: &[&str]) -> models::CreateMatchInviteInput {
     models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: vec![],
         invited_externals: names
@@ -254,6 +264,7 @@ fn invite_externals(side_client_id: &str, names: &[&str]) -> models::CreateMatch
 /// invitation into it credits the accepter's stats (a scheduled match wouldn't).
 fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::CreateMatchInput {
     models::CreateMatchInput {
+        tournament_id: None,
         name: "Completed Match".to_string(),
         description: "already played".to_string(),
         match_type: models::MatchType::Tennis,
@@ -261,6 +272,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         location: None,
         sides: vec![
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
@@ -269,6 +281,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 team_join_enabled: None,
             },
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
@@ -820,6 +833,7 @@ fn ad_hoc_side(
     max_players: Option<i32>,
 ) -> models::CreateMatchSideInput {
     models::CreateMatchSideInput {
+        tournament_squad: None,
         client_id: client_id.to_string(),
         team_id: None,
         name: name.map(str::to_string),
@@ -837,6 +851,7 @@ fn side_name_rule_match(
     side_a_players: &[&str],
 ) -> models::CreateMatchInput {
     models::CreateMatchInput {
+        tournament_id: None,
         name: "Test Match".to_string(),
         description: "A test match".to_string(),
         match_type,
@@ -1702,6 +1717,7 @@ async fn an_unassigned_roster_player_gets_no_stat_contribution() {
         completed_match(vec![
             invite_users("b", &[&opponent.profile.id]),
             models::CreateMatchInviteInput {
+                reserve_spot: None,
                 side_client_id: None,
                 invited_user_ids: vec![unassigned.profile.id.clone()],
                 invited_externals: vec![],
@@ -2409,6 +2425,36 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
     assert_eq!(found.name, "Test Match");
 }
 
+/// A match that's been called off has nothing left to show, so it drops out
+/// of the feed once cancelled even though it already fanned out.
+#[tokio::test]
+async fn cancelling_a_match_removes_it_from_the_feed() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
+
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            status: Some(models::MatchStatus::Cancelled),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("cancel match");
+
+    assert!(
+        !feed_contains(&invitee_config, &created.id).await,
+        "a cancelled match must not be in the feed"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Feed fan-out scenarios (multi-user end-to-end)
 //
@@ -2906,6 +2952,7 @@ async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
     // Owner plays on side "a", opponent is invited (and accepts) onto side "b".
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
         invited_externals: vec![],
@@ -3030,6 +3077,7 @@ async fn match_with_a_confirmed_score() -> (
 
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
         invited_externals: vec![],
@@ -3224,6 +3272,7 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     // for that deliberately-deduped case).
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
         invited_externals: vec![],
@@ -3346,6 +3395,7 @@ async fn inviting_with_a_score_does_not_duplicate_the_invite_notification() {
     // invited (left pending — never accepted in this test) onto side "b".
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
         invited_externals: vec![],
@@ -3407,6 +3457,8 @@ async fn list_matches_accepts_filters() {
         None,
         Some(vec![models::MatchType::Tennis]),
         None,
+        None,
+        None,
         Some("2026-01-01T00:00:00Z".to_string()),
         Some("2026-12-31T00:00:00Z".to_string()),
         None,
@@ -3424,6 +3476,8 @@ async fn list_matches_rejects_inverted_date_range() {
     // `from` after `to` is a 400 with a specific message.
     let response = matches_get(
         &config,
+        None,
+        None,
         None,
         None,
         None,
@@ -3531,6 +3585,8 @@ async fn list_matches_filters_by_team() {
                 None,
                 None,
                 None,
+                None,
+                None,
             )
             .await
             .ok()?;
@@ -3547,6 +3603,8 @@ async fn list_matches_filters_by_team() {
         None,
         Some(vec![team_a.id.clone(), team_b.id.clone()]),
         Some(models::TeamMatchMode::All),
+        None,
+        None,
         None,
         None,
         None,
@@ -3577,6 +3635,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (all, with an unrelated team)");
@@ -3599,6 +3659,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (any, with an unrelated team)");
@@ -3613,6 +3675,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         Some(vec![unrelated_team.id.clone()]),
+        None,
+        None,
         None,
         None,
         None,
@@ -3769,15 +3833,15 @@ async fn creating_a_scheduled_match_in_the_past_is_rejected() {
     let (config, _owner) = new_user().await;
     let (_invitee_config, invitee) = new_user().await;
 
-    // No score => Scheduled, but the time is in the past.
+    // No score => Scheduled. More than the 24h grace period in the past.
     let mut input = create_match_input(&invitee.profile.id);
-    input.starts_at = iso_offset_hours(-24);
+    input.starts_at = iso_offset_hours(-25);
 
     let response = matches_post(&config, input).await;
     assert_status_with_content(
         response,
         reqwest::StatusCode::BAD_REQUEST,
-        "scheduled match's time must be in the future",
+        "scheduled match's time can't be more than 24 hours in the past",
     );
 }
 
@@ -4094,6 +4158,7 @@ async fn team_admin_can_manage_but_member_cannot() {
         logo_asset_id: None,
     };
     let no_invitees = || models::AddInvitationsInput {
+        reserve_spot: None,
         invited_user_ids: vec![],
         invited_external_names: vec![],
         side_id: None,
@@ -4157,6 +4222,7 @@ async fn team_admin_can_manage_but_member_cannot() {
         &admin_config,
         &team.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![],
             invited_external_names: vec!["Guest".to_string()],
             side_id: None,
@@ -4605,6 +4671,7 @@ async fn inviter_can_revoke_an_invitation() {
         &owner_config,
         &match_.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
@@ -4639,6 +4706,7 @@ async fn revoking_an_already_revoked_invitation_returns_not_found() {
         &owner_config,
         &match_.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
@@ -5496,6 +5564,7 @@ async fn invitations_endpoint_honors_requested_role() {
         &owner_config,
         &team.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
@@ -5594,7 +5663,7 @@ async fn deleted_teams_matches_show_deleted_team() {
         .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
         .expect("team side");
     assert_eq!(
-        side_before.name.as_deref(),
+        side_before.team_name.as_deref(),
         Some(team.name.as_str()),
         "resolves to the team's real name while it still exists"
     );
@@ -5611,7 +5680,11 @@ async fn deleted_teams_matches_show_deleted_team() {
         .iter()
         .find(|s| s.id == side_before.id)
         .expect("side is still there");
-    assert_eq!(side_after.name.as_deref(), Some("Deleted team"));
+    // `team_name`/`name` are None once the team is gone — "Deleted team" is a
+    // display fallback clients compute themselves, not something the server
+    // writes into either field (see MatchSide::name's doc comment).
+    assert!(side_after.team_name.is_none());
+    assert!(side_after.name.is_none());
     assert_eq!(
         side_after.team_id.as_deref(),
         Some(team.id.as_str()),
@@ -6672,6 +6745,7 @@ fn joinable_match_input(
     side_b_max: Option<i32>,
 ) -> models::CreateMatchInput {
     models::CreateMatchInput {
+        tournament_id: None,
         name: "Joinable Match".to_string(),
         description: "join-link test".to_string(),
         match_type: models::MatchType::Tennis,
@@ -6679,6 +6753,7 @@ fn joinable_match_input(
         location: None,
         sides: vec![
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
@@ -6687,6 +6762,7 @@ fn joinable_match_input(
                 team_join_enabled: None,
             },
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
@@ -6827,7 +6903,18 @@ async fn joining_a_match_twice_via_the_same_link_is_rejected() {
     )
     .await
     .expect("join via single-side link");
-    assert_eq!(joined.viewer_role, Some(models::MatchPlayerRole::Player));
+    // `viewer_role` is the match-authority concept (Owner/Admin/SideAdmin) —
+    // see `caller_match_authority_role`'s doc comment — so it's `None` for a
+    // plain joined player; the roster membership below is what this test
+    // actually cares about.
+    assert_eq!(joined.viewer_role, None);
+    assert!(
+        joined
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner.profile.id)),
+        "joiner is on the roster after joining"
+    );
     let roster_size = joined.players.len();
 
     // Same joiner, same link, again — rejected as a conflict rather than
@@ -7177,6 +7264,7 @@ async fn a_declined_invite_does_not_hold_a_spot() {
         &owner_config,
         &created.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: Some(side_b.clone()),
@@ -7239,6 +7327,7 @@ async fn accepting_an_invite_takes_the_last_spot_on_a_side() {
         &owner_config,
         &created.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: Some(side_b.clone()),
@@ -7440,6 +7529,7 @@ async fn accepting_an_invite_into_a_full_match_returns_a_conflict_and_stays_pend
         &owner_config,
         &created.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: Some(side_b.clone()),
@@ -7514,6 +7604,7 @@ async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
         &owner_config,
         &created.id,
         models::AddInvitationsInput {
+            reserve_spot: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: Some(side_b.clone()),
@@ -7810,6 +7901,7 @@ async fn a_self_served_participant_cannot_invite_or_manage_join_settings() {
             &participant_config,
             &created.id,
             models::AddInvitationsInput {
+                reserve_spot: None,
                 invited_user_ids: vec![invitee.profile.id],
                 invited_external_names: vec![],
                 side_id: None,
@@ -8216,6 +8308,7 @@ async fn team_with_accepted_member(
 /// eligible team member joining side "a" is a genuinely different player.
 fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
     models::CreateMatchInput {
+        tournament_id: None,
         name: "Team Joinable Match".to_string(),
         description: "team self-join test".to_string(),
         match_type: models::MatchType::Tennis,
@@ -8223,6 +8316,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
         location: None,
         sides: vec![
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "a".to_string(),
                 team_id: Some(team_id.to_string()),
                 name: None,
@@ -8231,6 +8325,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
                 team_join_enabled: Some(true),
             },
             models::CreateMatchSideInput {
+                tournament_squad: None,
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
@@ -8345,6 +8440,7 @@ async fn non_playing_owner_can_self_join_via_their_own_team_membership() {
     let created = matches_post(
         &creator_config,
         models::CreateMatchInput {
+            tournament_id: None,
             name: "Owner Self-Join".to_string(),
             description: "".to_string(),
             match_type: models::MatchType::Tennis,
@@ -8352,6 +8448,7 @@ async fn non_playing_owner_can_self_join_via_their_own_team_membership() {
             location: None,
             sides: vec![
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: None,
@@ -8360,6 +8457,7 @@ async fn non_playing_owner_can_self_join_via_their_own_team_membership() {
                     team_join_enabled: Some(true),
                 },
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "b".to_string(),
                     team_id: None,
                     name: Some("Side B".to_string()),
@@ -8417,6 +8515,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
     let created = matches_post(
         &creator_config,
         models::CreateMatchInput {
+            tournament_id: None,
             name: "No Self-Join".to_string(),
             description: "".to_string(),
             match_type: models::MatchType::Tennis,
@@ -8424,6 +8523,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
             location: None,
             sides: vec![
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: None,
@@ -8432,6 +8532,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
                     team_join_enabled: None,
                 },
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "b".to_string(),
                     team_id: None,
                     name: Some("Side B".to_string()),
@@ -8481,6 +8582,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
     let created = matches_post(
         &creator_config,
         models::CreateMatchInput {
+            tournament_id: None,
             name: "Intra-squad Self-Join".to_string(),
             description: "".to_string(),
             match_type: models::MatchType::Tennis,
@@ -8488,6 +8590,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
             location: None,
             sides: vec![
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side A".to_string()),
@@ -8496,6 +8599,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
                     team_join_enabled: Some(true),
                 },
                 models::CreateMatchSideInput {
+                    tournament_squad: None,
                     client_id: "b".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side B".to_string()),
@@ -8677,6 +8781,7 @@ async fn invitations_and_join_links_show_whether_the_match_is_ranked() {
 
     let mut input = ranked_match_input(&opponent.profile.id, None);
     input.invites.push(models::CreateMatchInviteInput {
+        reserve_spot: None,
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![],
         invited_externals: vec![models::CreateMatchExternalInviteInput {

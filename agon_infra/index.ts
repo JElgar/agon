@@ -1928,6 +1928,15 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							// too (see the OpenSearch section) — the one index the service
 							// itself needs, unlike the worker's shadow writes to all of them.
 							{ name: "OPENSEARCH_URL", value: opensearchUrl },
+							// Temporal connection, for `POST`/`GET /admin/opensearch/backfill`
+							// (admin::BackfillClient) to start/query the `BackfillOpenSearch`
+							// workflow that `agon-worker` actually runs. Same vars/values as
+							// `agon-worker`'s own Temporal connection below — unlike the
+							// worker, a failed connect here isn't fatal (see
+							// `admin::backfill`'s doc comment): those two endpoints just
+							// answer 503 instead.
+							{ name: "TEMPORAL_ADDRESS", value: "temporal-frontend:7233" },
+							{ name: "TEMPORAL_NAMESPACE", value: "default" },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },
@@ -1950,7 +1959,9 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 // the inline handlers — search indexing (Meilisearch), notification
 // generation, and FCM push delivery. Shares the aws-credentials secret (now
 // carrying the queue URL) plus the Meilisearch URL/key and the fcm-credentials
-// secret above. No ports / ingress — it only consumes SQS.
+// secret above. No ingress — it only consumes SQS — but it does serve the
+// Temporal SDK's own client/worker metrics (poll latency, task queue backlog,
+// etc.) as Prometheus text on port 9090, scraped below.
 // ───────────────────────────────────────────────────────────────────────────
 const workerAppLabels = { app: "agon-worker" };
 new k8s.apps.v1.Deployment("agon-worker-deployment", {
@@ -1965,6 +1976,7 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 					{
 						name: "agon-worker",
 						image: config.get("agonWorkerImage"),
+						ports: [{ name: "metrics", containerPort: 9090 }],
 						// AWS creds + table + queue URL come from the shared secret.
 						envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
 						env: [
@@ -2018,6 +2030,24 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 		},
 	},
 }, { provider: k8sProvider });
+
+const workerMetricsService = new k8s.core.v1.Service("agon-worker-metrics", {
+	metadata: { name: "agon-worker-metrics" },
+	spec: {
+		selector: workerAppLabels,
+		ports: [{ name: "metrics", port: 9090, targetPort: "metrics" }],
+	},
+}, { provider: k8sProvider });
+
+new k8s.apiextensions.CustomResource("agon-worker-servicemonitor", {
+	apiVersion: "monitoring.coreos.com/v1",
+	kind: "ServiceMonitor",
+	metadata: { name: "agon-worker", namespace: "default" },
+	spec: {
+		selector: { matchLabels: workerAppLabels },
+		endpoints: [{ port: "metrics", interval: "30s" }],
+	},
+}, { provider: k8sProvider, dependsOn: [kubePrometheusStack, workerMetricsService] });
 
 const uiAppLabels = { app: "agon-ui" };
 new k8s.apps.v1.Deployment("agon-ui-deployment", {

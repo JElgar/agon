@@ -14,8 +14,10 @@ export interface HowItCountsProps {
   sport: MatchType
   ranked: boolean
   onChange: (ranked: boolean) => void
-  /** True while the create flow is building a recurring series, which can't
-   *  be ranked — `POST /match-series` has no `ranked` field at all. */
+  /** True while the create flow is building a recurring series. The choice
+   *  itself is the same one, and `POST /match-series` takes it — what
+   *  changes is that it is answered once for every occurrence the series
+   *  will ever generate, which is worth saying out loud. */
   seriesMode: boolean
   /** The organiser's own published rating on this sport's ladder, if any. */
   rating?: LadderRating
@@ -59,19 +61,6 @@ export function HowItCounts({
 }: HowItCountsProps) {
   const ladder = sportLabel(sport).toLowerCase()
 
-  if (seriesMode) {
-    return (
-      <FormSection title="How it counts">
-        <div className={cn(CARD, 'gap-1.5')}>
-          <span className="text-sm font-semibold">Repeating matches are friendly</span>
-          <span className="text-[13px] text-muted-foreground">
-            A series can't be created ranked yet, so its matches are friendlies.
-          </span>
-        </div>
-      </FormSection>
-    )
-  }
-
   return (
     <FormSection title="How it counts">
       <Segmented
@@ -93,11 +82,19 @@ export function HowItCounts({
       />
       <span className="px-1 text-[13px] leading-snug text-muted-foreground">
         {ranked
-          ? `Moves every player's ${ladder} rating once the score is agreed. Playing is the agreement — there is no separate opt-in.`
-          : 'Counts in your stats and head-to-heads. No effect on ratings.'}
+          ? `Moves every player's ${ladder} rating once the score is agreed. Playing is the agreement — there is no separate opt-in.${
+              seriesMode ? ' Applies to every match in the series, including ones created months from now.' : ''
+            }`
+          : `Counts in your stats and head-to-heads. No effect on ratings.${
+              seriesMode
+                ? ' Set once for the whole series — afterwards you can switch a single match, but not the series.'
+                : ''
+            }`}
       </span>
       {ranked && guests.length > 0 && <GuestRefusal guests={guests} />}
-      {ranked && <YourStanding ladder={ladder} rating={rating} placement={placement} />}
+      {ranked && (
+        <YourStanding ladder={ladder} rating={rating} placement={placement} seriesMode={seriesMode} />
+      )}
     </FormSection>
   )
 }
@@ -144,15 +141,23 @@ function GuestRefusal({ guests }: { guests: string[] }) {
 }
 
 /** Where picking "ranked" leaves the organiser: their rating about to move,
- *  their placements about to advance, or their first one about to start. */
+ *  their placements about to advance, or their first one about to start.
+ *
+ *  A series is the same three cases, counted differently: it is not one
+ *  result but a standing fixture, so "this result will move it" becomes
+ *  "every one of them will", and placements it would finish rather than
+ *  advance by one. The organiser of a weekly ranked series is signing up to
+ *  finish placements whether or not they were thinking about them. */
 function YourStanding({
   ladder,
   rating,
   placement,
+  seriesMode,
 }: {
   ladder: string
   rating?: LadderRating
   placement?: LadderPlacement
+  seriesMode: boolean
 }) {
   if (rating) {
     return (
@@ -169,7 +174,9 @@ function YourStanding({
           </span>
         </div>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          This result will move it once the score is agreed.
+          {seriesMode
+            ? 'Every match in the series will move it, once each score is agreed.'
+            : 'This result will move it once the score is agreed.'}
         </p>
       </div>
     )
@@ -178,10 +185,13 @@ function YourStanding({
   if (!placement) {
     return (
       <div className={cn(CARD, 'gap-2')}>
-        <span className="text-sm font-bold">Your first ranked {ladder} match</span>
+        <span className="text-sm font-bold">
+          {seriesMode ? `Your first ranked ${ladder} matches` : `Your first ranked ${ladder} match`}
+        </span>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          This would start your placements. Your rating stays hidden until they're done — and
-          only you can see your own progress, never anyone else's.
+          {seriesMode
+            ? "This would start your placements, and every match in the series counts towards them. Your rating stays hidden until they're done — and only you can see your own progress, never anyone else's."
+            : "This would start your placements. Your rating stays hidden until they're done — and only you can see your own progress, never anyone else's."}
         </p>
       </div>
     )
@@ -199,9 +209,13 @@ function YourStanding({
       </div>
       <PlacementsBar played={placement.played} required={placement.required} pending />
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {last
-          ? `This would be the last of your ${placement.required}, so your ${ladder} rating starts showing on your profile once the score is agreed. `
-          : `This would be ${placement.played + 1} of your ${placement.required}. Your rating starts showing once they're done. `}
+        {seriesMode
+          ? last
+            ? `Its first match would be the last of your ${placement.required}, so your ${ladder} rating starts showing on your profile once that score is agreed. `
+            : `Each match in it counts towards the ${placementsLeft(placement)} you have left, and your rating starts showing once they're done. `
+          : last
+            ? `This would be the last of your ${placement.required}, so your ${ladder} rating starts showing on your profile once the score is agreed. `
+            : `This would be ${placement.played + 1} of your ${placement.required}. Your rating starts showing once they're done. `}
         Only you can see your own progress — never anyone else's.
       </p>
     </div>

@@ -47,6 +47,7 @@ import { TeamPage } from '@/pages/TeamPage'
 import { AdminLayout } from '@/pages/admin/AdminLayout'
 import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
 import { AdminMatchesPage } from '@/pages/admin/AdminMatchesPage'
+import { AdminOpenSearchPage } from '@/pages/admin/AdminOpenSearchPage'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
@@ -380,6 +381,7 @@ function AuthenticatedApp() {
             <Route index element={<Navigate to="/admin/users" replace />} />
             <Route path="users" element={<AdminUsersPage />} />
             <Route path="matches" element={<AdminMatchesPage />} />
+            <Route path="opensearch" element={<AdminOpenSearchPage />} />
           </Route>
         </Routes>
       </AdminRoute>

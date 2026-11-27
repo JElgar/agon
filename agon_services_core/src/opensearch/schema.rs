@@ -102,9 +102,18 @@ fn matches_body() -> Value {
 
 /// One flat row per player per confirmed match. See
 /// [`crate::opensearch::docs::PlayerStatDoc`].
+///
+/// v3: adds `series_id`, so a future series-scoped slice (the per-player
+/// analogue of `tournament_id`'s `LeaderboardScope::Tournament`) can filter
+/// on it. New field on an already-deployed strict mapping (v2's per-sport
+/// stats rework), so this needs its own version bump even though nothing
+/// else about the shape changed: `ensure_index` never updates an existing
+/// index's mapping, so skipping the bump would repeat the exact
+/// `strict_dynamic_mapping_exception` that `matches` hit before it got its
+/// own bump.
 pub const MATCH_STATS: IndexDef = IndexDef {
     name: "match_stats",
-    version: 2,
+    version: 3,
     body: match_stats_body,
 };
 
@@ -125,6 +134,7 @@ fn match_stats_body() -> Value {
                 "ranked": { "type": "boolean" },
                 "tournament_id": { "type": "keyword" },
                 "tournament_round": { "type": "integer" },
+                "series_id": { "type": "keyword" },
                 "starts_at": { "type": "date" },
                 "year": { "type": "integer" },
                 "played": { "type": "integer" },
@@ -192,7 +202,7 @@ mod tests {
     fn physical_and_alias_names_include_prefix_and_version() {
         assert_eq!(MATCHES.physical(""), "matches_v4");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
-        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v2");
+        assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v3");
     }
 
     #[test]

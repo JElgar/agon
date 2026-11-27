@@ -182,9 +182,9 @@ export function AdminMatchesPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
-                <TableHead>Sport</TableHead>
+                <TableHead className="hidden sm:table-cell">Sport</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Kick-off</TableHead>
+                <TableHead className="hidden sm:table-cell">Kick-off</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -209,14 +209,16 @@ export function AdminMatchesPage() {
               )}
               {matches.map((match) => (
                 <TableRow key={match.id}>
-                  <TableCell className="font-medium">{match.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="max-w-[10rem] truncate font-medium sm:max-w-none">
+                    {match.name}
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">
                     {sportLabel(match.sport as MatchType)}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {statusLabel(match.status)}
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">
                     {new Date(match.starts_at).toLocaleString()}
                   </TableCell>
                   <TableCell>

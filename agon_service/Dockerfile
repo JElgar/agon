@@ -18,6 +18,12 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+# The Temporal SDK deps (temporalio-protos / prost-build), pulled in for the
+# OpenSearch backfill admin API's Temporal client, compile protobuf at build
+# time, so `protoc` must be present in every stage that builds this crate's
+# deps or binary. Same as agon_worker/Dockerfile.
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
 COPY --from=planner /app/recipe.json recipe.json
 # Builds only agon_service's dependencies (and agon_core's, as its path dep) —
 # cached across builds as long as recipe.json is unchanged, i.e. as long as no

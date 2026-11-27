@@ -71,8 +71,19 @@ pub fn search_query(filters: MatchFilters, offset: u32, size: u32) -> Value {
         filter.push(json!({ "range": { "starts_at": range } }));
     }
     let must = match q.map(str::trim).filter(|q| !q.is_empty()) {
+        // `fuzziness` on `bool_prefix` covers every word but the last (which is
+        // only prefix-matched), so the plain fuzzy `match` catches a typo in a
+        // fully typed last word.
         Some(q) => vec![json!({
-            "multi_match": { "query": q, "type": "bool_prefix", "fields": ["name"] }
+            "bool": {
+                "should": [
+                    { "multi_match": {
+                        "query": q, "type": "bool_prefix", "fields": ["name"], "fuzziness": "AUTO"
+                    } },
+                    { "match": { "name": { "query": q, "fuzziness": "AUTO" } } }
+                ],
+                "minimum_should_match": 1
+            }
         })],
         None => Vec::new(),
     };
@@ -152,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn non_empty_query_matches_name_as_a_prefix() {
+    fn non_empty_query_matches_name_as_a_typo_tolerant_prefix() {
         let q = search_query(
             MatchFilters {
                 q: Some("derby"),
@@ -163,7 +174,15 @@ mod tests {
         );
         assert_eq!(
             q["query"]["bool"]["must"][0],
-            json!({ "multi_match": { "query": "derby", "type": "bool_prefix", "fields": ["name"] } })
+            json!({ "bool": {
+                "should": [
+                    { "multi_match": {
+                        "query": "derby", "type": "bool_prefix", "fields": ["name"], "fuzziness": "AUTO"
+                    } },
+                    { "match": { "name": { "query": "derby", "fuzziness": "AUTO" } } }
+                ],
+                "minimum_should_match": 1
+            } })
         );
         assert_eq!(q["from"], 40);
     }

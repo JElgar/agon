@@ -5,16 +5,14 @@
 //! passed as structs.
 
 use agon_services_core::dao::Dao;
-use agon_services_core::search::{Index, SearchClient};
 use serde::{Deserialize, Serialize};
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
 /// Shared dependencies available to every activity. Registered once with the
-/// worker; activities read `dao` / `search` off it.
+/// worker; activities read `dao` off it.
 pub struct AgonActivities {
     pub dao: Dao,
-    pub search: SearchClient,
 }
 
 /// One audience member: the viewer plus their capped "people you follow in
@@ -401,27 +399,6 @@ impl AgonActivities {
             .map_err(activity_err)
     }
 
-    /// Ensure a match is present in the search index (idempotent upsert). Used at
-    /// the end of fan-out so a newly-created match is discoverable even before
-    /// the inline indexing stream event lands.
-    #[activity]
-    pub async fn index_match(
-        self: std::sync::Arc<Self>,
-        _ctx: ActivityContext,
-        match_id: String,
-    ) -> Result<(), ActivityError> {
-        match self.dao.get_match(&match_id).await.map_err(activity_err)? {
-            Some(agg) => {
-                let doc = crate::handlers::index::match_search_doc(&agg);
-                self.search
-                    .upsert(Index::Matches, &doc)
-                    .await
-                    .map_err(search_err)
-            }
-            None => Ok(()),
-        }
-    }
-
     /// Reconcile every participant's stat contribution for a match. Idempotent.
     /// Used by the accept saga so accepting an invite into an already-completed
     /// match credits the newly-linked player — a `PLAYER#` link alone doesn't
@@ -548,11 +525,6 @@ impl AgonActivities {
 /// activity retries per its retry policy). `DaoError` is a `std::error::Error`
 /// (thiserror), which `ActivityError` accepts via its blanket `From`.
 fn activity_err(err: agon_services_core::dao::error::DaoError) -> ActivityError {
-    ActivityError::from(err)
-}
-
-/// Same, for a Meilisearch error.
-fn search_err(err: agon_services_core::error::SearchError) -> ActivityError {
     ActivityError::from(err)
 }
 

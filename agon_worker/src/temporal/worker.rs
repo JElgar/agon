@@ -10,7 +10,6 @@ use std::sync::Arc;
 use agon_services_core::dao::Dao;
 use agon_services_core::opensearch::OpenSearchClient;
 use agon_services_core::opensearch::backfill_workflow::{BackfillActivities, BackfillOpenSearch};
-use agon_services_core::search::SearchClient;
 use temporalio_client::{
     Client, ClientOptions, Connection, envconfig::LoadClientConfigProfileOptions,
 };
@@ -41,7 +40,6 @@ const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9090";
 /// `main.rs`) the OpenSearch backfill's own activities.
 pub async fn run(
     dao: Dao,
-    search: SearchClient,
     opensearch: Option<OpenSearchClient>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let metrics_addr: SocketAddr = std::env::var(METRICS_ADDR_ENV)
@@ -73,10 +71,7 @@ pub async fn run(
     let client = Client::new(connection, client_options)?;
 
     let mut worker_options = WorkerOptions::new(TASK_QUEUE)
-        .register_activities(AgonActivities {
-            dao: dao.clone(),
-            search,
-        })
+        .register_activities(AgonActivities { dao: dao.clone() })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
         .register_workflow::<MaterializeSeries>()?

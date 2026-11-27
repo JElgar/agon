@@ -154,7 +154,7 @@ async fn main() {
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, search, backfill_opensearch).await {
+        if let Err(e) = temporal::worker::run(dao, backfill_opensearch).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };

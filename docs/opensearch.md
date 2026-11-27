@@ -1,6 +1,6 @@
 # OpenSearch: match, per-player stats and users store
 
-**Status: synced, with four read endpoints.** The worker keeps OpenSearch in
+**Status: synced, with five read endpoints.** The worker keeps OpenSearch in
 sync. `GET /teams/{id}/summary` and `GET /teams/{id}/leaderboard` read the
 match data (see [Reads](#reads)) — the UI doesn't call them yet; switch it
 over once the backfill has run. The whole admin panel's user resource —
@@ -18,14 +18,13 @@ here can be rebuilt from it at any time.
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
-- `open`/`open_has_space` are carried so a future `GET /matches` migration off
-  Meilisearch has them ready; nothing reads them from this index yet (today's
-  `GET /matches` still filters on Meilisearch's own `open`/`open_has_space`
-  fields). Migrating `GET /matches` itself also needs a `q` free-text
-  replacement and a nested-query rewrite of per-participant outcome
-  (Meilisearch's flat `winning/losing/drawing_participant_ids` have no
-  equivalent here — outcome lives per `sides[].outcome`), so it's being done
-  as its own follow-up.
+- `open`/`open_has_space` and the roster/outcome id lists (`roster_ids`,
+  `winning_/losing_/drawing_participant_ids`) exist for `GET /matches`.
+  `roster_ids` holds every player id and user id on the roster whatever the
+  invitation status (so the `participant` filter finds a match by either id),
+  while `participant_ids` is only account holders who took a spot. The outcome
+  lists let a hit report whether the queried participant won, lost or drew
+  without a second lookup.
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
 - The mappings are in `agon_services_core/src/opensearch/schema.rs`.
@@ -181,6 +180,7 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 |---|---|---|
 | `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /matches?q=&participant=&team_id=&team_match=&match_type=&status=&open=&open_has_space=&kind=&tournament_id=&year=&from=&to=&sort=&cursor=&limit=` (`agon_service/src/main.rs`) | `matches` | One filtered search (`agon_services_core::opensearch::matches::search_query`). `q` is a typo-tolerant name match: `bool_prefix` with `fuzziness: AUTO` (every word but the last is fuzzy, the last is a prefix) OR'd with a plain fuzzy `match` (a typo in a fully typed last word). `participant` is a term on `roster_ids`; `team_id` is a `terms` filter, or one `term` per team with `team_match=all` (head-to-head); `from`/`to` bound `starts_at`; newest first unless `sort=asc`, with `match_id` as the tie-break. Reads back only the ids (and, with `participant`, the outcome lists); the matches are hydrated from DynamoDB. Offset pagination. 503 without OpenSearch |
 | `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
 | `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |

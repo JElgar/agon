@@ -3977,7 +3977,7 @@ impl Api {
     async fn list_matches(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_services_core::search::SearchClient>,
+        Data(stats): Data<&crate::team_stats::StatsStore>,
         Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         /// Free-text query over match name / participants.
@@ -4018,6 +4018,14 @@ impl Api {
         /// open_has_space`'s doc comment on what this approximates. Ignored
         /// (not applied) unless `open` is also `true`.
         Query(open_has_space): Query<Option<bool>>,
+        /// Only matches of this kind (a team's friendlies, league fixtures,
+        /// squad games, ...).
+        Query(kind): Query<Option<crate::team_stats::TeamMatchKind>>,
+        /// Only matches in this tournament (a league season or a cup).
+        Query(tournament_id): Query<Option<String>>,
+        /// Only matches starting in this calendar year (in the tournament's
+        /// timezone when it has one, else UTC).
+        Query(year): Query<Option<i32>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
@@ -4038,7 +4046,7 @@ impl Api {
             .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
             .await?;
 
-        // Match discovery is served by the search index (Meilisearch), NOT
+        // Match discovery is served by the OpenSearch `matches` index, NOT
         // DynamoDB — it supports arbitrary combinations of text / participant /
         // team / sport / date-range with date sorting. This is distinct from
         // GET /feed (the caller's social feed). Powers the profile "recent
@@ -4062,81 +4070,41 @@ impl Api {
             }
         };
 
-        // Build the Meilisearch filter from the supplied facets. The date range
-        // filters on `starts_at_ts` (a numeric Unix timestamp), because
-        // Meilisearch's `>=` / `<=` operators are numeric-only — they can't
-        // compare the ISO-8601 `starts_at` string (that raised
-        // `invalid_search_filter: invalid float literal`).
-        let mut clauses: Vec<String> = Vec::new();
-        if !match_types.is_empty() {
-            // Same OR-join pattern as `team_ids` below: any one of the
-            // requested sports matches.
-            let sport_clause = match_types
-                .iter()
-                .map(|mt| format!("sport = \"{}\"", match_type_tag(mt)))
-                .collect::<Vec<_>>()
-                .join(" OR ");
-            clauses.push(format!("({sport_clause})"));
-        }
-        if let Some(s) = &status {
-            clauses.push(format!("status = \"{}\"", match_status_str(s)));
-        }
-        if let Some(p) = &participant {
-            clauses.push(format!("participant_ids = \"{p}\""));
-        }
-        if !team_ids.is_empty() {
-            // `team_ids` is a filterable array attribute, so each `team_ids =
-            // "<id>"` clause independently asks "does this match's team_ids
-            // array contain <id>". ANDing several such clauses together
-            // therefore requires the array to contain *every* id — exactly
-            // head-to-head ("both these teams played in this match") — while
-            // ORing requires just one — "either of these teams played".
-            let op = match team_match {
-                Some(TeamMatchMode::All) => "AND",
-                Some(TeamMatchMode::Any) | None => "OR",
-            };
-            let team_clause = team_ids
-                .iter()
-                .map(|t| format!("team_ids = \"{t}\""))
-                .collect::<Vec<_>>()
-                .join(&format!(" {op} "));
-            // Parenthesize so this doesn't interact with the top-level `AND`
-            // joining it to the other facets below.
-            clauses.push(format!("({team_clause})"));
-        }
-        if let Some(from) = from {
-            clauses.push(format!("starts_at_ts >= {}", from.timestamp()));
-        }
-        if let Some(to) = to {
-            clauses.push(format!("starts_at_ts <= {}", to.timestamp()));
-        }
-        if let Some(open) = open {
-            clauses.push(format!("open = {open}"));
-            if open && open_has_space == Some(true) {
-                clauses.push("open_has_space = true".to_string());
-            }
-        }
-        let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
-
-        let sort_dir = match sort {
-            Some(SortOrder::Asc) => "asc",
-            Some(SortOrder::Desc) | None => "desc",
+        let os = crate::team_stats::store(stats)?;
+        let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+        let sports: Vec<&str> = match_types.iter().map(match_type_tag).collect();
+        let team_id_refs: Vec<&str> = team_ids.iter().map(String::as_str).collect();
+        let status_tag = status.as_ref().map(match_status_str);
+        let filters = agon_services_core::opensearch::matches::MatchFilters {
+            q: query.as_deref(),
+            sports: &sports,
+            status: status_tag,
+            from: from.as_deref(),
+            to: to.as_deref(),
+            participant: participant.as_deref(),
+            team_ids: &team_id_refs,
+            all_teams: matches!(team_match, Some(TeamMatchMode::All)),
+            kind: kind.map(crate::team_stats::kind_tag),
+            tournament_id: tournament_id.as_deref(),
+            year,
+            open,
+            open_has_space: open_has_space == Some(true),
+            ascending: matches!(sort, Some(SortOrder::Asc)),
         };
-        let q = agon_services_core::search::SearchQuery {
-            q: query.unwrap_or_default(),
-            filter,
-            sort: vec![format!("starts_at_ts:{sort_dir}")],
+        // `participant` doubles as the outcome subject: the same id scoping
+        // the filter is who each hit's won/lost/draw is resolved for.
+        let (hits, total) = agon_services_core::opensearch::matches::search_matches(
+            os,
+            filters,
             offset,
-            limit: page_limit(limit),
-        };
-        // `participant` doubles as the outcome subject: the same id already
-        // scoping the filter is who `search_matches` resolves won/lost/draw
-        // for, off the same hit — no second lookup.
-        let hits = search
-            .search_matches(&q, participant.as_deref())
-            .await
-            .map_err(search_internal)?;
-        let match_ids: Vec<String> = hits.items.iter().map(|h| h.id.clone()).collect();
+            page_limit(limit),
+        )
+        .await
+        .map_err(opensearch_internal)?;
+        let consumed = offset.saturating_add(hits.len() as u32);
+        let next_offset = ((consumed as u64) < total).then_some(consumed);
+        let match_ids: Vec<String> = hits.iter().map(|h| h.row.match_id.clone()).collect();
 
         // Hydrate each match's meta + sides (never players — search results
         // don't render the full roster, see `SearchMatch`) and this caller's
@@ -4169,10 +4137,10 @@ impl Api {
         let tournaments =
             tournaments_for_matches(dao, summaries.values().map(|s| &s.match_)).await?;
 
-        let mut items: Vec<SearchMatch> = Vec::with_capacity(hits.items.len());
-        for hit in &hits.items {
-            if let Some(summary) = summaries.get(&hit.id) {
-                let i_liked = liked.contains(&hit.id);
+        let mut items: Vec<SearchMatch> = Vec::with_capacity(hits.len());
+        for hit in &hits {
+            if let Some(summary) = summaries.get(&hit.row.match_id) {
+                let i_liked = liked.contains(&hit.row.match_id);
                 let mut m = search_match_from_records(
                     &summary.match_,
                     &summary.sides,
@@ -4200,7 +4168,7 @@ impl Api {
 
         Ok(ListMatchesResponse::Matches(Json(MatchPage {
             items,
-            next_cursor: search_cursor(hits.next_offset),
+            next_cursor: search_cursor(next_offset),
         })))
     }
 

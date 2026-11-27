@@ -137,6 +137,20 @@ pub struct MatchDoc {
     pub year: Option<i32>,
     pub team_ids: Vec<String>,
     pub participant_ids: Vec<String>,
+    /// Every id on the match's roster, whatever the invitation status: each
+    /// player's stable player id and, when they have an account, their user
+    /// id. Unlike `participant_ids` (account holders who took a spot), this
+    /// still includes pending and declined invitees and people without an
+    /// account, so the `participant` filter of `GET /matches` finds a match
+    /// by either id.
+    pub roster_ids: Vec<String>,
+    /// The `roster_ids` of players on the winning side. All three outcome
+    /// lists are empty until the score is confirmed (a missing result, not
+    /// a draw), and a player with no side is in none of them.
+    pub winning_participant_ids: Vec<String>,
+    pub losing_participant_ids: Vec<String>,
+    /// Filled only when the confirmed score has no winning side.
+    pub drawing_participant_ids: Vec<String>,
     pub confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winner_side_id: Option<String>,
@@ -398,6 +412,23 @@ pub fn build_match_docs(
         .into_iter()
         .collect();
 
+    let mut roster_ids = BTreeSet::new();
+    let mut winning = BTreeSet::new();
+    let mut losing = BTreeSet::new();
+    let mut drawing = BTreeSet::new();
+    for p in &agg.players {
+        let ids = std::iter::once(p.player_id.as_str()).chain(p.user_id.as_deref());
+        roster_ids.extend(ids.clone().map(str::to_string));
+        if let (Some(side), true) = (p.side_id.as_deref(), confirmed.is_some()) {
+            let bucket = match winner.as_deref() {
+                Some(w) if w == side => &mut winning,
+                Some(_) => &mut losing,
+                None => &mut drawing,
+            };
+            bucket.extend(ids.map(str::to_string));
+        }
+    }
+
     let match_doc = MatchDoc {
         match_id: m.id.clone(),
         name: m.name.clone(),
@@ -416,6 +447,10 @@ pub fn build_match_docs(
         year,
         team_ids,
         participant_ids,
+        roster_ids: roster_ids.into_iter().collect(),
+        winning_participant_ids: winning.into_iter().collect(),
+        losing_participant_ids: losing.into_iter().collect(),
+        drawing_participant_ids: drawing.into_iter().collect(),
         confirmed: confirmed.is_some(),
         winner_side_id: winner.clone(),
         open: m.open_join.is_some(),
@@ -661,6 +696,60 @@ mod tests {
         let docs = build_match_docs(&b, None, "now");
         assert!(docs.match_doc.open);
         assert!(docs.match_doc.open_has_space);
+    }
+
+    #[test]
+    fn roster_and_outcome_ids_cover_every_player_id_and_user_id() {
+        let mut declined = player("p3", Some("u3"), "b");
+        declined.invitation = Some(EmbeddedInvitationRecord {
+            id: "inv".into(),
+            status: "declined".into(),
+            invited_by_user_id: "host".into(),
+            invited_at: "2026-11-01T00:00:00Z".into(),
+            responded_at: None,
+            kind: InvitationKindRecord::User {
+                invited_user_id: "u3".into(),
+            },
+            reserve_spot: false,
+        });
+        let players = vec![
+            player("p1", Some("u1"), "a"),
+            player("p2", None, "b"), // no account: only its player id
+            declined,
+        ];
+        let sides = || vec![side("a", Some("t")), side("b", Some("u"))];
+
+        let unconfirmed = build_match_docs(&agg(sides(), players.clone(), None), None, "now");
+        let m = &unconfirmed.match_doc;
+        assert_eq!(m.roster_ids, ["p1", "p2", "p3", "u1", "u3"]);
+        assert_eq!(m.participant_ids, ["u1"]);
+        assert!(m.winning_participant_ids.is_empty());
+        assert!(m.losing_participant_ids.is_empty());
+        assert!(m.drawing_participant_ids.is_empty());
+
+        let won = build_match_docs(
+            &agg(
+                sides(),
+                players.clone(),
+                Some((&[("a", 2), ("b", 1)], Some("a"))),
+            ),
+            None,
+            "now",
+        );
+        assert_eq!(won.match_doc.winning_participant_ids, ["p1", "u1"]);
+        assert_eq!(won.match_doc.losing_participant_ids, ["p2", "p3", "u3"]);
+        assert!(won.match_doc.drawing_participant_ids.is_empty());
+
+        let drawn = build_match_docs(
+            &agg(sides(), players, Some((&[("a", 1), ("b", 1)], None))),
+            None,
+            "now",
+        );
+        assert_eq!(
+            drawn.match_doc.drawing_participant_ids,
+            ["p1", "p2", "p3", "u1", "u3"]
+        );
+        assert!(drawn.match_doc.winning_participant_ids.is_empty());
     }
 
     #[test]

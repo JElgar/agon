@@ -262,21 +262,23 @@ impl AdminApi {
             }
         };
         let limit = page_limit(limit);
-        let sport = sport.as_ref().map(crate::mapping::match_type_tag);
+        let sports: Vec<&str> = sport.iter().map(crate::mapping::match_type_tag).collect();
         let status = status.as_ref().map(crate::mapping::match_status_str);
         let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let filters = agon_services_core::opensearch::matches::MatchFilters {
             q: query.as_deref(),
-            sport,
+            sports: &sports,
             status,
             from: from.as_deref(),
             to: to.as_deref(),
+            ..Default::default()
         };
-        let (rows, total) =
+        let (hits, total) =
             agon_services_core::opensearch::matches::search_matches(os, filters, offset, limit)
                 .await
                 .map_err(opensearch_internal)?;
+        let rows: Vec<_> = hits.into_iter().map(|h| h.row).collect();
 
         let consumed = offset.saturating_add(rows.len() as u32);
         let next_offset = ((consumed as u64) < total).then_some(consumed);

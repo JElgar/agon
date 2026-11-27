@@ -63,13 +63,28 @@ The same handler also runs on every user `#PROFILE` write, rebuilding that
 user's `users` document (`agon_services_core::opensearch::sync_user`) — just
 an index, no player rows or stale-row cleanup to do.
 
-A failure is logged (`opensearch: match/user sync failed`) and **not
-retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
-the team summary/leaderboard endpoints tolerate the same brief staleness
-every other async-indexed read in this app already does. Run the backfill to
-repair. **Revisit this before the UI switches to the team-stats read
-endpoints:** a missed write would then show as a stale record until the next
-change to that match.
+A failed sync doesn't fail the stream message — that would replay every other
+handler for the event (indexing, notifications, push, stats, tournament,
+rating), and during an OpenSearch outage it would push unrelated events into
+the main DLQ. Instead the target (a match or user id) is sent to its own SQS
+queue, **`agon-opensearch-repair`**, which the worker also consumes:
+- That queue's visibility timeout (10 minutes) and redrive policy
+  (`maxReceiveCount: 3`) are the retry — roughly 30 minutes of tolerance for
+  an OpenSearch blip before a target moves to `agon-opensearch-repair-dlq`.
+- Each attempt re-syncs from DynamoDB's *current* state
+  (`sync_match`/`sync_user`), so a late or duplicate attempt never writes
+  stale data.
+- Without `AGON_OPENSEARCH_REPAIR_QUEUE_URL` (local dev), a failed sync is
+  just logged, same as before this queue existed.
+
+Watch for `opensearch: sync failed` in the worker logs, and the
+`agon-opensearch-repair-dlq` queue's depth (`ApproximateNumberOfMessages`) —
+anything landing there means OpenSearch was unreachable for longer than the
+retry window and needs a look; run the backfill (`--match <id>` /
+`--resume`) to repair it once OpenSearch is healthy again. There's no
+Grafana alert wired to that depth yet (alerting is off for this stack —
+see `agon_infra`'s `kube-prometheus-stack` config); for now, watch it via
+the AWS console or `aws sqs get-queue-attributes`.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.

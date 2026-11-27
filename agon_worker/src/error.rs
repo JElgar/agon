@@ -47,6 +47,11 @@ pub enum WorkerError {
     #[error(transparent)]
     Push(#[from] PushError),
 
+    /// An OpenSearch sync failed (read from Dynamo or write to OpenSearch).
+    /// Usually transient → retry.
+    #[error(transparent)]
+    OpenSearchSync(#[from] agon_services_core::opensearch::SyncError),
+
     /// An SQS operation failed.
     #[error("sqs error: {0}")]
     Sqs(String),

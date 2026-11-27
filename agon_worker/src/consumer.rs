@@ -37,6 +37,9 @@ pub struct Consumer {
     push: Option<PushClient>,
     /// `None` when `OPENSEARCH_URL` is unset: the OpenSearch shadow write is off.
     opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
+    /// `None` when `AGON_OPENSEARCH_REPAIR_QUEUE_URL` is unset (e.g. local dev):
+    /// a failed sync is then just logged, same as before this queue existed.
+    opensearch_repair: Option<crate::opensearch_repair::RepairProducer>,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -58,6 +61,7 @@ impl Consumer {
             search,
             push,
             opensearch: None,
+            opensearch_repair: None,
             config: Arc::new(config),
             temporal: None,
         }
@@ -69,6 +73,15 @@ impl Consumer {
         client: agon_services_core::opensearch::OpenSearchClient,
     ) -> Self {
         self.opensearch = Some(client);
+        self
+    }
+
+    /// Turn on retrying failed OpenSearch syncs via the repair queue.
+    pub fn with_opensearch_repair(
+        mut self,
+        producer: crate::opensearch_repair::RepairProducer,
+    ) -> Self {
+        self.opensearch_repair = Some(producer);
         self
     }
 
@@ -174,7 +187,10 @@ impl Consumer {
             &self.dao,
             &self.search,
             self.push.as_ref(),
-            self.opensearch.as_ref(),
+            handlers::opensearch::Sinks {
+                opensearch: self.opensearch.as_ref(),
+                repair: self.opensearch_repair.as_ref(),
+            },
             self.config.ui_base_url.as_deref(),
             &event,
             &now,

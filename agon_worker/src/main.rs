@@ -18,6 +18,7 @@ mod consumer;
 mod error;
 mod event;
 mod handlers;
+mod opensearch_repair;
 mod temporal;
 
 use agon_services_core::dao::Dao;
@@ -95,6 +96,13 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
+    // Captured before `sqs`/`config` move into the main consumer below; used
+    // by the OpenSearch repair consumer, which is a second, independent poll
+    // loop over its own queue.
+    let repair_sqs = sqs.clone();
+    let opensearch_repair_queue_url = config.opensearch_repair_queue_url.clone();
+    let repair_config = std::sync::Arc::new(config.clone());
+
     let mut consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
 
     // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
@@ -105,6 +113,9 @@ async fn main() {
             tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
             None
         });
+    // Also handed to the repair consumer below, so it survives `with_opensearch`
+    // moving its own clone into the main consumer.
+    let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;
         for def in agon_services_core::opensearch::all_indices() {
@@ -116,11 +127,39 @@ async fn main() {
         }
         if ready {
             tracing::info!("opensearch shadow write enabled");
-            consumer = consumer.with_opensearch(os);
+            consumer = consumer.with_opensearch(os.clone());
+            opensearch_ready = Some(os);
         }
     } else {
         tracing::info!("OPENSEARCH_URL unset; opensearch shadow write disabled");
     }
+
+    // Retrying failed OpenSearch syncs: opt-in via AGON_OPENSEARCH_REPAIR_QUEUE_URL.
+    // Unset (e.g. local dev) just means a failed sync is logged, not retried —
+    // see `opensearch_repair`'s module docs.
+    let repair_consumer = match opensearch_repair_queue_url {
+        Some(queue_url) => {
+            consumer = consumer.with_opensearch_repair(opensearch_repair::RepairProducer::new(
+                repair_sqs.clone(),
+                queue_url.clone(),
+            ));
+            opensearch_ready.map(|os| {
+                opensearch_repair::RepairConsumer::new(
+                    repair_sqs,
+                    dao.clone(),
+                    os,
+                    queue_url,
+                    repair_config,
+                )
+            })
+        }
+        None => {
+            tracing::info!(
+                "AGON_OPENSEARCH_REPAIR_QUEUE_URL unset; opensearch repairs are logged, not retried"
+            );
+            None
+        }
+    };
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.
@@ -140,6 +179,7 @@ async fn main() {
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let events_shutdown = subscribe_shutdown(&shutdown_tx);
     let asset_shutdown = subscribe_shutdown(&shutdown_tx);
+    let repair_shutdown = subscribe_shutdown(&shutdown_tx);
     let signal_fut = async move {
         shutdown_signal().await;
         // Best-effort broadcast; receivers stop on the first (or a lagged) recv.
@@ -148,12 +188,25 @@ async fn main() {
 
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
+    // Resolves immediately (a no-op) if the repair queue isn't configured;
+    // the other futures keep the process alive regardless.
+    let repair_fut = async {
+        if let Some(repair_consumer) = repair_consumer {
+            repair_consumer.run(Box::pin(repair_shutdown)).await;
+        }
+    };
     let temporal_fut = async {
         if let Err(e) = temporal::worker::run(dao, search).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };
-    tokio::join!(signal_fut, consumer_fut, asset_fut, temporal_fut);
+    tokio::join!(
+        signal_fut,
+        consumer_fut,
+        asset_fut,
+        repair_fut,
+        temporal_fut
+    );
 
     tracing::info!("worker stopped");
 }

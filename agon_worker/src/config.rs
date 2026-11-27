@@ -16,6 +16,11 @@ pub struct Config {
     /// SQS queue URL for S3 asset-upload events, long-polled by the asset consumer
     /// (`AGON_ASSET_EVENTS_QUEUE_URL`).
     pub asset_events_queue_url: String,
+    /// SQS queue URL for retrying failed OpenSearch syncs
+    /// (`AGON_OPENSEARCH_REPAIR_QUEUE_URL`). Optional: unset (e.g. local dev)
+    /// just means a failed sync is logged rather than retried — see
+    /// `opensearch_repair`.
+    pub opensearch_repair_queue_url: Option<String>,
     /// CloudFront base URL used to build the canonical serving URL stored on an
     /// asset when it uploads (`AGON_ASSETS_CDN_URL`).
     pub assets_cdn_url: String,
@@ -53,6 +58,7 @@ impl Config {
             table_name: required("AGON_TABLE_NAME")?,
             events_queue_url: required("AGON_EVENTS_QUEUE_URL")?,
             asset_events_queue_url: required("AGON_ASSET_EVENTS_QUEUE_URL")?,
+            opensearch_repair_queue_url: env::var("AGON_OPENSEARCH_REPAIR_QUEUE_URL").ok(),
             assets_cdn_url: required("AGON_ASSETS_CDN_URL")?
                 .trim_end_matches('/')
                 .to_string(),

@@ -18,7 +18,6 @@ pub mod stats;
 pub mod tournament;
 
 use agon_services_core::dao::Dao;
-use agon_services_core::opensearch::OpenSearchClient;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -41,11 +40,16 @@ use agon_services_core::search::SearchClient;
 /// message in the DLQ rather than redelivering it). Running it last means a
 /// corrupt match is still indexed, notified and counted before the message
 /// stops being retried.
+///
+/// `opensearch` runs last of all and, unlike the rest, never fails this
+/// function: a sync failure is handed off to its own retry queue instead
+/// (`crate::opensearch_repair`), so it can't cause SQS to replay the handlers
+/// above.
 pub async fn route(
     dao: &Dao,
     search: &SearchClient,
     push: Option<&PushClient>,
-    opensearch: Option<&OpenSearchClient>,
+    opensearch: opensearch::Sinks<'_>,
     ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,
@@ -56,7 +60,6 @@ pub async fn route(
     stats::handle(dao, ev).await?;
     tournament::handle(dao, ev).await?;
     rating::handle(dao, ev, now).await?;
-    // Shadow write: never fails the message (see the handler's docs).
     opensearch::handle(dao, opensearch, ev, now).await?;
     Ok(())
 }

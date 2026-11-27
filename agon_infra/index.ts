@@ -825,6 +825,51 @@ new aws.iam.RolePolicy("agon-pipe-policy", {
 	}),
 });
 
+// ── OpenSearch repair queue: retry a failed sync, isolated from the events
+// queue ───────────────────────────────────────────────────────────────────
+// `handlers::opensearch` tries an inline OpenSearch sync on every match/user
+// change; on failure it sends the target here instead of failing the stream
+// message (which would replay every other handler for that event). This
+// queue's own redrive policy is the retry: a blip heals within a couple of
+// attempts, and anything OpenSearch can't recover from in ~30 minutes lands
+// in its DLQ for a human to look at, rather than endlessly retrying. The
+// worker is both producer and consumer.
+const opensearchRepairDlq = new aws.sqs.Queue("agon-opensearch-repair-dlq", {
+	name: `agon-opensearch-repair-dlq-${pulumi.getStack()}`,
+	messageRetentionSeconds: 1209600, // 14 days — max, for inspection.
+});
+
+const opensearchRepairQueue = new aws.sqs.Queue("agon-opensearch-repair", {
+	name: `agon-opensearch-repair-${pulumi.getStack()}`,
+	// Long enough to cover one sync attempt (a DynamoDB read plus an
+	// OpenSearch bulk write) with headroom; 3 attempts at this spacing is
+	// ~30 minutes of tolerance before a message moves to the DLQ.
+	visibilityTimeoutSeconds: 600,
+	messageRetentionSeconds: 345600, // 4 days.
+	redrivePolicy: pulumi.jsonStringify({
+		deadLetterTargetArn: opensearchRepairDlq.arn,
+		maxReceiveCount: 3,
+	}),
+});
+
+new aws.iam.UserPolicy("agon-app-opensearch-repair-sqs", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [{
+			Sid: "UseOpenSearchRepairQueue",
+			Effect: "Allow",
+			Action: [
+				"sqs:SendMessage",
+				"sqs:ReceiveMessage",
+				"sqs:DeleteMessage",
+				"sqs:GetQueueAttributes",
+			],
+			Resource: [opensearchRepairQueue.arn],
+		}],
+	}),
+});
+
 // The Pipe: stream source → SQS target, transforming each record into the
 // worker's envelope. The `event`/`pk`/`sk` values are strings (quoted); the
 // `old_image`/`new_image` values are whole DynamoDB item objects, so their
@@ -872,6 +917,7 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 		AGON_ASSETS_CDN_URL: assetsCdnUrl,
 		AGON_EVENTS_QUEUE_URL: eventsQueue.url,
 		AGON_ASSET_EVENTS_QUEUE_URL: assetEventsQueue.url,
+		AGON_OPENSEARCH_REPAIR_QUEUE_URL: opensearchRepairQueue.url,
 		// CloudFront signed-URL key pair for match-header serving. The service
 		// signs with the private half; the id names the public key CloudFront trusts.
 		AGON_CLOUDFRONT_KEY_PAIR_ID: assetPublicKey.id,

@@ -6,13 +6,17 @@
 //! On any write to a user's `#PROFILE`, rebuild their `users` document with
 //! [`agon_services_core::opensearch::sync_user`].
 //!
-//! **Resilience.** A failure here is logged and swallowed rather than failing
-//! the message: an OpenSearch outage must not push stream events into the DLQ
-//! or delay the handlers that matter today. The backfill
-//! (`agon_worker backfill-opensearch`) repairs anything missed. `GET
-//! /admin/stats` and the team summary/leaderboard endpoints tolerate the
-//! same brief staleness every other async-indexed read in this app already
-//! does.
+//! **Resilience.** A failed sync never fails this message: that would replay
+//! every other inline handler for this event (indexing, notifications, push,
+//! stats, tournament, rating), and during an OpenSearch outage it would push
+//! stream events into the main DLQ for a problem that has nothing to do with
+//! them. Instead the target is handed to [`crate::opensearch_repair`]'s
+//! [`RepairProducer`], which sends it to its own SQS queue
+//! (`agon-opensearch-repair`). That queue's native redrive policy — retry a
+//! few times, then its own DLQ — is the retry; see docs/opensearch.md. The
+//! backfill (`agon_worker backfill-opensearch`) is the last resort if that
+//! queue's retries are exhausted or a repair producer isn't configured
+//! (local dev without `AGON_OPENSEARCH_REPAIR_QUEUE_URL`).
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a
@@ -27,28 +31,34 @@ use agon_services_core::opensearch::{
 
 use crate::error::WorkerResult;
 use crate::event::{ChangeEvent, ChangeKind, Image};
+use crate::opensearch_repair::{OpenSearchSyncTarget, RepairProducer};
 
 /// `#META` attributes whose changes never affect an OpenSearch document.
 const NOISE_ATTRS: &[&str] = &["like_count", "comment_count", "live_seq", "live_tip_seq"];
 
-pub async fn handle(
-    dao: &Dao,
-    os: Option<&OpenSearchClient>,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    let Some(os) = os else {
+/// What the handler writes through: the OpenSearch client (`None` turns the
+/// handler off) and the repair producer a failed sync is handed to. Bundled
+/// together to keep `route` under clippy's argument limit.
+#[derive(Clone, Copy, Default)]
+pub struct Sinks<'a> {
+    pub opensearch: Option<&'a OpenSearchClient>,
+    pub repair: Option<&'a RepairProducer>,
+}
+
+pub async fn handle(dao: &Dao, sinks: Sinks<'_>, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
+    let (Some(os), repair) = (sinks.opensearch, sinks.repair) else {
         return Ok(());
     };
     match &ev.pk {
-        Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
-        Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,
+        Pk::Match(match_id) => handle_match(os, repair, dao, match_id, ev, now).await,
+        Pk::User(user_id) => handle_user(os, repair, dao, user_id, ev, now).await,
         _ => Ok(()),
     }
 }
 
 async fn handle_match(
     os: &OpenSearchClient,
+    repair: Option<&RepairProducer>,
     dao: &Dao,
     match_id: &str,
     ev: &ChangeEvent,
@@ -72,11 +82,12 @@ async fn handle_match(
             tracing::debug!(match_id = %match_id, "opensearch: match removed");
         }
         Err(e) => {
-            tracing::warn!(
-                match_id = %match_id,
-                error = %e,
-                "opensearch: match sync failed (not retried; the backfill repairs it)"
-            );
+            schedule_repair(
+                repair,
+                OpenSearchSyncTarget::Match(match_id.to_string()),
+                &e,
+            )
+            .await;
         }
     }
     Ok(())
@@ -84,6 +95,7 @@ async fn handle_match(
 
 async fn handle_user(
     os: &OpenSearchClient,
+    repair: Option<&RepairProducer>,
     dao: &Dao,
     user_id: &str,
     ev: &ChangeEvent,
@@ -101,14 +113,29 @@ async fn handle_user(
             tracing::debug!(user_id = %user_id, "opensearch: user removed");
         }
         Err(e) => {
-            tracing::warn!(
-                user_id = %user_id,
-                error = %e,
-                "opensearch: user sync failed (not retried; the backfill repairs it)"
-            );
+            schedule_repair(repair, OpenSearchSyncTarget::User(user_id.to_string()), &e).await;
         }
     }
     Ok(())
+}
+
+/// Hand a failed sync to the repair queue. Never returns an error: see the
+/// module doc's **Resilience** section.
+async fn schedule_repair(
+    repair: Option<&RepairProducer>,
+    target: OpenSearchSyncTarget,
+    error: &dyn std::fmt::Display,
+) {
+    let Some(repair) = repair else {
+        tracing::warn!(
+            ?target,
+            error = %error,
+            "opensearch: sync failed; no repair queue configured (run the backfill to repair)"
+        );
+        return;
+    };
+    tracing::warn!(?target, error = %error, "opensearch: sync failed");
+    repair.schedule(&target).await;
 }
 
 /// True when both images exist and differ only in [`NOISE_ATTRS`].

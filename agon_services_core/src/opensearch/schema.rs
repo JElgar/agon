@@ -53,7 +53,7 @@ fn settings() -> Value {
 /// One document per match. See [`crate::opensearch::docs::MatchDoc`].
 pub const MATCHES: IndexDef = IndexDef {
     name: "matches",
-    version: 3,
+    version: 4,
     body: matches_body,
 };
 
@@ -79,6 +79,8 @@ fn matches_body() -> Value {
                 "participant_ids": { "type": "keyword" },
                 "confirmed": { "type": "boolean" },
                 "winner_side_id": { "type": "keyword" },
+                "open": { "type": "boolean" },
+                "open_has_space": { "type": "boolean" },
                 "sides": {
                     "type": "nested",
                     "properties": {
@@ -188,7 +190,7 @@ mod tests {
 
     #[test]
     fn physical_and_alias_names_include_prefix_and_version() {
-        assert_eq!(MATCHES.physical(""), "matches_v3");
+        assert_eq!(MATCHES.physical(""), "matches_v4");
         assert_eq!(MATCHES.alias("staging_"), "staging_matches");
         assert_eq!(MATCH_STATS.physical("x_"), "x_match_stats_v2");
     }

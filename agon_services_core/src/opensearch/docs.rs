@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::dao::match_ops::MatchAggregate;
+use crate::dao::open_join::open_has_space;
 use crate::dao::records::{TournamentFormatRecord, TournamentRecord};
 use crate::sports::{MatchStatsRecord, SideResultRecord};
 
@@ -139,6 +140,15 @@ pub struct MatchDoc {
     pub confirmed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winner_side_id: Option<String>,
+    /// Whether this match has an open-join policy set at all (`Match.
+    /// open_join.is_some()`) — the same facet `GET /matches`' Meilisearch
+    /// doc carries, mirrored here for a future OpenSearch-backed version of
+    /// that discovery filter.
+    pub open: bool,
+    /// `open` and currently has room for another individual arrival — see
+    /// `crate::dao::open_join::open_has_space`'s doc comment on what this
+    /// approximates. Meaningless (always `false`) when `open` is `false`.
+    pub open_has_space: bool,
     pub sides: Vec<SideDoc>,
     pub indexed_at: String,
 }
@@ -405,6 +415,8 @@ pub fn build_match_docs(
         participant_ids,
         confirmed: confirmed.is_some(),
         winner_side_id: winner.clone(),
+        open: m.open_join.is_some(),
+        open_has_space: open_has_space(agg),
         sides,
         indexed_at: now.to_string(),
     };
@@ -614,6 +626,38 @@ mod tests {
                 .all(|s| s.outcome.is_none() && s.result == SideResultRecord::default())
         );
         assert_eq!(docs.match_doc.participant_ids, vec!["u1".to_string()]);
+    }
+
+    #[test]
+    fn open_and_open_has_space_mirror_the_matchs_open_join_policy() {
+        use crate::dao::records::{
+            OpenJoinAudienceRecord, OpenJoinPolicyRecord, OpenJoinScopeRecord,
+        };
+
+        let a = agg(
+            vec![side("a", Some("t")), side("b", Some("u"))],
+            vec![],
+            None,
+        );
+        let docs = build_match_docs(&a, None, "now");
+        assert!(!docs.match_doc.open);
+        assert!(!docs.match_doc.open_has_space);
+
+        let mut b = agg(
+            vec![side("a", Some("t")), side("b", Some("u"))],
+            vec![],
+            None,
+        );
+        b.match_.open_join = Some(OpenJoinScopeRecord::MatchWide(OpenJoinPolicyRecord {
+            audience: OpenJoinAudienceRecord::Individuals,
+            rules: Vec::new(),
+            requires_approval: false,
+            max_open_spots: None,
+        }));
+        b.sides[0].open_join_enabled = true;
+        let docs = build_match_docs(&b, None, "now");
+        assert!(docs.match_doc.open);
+        assert!(docs.match_doc.open_has_space);
     }
 
     #[test]

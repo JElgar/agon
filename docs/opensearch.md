@@ -14,10 +14,18 @@ here can be rebuilt from it at any time.
 
 | Index (read alias) | One document per | Used for |
 |---|---|---|
-| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
+| `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year, whether it has an open-join policy (`open`) and currently has room for another individual arrival (`open_has_space`, same approximation as `agon_services_core::dao::open_join::open_has_space`). Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
 | `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
+- `open`/`open_has_space` are carried so a future `GET /matches` migration off
+  Meilisearch has them ready; nothing reads them from this index yet (today's
+  `GET /matches` still filters on Meilisearch's own `open`/`open_has_space`
+  fields). Migrating `GET /matches` itself also needs a `q` free-text
+  replacement and a nested-query rewrite of per-participant outcome
+  (Meilisearch's flat `winning/losing/drawing_participant_ids` have no
+  equivalent here — outcome lives per `sides[].outcome`), so it's being done
+  as its own follow-up.
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
   unit tests.
 - The mappings are in `agon_services_core/src/opensearch/schema.rs`.

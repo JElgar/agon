@@ -4023,9 +4023,6 @@ impl Api {
         Query(kind): Query<Option<crate::team_stats::TeamMatchKind>>,
         /// Only matches in this tournament (a league season or a cup).
         Query(tournament_id): Query<Option<String>>,
-        /// Only matches starting in this calendar year (in the tournament's
-        /// timezone when it has one, else UTC).
-        Query(year): Query<Option<i32>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
@@ -4087,7 +4084,6 @@ impl Api {
             all_teams: matches!(team_match, Some(TeamMatchMode::All)),
             kind: kind.map(crate::team_stats::kind_tag),
             tournament_id: tournament_id.as_deref(),
-            year,
             open,
             open_has_space: open_has_space == Some(true),
             ascending: matches!(sort, Some(SortOrder::Asc)),

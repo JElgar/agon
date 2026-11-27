@@ -58,8 +58,6 @@ pub struct MatchFilters<'a> {
     /// `league`, `cup`, `friendly`, `squad` or `pickup`.
     pub kind: Option<&'a str>,
     pub tournament_id: Option<&'a str>,
-    /// Matches starting in this year (in the tournament's timezone, if any).
-    pub year: Option<i32>,
     /// Matches with (`true`) or without (`false`) an open-join policy.
     pub open: Option<bool>,
     /// With `open: Some(true)`, only matches that still have room for
@@ -84,7 +82,6 @@ pub fn search_query(filters: MatchFilters, offset: u32, size: u32) -> Value {
         all_teams,
         kind,
         tournament_id,
-        year,
         open,
         open_has_space,
         ascending,
@@ -124,9 +121,6 @@ pub fn search_query(filters: MatchFilters, offset: u32, size: u32) -> Value {
     }
     if let Some(t) = tournament_id {
         filter.push(json!({ "term": { "tournament_id": t } }));
-    }
-    if let Some(y) = year {
-        filter.push(json!({ "term": { "year": y } }));
     }
     if let Some(open) = open {
         filter.push(json!({ "term": { "open": open } }));
@@ -338,7 +332,6 @@ mod tests {
                 all_teams: true,
                 kind: Some("league"),
                 tournament_id: Some("t1"),
-                year: Some(2026),
                 open: Some(true),
                 open_has_space: true,
                 ascending: true,
@@ -354,7 +347,6 @@ mod tests {
             json!({ "term": { "team_ids": "b" } }),
             json!({ "term": { "kind": "league" } }),
             json!({ "term": { "tournament_id": "t1" } }),
-            json!({ "term": { "year": 2026 } }),
             json!({ "term": { "open": true } }),
             json!({ "term": { "open_has_space": true } }),
         ] {

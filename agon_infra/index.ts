@@ -1742,10 +1742,8 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 								name: "AGON_YOUTUBE_TOKEN_KEY",
 								value: agonYoutubeTokenKey,
 							},
-							// OpenSearch: `GET /admin/stats` reads the `users` index's
-							// count from here, and team summary/leaderboard reads use it
-							// too (see the OpenSearch section) — the one index the service
-							// itself needs, unlike the worker's shadow writes to all of them.
+							// OpenSearch: required. The search endpoints, stats reads and
+							// admin panel all read from here (see the OpenSearch section).
 							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 							// Temporal connection, for `POST`/`GET /admin/opensearch/backfill`
 							// (admin::BackfillClient) to start/query the `BackfillOpenSearch`
@@ -1827,7 +1825,7 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-worker" },
-							// OpenSearch shadow write (see the OpenSearch section).
+							// OpenSearch sync (see the OpenSearch section). Required.
 							{ name: "OPENSEARCH_URL", value: opensearchUrl },
 						],
 					},

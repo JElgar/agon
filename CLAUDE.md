@@ -100,7 +100,7 @@ make generate-schema  # Generates schema.json and rebuilds openapi_client
 Required environment variables (see `.env.example`):
 - `AGON_TABLE_NAME`: DynamoDB table name (default `agon`)
 - `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`: AWS credentials for DynamoDB
-- `OPENSEARCH_URL`: OpenSearch connection (search endpoints answer 503 without it)
+- `OPENSEARCH_URL`: OpenSearch connection; required, `agon_service` and `agon_worker` refuse to start without it
 - `JWT_SECRET`: Secret key for JWT validation
 - `AGON_SERVICE_URL`: Service URL for tests
 

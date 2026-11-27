@@ -127,10 +127,6 @@ fn admin_user_from_record(record: &dao::records::UserRecord) -> models::User {
 enum GetStatsResponse {
     #[oai(status = 200)]
     Stats(Json<models::Stats>),
-
-    /// `OPENSEARCH_URL` isn't set on this deployment.
-    #[oai(status = 503)]
-    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -141,10 +137,6 @@ enum ListUsersResponse {
     /// The `cursor` query parameter isn't a valid offset.
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
-
-    /// `OPENSEARCH_URL` isn't set on this deployment.
-    #[oai(status = 503)]
-    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -155,10 +147,6 @@ enum ListMatchesResponse {
     /// The `cursor` query parameter isn't a valid offset.
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
-
-    /// `OPENSEARCH_URL` isn't set on this deployment.
-    #[oai(status = 503)]
-    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -188,7 +176,7 @@ enum StartBackfillResponse {
     #[oai(status = 409)]
     AlreadyRunning(PlainText<String>),
 
-    /// `OPENSEARCH_URL` isn't set on this deployment.
+    /// Temporal isn't reachable on this deployment.
     #[oai(status = 503)]
     NotConfigured(PlainText<String>),
 }
@@ -210,11 +198,7 @@ impl AdminApi {
         &self,
         Data(stats): Data<&crate::team_stats::StatsStore>,
     ) -> Result<GetStatsResponse> {
-        let Some(os) = &stats.0 else {
-            return Ok(GetStatsResponse::NotConfigured(PlainText(
-                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
-            )));
-        };
+        let os = &stats.0;
         let total_users = os
             .count(&agon_services_core::opensearch::USERS.alias(os.prefix()))
             .await
@@ -253,11 +237,7 @@ impl AdminApi {
         Query(cursor): Query<Option<String>>,
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListMatchesResponse> {
-        let Some(os) = &stats.0 else {
-            return Ok(ListMatchesResponse::NotConfigured(PlainText(
-                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
-            )));
-        };
+        let os = &stats.0;
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
@@ -310,11 +290,7 @@ impl AdminApi {
         Query(cursor): Query<Option<String>>,
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListUsersResponse> {
-        let Some(os) = &stats.0 else {
-            return Ok(ListUsersResponse::NotConfigured(PlainText(
-                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
-            )));
-        };
+        let os = &stats.0;
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
@@ -421,15 +397,9 @@ impl AdminApi {
     #[oai(path = "/admin/opensearch/backfill", method = "post")]
     async fn start_opensearch_backfill(
         &self,
-        Data(stats): Data<&crate::team_stats::StatsStore>,
         Data(temporal): Data<&Option<BackfillClient>>,
         input: Json<models::StartBackfillInput>,
     ) -> Result<StartBackfillResponse> {
-        if stats.0.is_none() {
-            return Ok(StartBackfillResponse::NotConfigured(PlainText(
-                "stats are not configured on this deployment (OPENSEARCH_URL is unset)".into(),
-            )));
-        }
         let Some(temporal) = temporal else {
             return Ok(StartBackfillResponse::NotConfigured(PlainText(
                 "Temporal is not reachable on this deployment".into(),

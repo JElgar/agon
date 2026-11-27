@@ -8,9 +8,8 @@
 //! through [`user_stats`]; the admin panel's `GET /admin/stats`,
 //! `GET /admin/users` and `GET /admin/matches` read the `users`/`matches`
 //! indices through [`client::OpenSearchClient::count`],
-//! [`users::search_users`] and [`matches::search_matches`]. All report 503
-//! while `OPENSEARCH_URL` is unset, same convention as the other optional
-//! integrations.
+//! [`users::search_users`] and [`matches::search_matches`]. OpenSearch is required: both binaries
+//! refuse to start while `OPENSEARCH_URL` is unset.
 //!
 //! Four indices (see [`schema`]):
 //!

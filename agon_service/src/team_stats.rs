@@ -33,10 +33,10 @@ use crate::{
     AuthSchema, ConfirmedScore, MatchType, Photo, SportMatchStats, SportSideResult, require_uid,
 };
 
-/// The OpenSearch client, if `OPENSEARCH_URL` is set. Without it these
-/// endpoints answer 503.
+/// The OpenSearch client the search, stats and admin endpoints read. The
+/// service refuses to start without `OPENSEARCH_URL`.
 #[derive(Clone)]
-pub struct StatsStore(pub Option<OpenSearchClient>);
+pub struct StatsStore(pub OpenSearchClient);
 
 /// How many results `recent_results` covers.
 const RECENT_RESULTS: u32 = 10;
@@ -393,13 +393,8 @@ fn scope_of(scope: TeamLeaderboardScope, tournament_id: Option<&str>) -> Leaderb
     }
 }
 
-pub(crate) fn store(store: &StatsStore) -> Result<&OpenSearchClient> {
-    store.0.as_ref().ok_or_else(|| {
-        poem::Error::from_string(
-            "team stats are not available (OPENSEARCH_URL is not set)",
-            StatusCode::SERVICE_UNAVAILABLE,
-        )
-    })
+pub(crate) fn store(store: &StatsStore) -> &OpenSearchClient {
+    &store.0
 }
 
 pub(crate) fn stats_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
@@ -436,7 +431,7 @@ impl TeamStatsApi {
         Query(year): Query<Option<i32>>,
     ) -> Result<TeamSummaryResponse> {
         require_uid(dao, &jwt).await?;
-        let os = store(stats)?;
+        let os = store(stats);
         if dao
             .get_team_meta(&team_id)
             .await
@@ -548,7 +543,7 @@ impl TeamStatsApi {
         Query(year): Query<Option<i32>>,
     ) -> Result<TeamLeaderboardResponse> {
         let uid = require_uid(dao, &jwt).await?;
-        let os = store(stats)?;
+        let os = store(stats);
         if dao
             .get_team_meta(&team_id)
             .await

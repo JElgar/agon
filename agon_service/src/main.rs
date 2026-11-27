@@ -3756,7 +3756,7 @@ impl Api {
         // hydrate full profiles from DynamoDB (the index stores only a few
         // fields). This response is a plain list (no cursor), so we return one
         // page at the default limit. Never matches on email.
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let (ids, _total) = agon_services_core::opensearch::search_users(
             os,
             Some(&query),
@@ -4067,7 +4067,7 @@ impl Api {
             }
         };
 
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let sports: Vec<&str> = match_types.iter().map(match_type_tag).collect();
@@ -8709,7 +8709,7 @@ impl Api {
             }
         };
         let limit = page_limit(limit);
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let (ids, total) =
             agon_services_core::opensearch::search_teams(os, Some(&query), offset, limit)
                 .await
@@ -14067,12 +14067,12 @@ async fn main() {
             // OpenSearch, for the search endpoints (matches, users, teams),
             // the team/user stats reads and the admin panel. Indexes are kept
             // in sync by the async worker; the API only queries them and
-            // hydrates results from DynamoDB. Optional: without OPENSEARCH_URL
-            // those endpoints answer 503 and nothing else changes.
+            // hydrates results from DynamoDB. Required: the service refuses
+            // to start without valid OpenSearch settings.
             let stats_store = team_stats::StatsStore(
                 agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
-                    error!("invalid OpenSearch settings; team/admin stats disabled: {e}");
-                    None
+                    error!("OpenSearch is required, refusing to start: {e}");
+                    std::process::exit(1);
                 }),
             );
 

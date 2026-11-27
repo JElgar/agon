@@ -179,11 +179,7 @@ pub async fn run(
     on_progress: std::sync::Arc<dyn Fn(BackfillProgress) + Send + Sync>,
 ) -> i32 {
     let os = match OpenSearchClient::from_env() {
-        Ok(Some(os)) => os,
-        Ok(None) => {
-            tracing::error!("OPENSEARCH_URL is not set; nothing to backfill into");
-            return 2;
-        }
+        Ok(os) => os,
         Err(e) => {
             tracing::error!(error = %e, "invalid OpenSearch settings");
             return 2;

@@ -42,7 +42,7 @@ use agon_services_core::push::PushClient;
 pub async fn route(
     dao: &Dao,
     push: Option<&PushClient>,
-    opensearch: Option<&OpenSearchClient>,
+    opensearch: &OpenSearchClient,
     ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,

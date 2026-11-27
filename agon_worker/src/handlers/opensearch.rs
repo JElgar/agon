@@ -1,4 +1,4 @@
-//! Inline handler: shadow-write match and user changes to OpenSearch.
+//! Inline handler: sync match, user and team changes to OpenSearch.
 //!
 //! On any write to a match's `#META` (score, sides, status, date, ...) or to its
 //! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
@@ -35,13 +35,10 @@ const NOISE_ATTRS: &[&str] = &["like_count", "comment_count", "live_seq", "live_
 
 pub async fn handle(
     dao: &Dao,
-    os: Option<&OpenSearchClient>,
+    os: &OpenSearchClient,
     ev: &ChangeEvent,
     now: &str,
 ) -> WorkerResult<()> {
-    let Some(os) = os else {
-        return Ok(());
-    };
     match &ev.pk {
         Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
         Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,

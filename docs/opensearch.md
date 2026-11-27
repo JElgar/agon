@@ -15,7 +15,7 @@ here can be rebuilt from it at any time.
 | Index (read alias) | One document per | Used for |
 |---|---|---|
 | `matches` | match, any status: kind, tournament with round (and bracket slot for cups), year. Each side is nested: team, roster (account holders), outcome, its scoreline under `sides.result.<sport>` (football goals for/against, cricket runs and wickets for/against), and the sport's own counters under `sides.stats.<sport>` (its players' `match_stats.stats` summed; football's `clean_sheets` is the side's, once) | team records, scorelines for/against, recent results, head-to-head, match lists, per-side sport breakdowns (cricket wickets, football assists, ...) |
-| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament and round, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
+| `match_stats` | player per **confirmed** match: team, opponent teams, kind, tournament, round and series, year, sport, ranked, W/D/L, the sport's own counters under `stats.<sport>` | leaderboards, top performers, any per-player slice |
 | `users` | user: id, name (text), email (text), creation time, admin flag | the admin panel's total-users count and its user search/browse (`GET /admin/stats`, `GET /admin/users`, `agon_service/src/admin/mod.rs`) |
 
 - The document builders are in `agon_services_core/src/opensearch/docs.rs`, with their
@@ -179,20 +179,26 @@ logged with their ids; fix the cause and re-run.
 
 ## Reads
 
-`agon_services_core::opensearch::team_stats` and `::users` hold the typed
-queries. Each is a pure query builder plus a pure response parser,
-unit-tested without a cluster; `team_stats`'s also run against a real
+`agon_services_core::opensearch::team_stats`, `::user_stats` and `::users`
+hold the typed queries. Each is a pure query builder plus a pure response
+parser, unit-tested without a cluster; `team_stats`'s also run against a real
 cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 
 | Endpoint | Index | What it reads |
 |---|---|---|
 | `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
+| `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
 | `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | A `multi_match` over `name`/`email` (prefix on the last term, `bool_prefix`), or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 
-Only confirmed matches count. Squad games are left out of `record`, form and
-last 10, but count on the leaderboard's `all` scope. The API pod gets
+Only confirmed matches count. Squad games are left out of a team's `record`,
+form and last 10, but count on the leaderboard's `all` scope. For a player's
+own summary, squad games keep a real W/D/L (they were only ever on one of the
+two sides), but are still kept out of `record`/form/last10, same convention
+as the team version. There's no per-player leaderboard — a leaderboard is
+inherently team-scoped — and no personal goals-for/against or clean sheets,
+since those are side-level, not individually attributable. The API pod gets
 `OPENSEARCH_URL` like the worker; without it every one of these answers 503.
 
 ## Changing the schema
@@ -201,7 +207,16 @@ OpenSearch can't change a field's type in place, so every mapping change is a
 new index version:
 
 1. Edit the mapping in `schema.rs` and **bump that index's `version`**. Update
-   the builder in `docs.rs` to match.
+   the builder in `docs.rs` to match. Bump it even for a field that's "new,
+   nothing's deployed yet" — that's only true for a fresh environment. On
+   staging, `tournament_round`/`tournament_slot` were added to `matches`'
+   mapping without a version bump; `matches_v1` already existed there from
+   before, `ensure_index` never updates an existing index's mapping, and the
+   next tournament match indexed hit `strict_dynamic_mapping_exception`.
+   `matches` has since moved on to v3 (the per-sport `sides.result`/`sides.stats`
+   rework) and `match_stats` to v3 (adding `series_id`, the per-player
+   analogue of `tournament_id`, for a future series-scoped slice) — each a
+   version bump of its own for the same reason.
 2. Deploy the worker. On start it creates `<name>_v<new>` and live changes go
    there. The alias, and so the read endpoints, still point at the old
    version, which stops getting live changes. Reads are stale until step 3

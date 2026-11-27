@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type InfiniteData,
@@ -55,27 +56,23 @@ import {
 } from '@/lib/members'
 import { sportIcon, sportLabel } from '@/lib/sports'
 import { formatWinRate } from '@/lib/stats'
-import { teamRecord, teamSportRecords } from '@/lib/teamStats'
+import { headlineStat, teamRecord, teamSportRecords } from '@/lib/teamStats'
 
 type Team = components['schemas']['Team']
 type TeamMember = components['schemas']['TeamMember']
 type TeamMemberPage = components['schemas']['TeamMemberPage']
 type TeamRole = components['schemas']['TeamRole']
 type SearchMatch = components['schemas']['SearchMatch']
+type TeamSummary = components['schemas']['TeamSummary']
+type TeamLeaderboard = components['schemas']['TeamLeaderboard']
+type TeamOutcome = components['schemas']['TeamOutcome']
 
 /** Recent-activity matches to fetch/show, same limit as the profile page's. */
 const RECENT_LIMIT = 5
 /** Member page size. The API caps at 50; 20 matches its default. */
 const MEMBER_PAGE_SIZE = 20
-/**
- * Matches fetched to derive the "Team stats" banner and per-sport rows
- * (there's no team-stats endpoint — see `lib/teamStats.ts`). The API caps a
- * page at 50, so a team with more than 50 completed matches gets a record
- * based on only its most recent 50, not its full history — an accepted,
- * documented approximation (see the PR description), same kind of gap as
- * the sport-stats page's "no per-match annotation" one.
- */
-const TEAM_STATS_MATCH_LIMIT = 50
+/** Players shown in the "Top players" section. */
+const TOP_PLAYERS = 5
 
 /**
  * A team's page: logo/name/follower count, its member list, and its recent
@@ -146,17 +143,48 @@ export function TeamPage() {
     },
   })
 
-  // A separate, larger fetch (vs. `activityQuery`'s 5) purely to derive the
-  // stats banner/sport rows below from — see `TEAM_STATS_MATCH_LIMIT`.
-  const statsMatchesQuery = useQuery({
-    queryKey: ['team-stats-matches', teamId],
+  // Team stats come from the stats store (`GET /teams/{id}/summary`). The
+  // first call, with no sport, answers for the team's most-played sport and
+  // lists every sport it plays; each other sport is one more call. A failure
+  // (including 503 when the stats store isn't configured) just hides the
+  // section.
+  const summaryQuery = useQuery({
+    queryKey: ['team-summary', teamId],
     enabled: !!teamId,
-    queryFn: async (): Promise<SearchMatch[]> => {
-      const { data, error } = await fetchClient.GET('/matches', {
-        params: { query: { team_id: [teamId!], limit: TEAM_STATS_MATCH_LIMIT } },
+    retry: false,
+    queryFn: async (): Promise<TeamSummary> => {
+      const { data, error } = await fetchClient.GET('/teams/{team_id}/summary', {
+        params: { path: { team_id: teamId! } },
       })
       if (error || !data) throw new Error('Failed to load team stats')
-      return data.items
+      return data
+    },
+  })
+  const primarySport = summaryQuery.data?.sport
+  const otherSports = (summaryQuery.data?.sports ?? []).filter((s) => s !== primarySport)
+  const otherSummaryQueries = useQueries({
+    queries: otherSports.map((sport) => ({
+      queryKey: ['team-summary', teamId, sport],
+      retry: false,
+      queryFn: async (): Promise<TeamSummary> => {
+        const { data, error } = await fetchClient.GET('/teams/{team_id}/summary', {
+          params: { path: { team_id: teamId! }, query: { sport } },
+        })
+        if (error || !data) throw new Error('Failed to load team stats')
+        return data
+      },
+    })),
+  })
+  const leaderboardQuery = useQuery({
+    queryKey: ['team-leaderboard', teamId, primarySport],
+    enabled: !!teamId && !!primarySport,
+    retry: false,
+    queryFn: async (): Promise<TeamLeaderboard> => {
+      const { data, error } = await fetchClient.GET('/teams/{team_id}/leaderboard', {
+        params: { path: { team_id: teamId! }, query: { sport: primarySport! } },
+      })
+      if (error || !data) throw new Error('Failed to load leaderboard')
+      return data
     },
   })
 
@@ -195,9 +223,14 @@ export function TeamPage() {
   // fetched so far, with a "+" once there's a next page still to load.
   const memberCountLabel = `${members.length}${membersQuery.hasNextPage ? '+' : ''}`
 
-  const statsMatches = statsMatchesQuery.data ?? []
-  const record = teamRecord(statsMatches, team.id)
-  const sportRecords = teamSportRecords(statsMatches, team.id)
+  // Every sport's summary that has loaded; a sport whose call failed is
+  // just left out of the breakdown.
+  const summaries = [
+    ...(summaryQuery.data ? [summaryQuery.data] : []),
+    ...otherSummaryQueries.flatMap((q) => (q.data ? [q.data] : [])),
+  ]
+  const record = teamRecord(summaries)
+  const sportRecords = teamSportRecords(summaries)
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 md:max-w-3xl md:gap-8 lg:max-w-6xl">
@@ -332,11 +365,18 @@ export function TeamPage() {
           sit side by side (stats+members share a row, matches spans below —
           `lg:` widens to a 3-up row) instead of one long scrolling column. */}
       <div className="flex flex-col gap-6 md:grid md:grid-cols-2 md:items-start md:gap-6 lg:grid-cols-3">
-        <TeamStats
-          query={statsMatchesQuery}
-          record={record}
-          sportRecords={sportRecords}
-        />
+        <div className="flex flex-col gap-6">
+          <TeamStats
+            loading={summaryQuery.isLoading}
+            failed={summaryQuery.isError}
+            record={record}
+            sportRecords={sportRecords}
+            primary={summaryQuery.data}
+          />
+          {primarySport && leaderboardQuery.data && (
+            <TopPlayers leaderboard={leaderboardQuery.data} showSport={sportRecords.length > 1} />
+          )}
+        </div>
 
         <section className="flex flex-col gap-2.5">
           <h2 className="font-display text-lg font-bold">Members</h2>
@@ -360,22 +400,31 @@ export function TeamPage() {
 }
 
 interface TeamStatsProps {
-  query: ReturnType<typeof useQuery<SearchMatch[]>>
+  loading: boolean
+  failed: boolean
   record: ReturnType<typeof teamRecord>
   sportRecords: ReturnType<typeof teamSportRecords>
+  /** The most-played sport's summary, for its form. */
+  primary: TeamSummary | undefined
+}
+
+const OUTCOME_LETTER: Record<TeamOutcome, string> = { won: 'W', drawn: 'D', lost: 'L' }
+const OUTCOME_CLASS: Record<TeamOutcome, string> = {
+  won: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  drawn: 'bg-muted text-muted-foreground',
+  lost: 'bg-rose-500/15 text-rose-700 dark:text-rose-300',
 }
 
 /**
- * "Team stats" — a matches/wins/win-rate banner plus a per-sport progress-bar
- * breakdown, visually matching how the (separately redesigned) profile page
- * shows a user's own all-sports stats banner + per-sport rows. There's no
- * `StatBanner`/`SportProgressRow` primitive yet (this is the first team-stats
- * implementation), so it's built inline here from `StatTile` + `Card`; see
- * `lib/teamStats.ts` for how the numbers are derived (client-side from
- * recent matches, not a backend stats endpoint).
+ * "Team stats" — a matches/wins/win-rate banner, the last five results, and
+ * a per-sport progress-bar breakdown, visually matching how the profile page
+ * shows a user's own all-sports stats banner and per-sport rows. The numbers
+ * are the team's full history against other teams (league, cup and
+ * friendly; squad games have no W/D/L) from `GET /teams/{id}/summary` — see
+ * `lib/teamStats.ts`.
  */
-function TeamStats({ query, record, sportRecords }: TeamStatsProps) {
-  if (query.isLoading) {
+function TeamStats({ loading, failed, record, sportRecords, primary }: TeamStatsProps) {
+  if (loading) {
     return (
       <div className="flex flex-col gap-2.5">
         <div className="h-28 animate-pulse rounded-2xl bg-card" aria-hidden />
@@ -386,11 +435,12 @@ function TeamStats({ query, record, sportRecords }: TeamStatsProps) {
 
   // A failed stats fetch shouldn't block the rest of the page — just drop
   // the section rather than showing an error state for a non-critical one.
-  if (query.isError) return null
+  if (failed) return null
 
-  // No confirmed matches yet: nothing meaningful to show a record or
-  // breakdown for.
+  // No confirmed matches against other teams yet: nothing meaningful to show.
   if (record.matches === 0) return null
+
+  const form = (primary?.recent_results ?? []).slice(0, 5)
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -406,6 +456,25 @@ function TeamStats({ query, record, sportRecords }: TeamStatsProps) {
           label="Win rate"
         />
       </section>
+
+      {form.length > 0 && primary && (
+        <section aria-label="Form" className="flex items-center gap-2 px-1">
+          <span className="text-sm font-medium text-muted-foreground">
+            Form{sportRecords.length > 1 ? ` · ${sportLabel(primary.sport)}` : ''}
+          </span>
+          <ol className="flex gap-1">
+            {form.map((r) => (
+              <li
+                key={r.match_id}
+                title={`${r.name}${r.opponent?.name ? ` vs ${r.opponent.name}` : ''}`}
+                className={`flex size-7 items-center justify-center rounded-md text-xs font-bold ${OUTCOME_CLASS[r.outcome]}`}
+              >
+                {OUTCOME_LETTER[r.outcome]}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
 
       {sportRecords.length > 0 && (
         <section className="flex flex-col gap-1">
@@ -441,6 +510,69 @@ function TeamStats({ query, record, sportRecords }: TeamStatsProps) {
         </section>
       )}
     </div>
+  )
+}
+
+/**
+ * The team's top players in its most-played sport (`GET
+ * /teams/{id}/leaderboard`, every match for the team, squad games included):
+ * most appearances first, with the sport's headline counter. Anyone who
+ * played for the team without being a member is tagged as a ringer, and the
+ * viewer's own row is highlighted.
+ */
+function TopPlayers({
+  leaderboard,
+  showSport,
+}: {
+  leaderboard: TeamLeaderboard
+  showSport: boolean
+}) {
+  const rows = leaderboard.rows.slice(0, TOP_PLAYERS)
+  if (rows.length === 0) return null
+  return (
+    <section className="flex flex-col gap-1">
+      <h2 className="px-1 font-display text-lg font-bold">
+        Top players{showSport ? ` · ${sportLabel(leaderboard.sport)}` : ''}
+      </h2>
+      <Card className="flex flex-col divide-y overflow-hidden">
+        {rows.map((row, i) => {
+          const stat = headlineStat(leaderboard.sport, row.stats)
+          return (
+            <div
+              key={row.user_id}
+              className={`flex items-center gap-3 px-4 py-3 ${row.is_me ? 'bg-accent/50' : ''}`}
+            >
+              <span className="w-4 text-sm font-semibold text-muted-foreground tabular-nums">
+                {i + 1}
+              </span>
+              <Avatar name={row.name || 'Player'} imageUrl={row.profile_image?.image_url} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-semibold">
+                    {row.name || 'Deleted player'}
+                    {row.is_me ? ' (you)' : ''}
+                  </span>
+                  {!row.is_member && (
+                    <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      Ringer
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {row.played} {row.played === 1 ? 'game' : 'games'} · {row.won} won
+                </span>
+              </div>
+              {stat && (
+                <div className="text-right">
+                  <div className="text-base font-bold tabular-nums">{stat.value}</div>
+                  <div className="text-[11px] text-muted-foreground">{stat.label}</div>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </Card>
+    </section>
   )
 }
 

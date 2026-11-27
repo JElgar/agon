@@ -120,8 +120,8 @@ export function AdminUsersPage() {
                 <TableHead>Name</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Admin</TableHead>
-                <TableHead>Followers</TableHead>
-                <TableHead>Joined</TableHead>
+                <TableHead className="hidden sm:table-cell">Followers</TableHead>
+                <TableHead className="hidden sm:table-cell">Joined</TableHead>
                 <TableHead />
               </TableRow>
             </TableHeader>
@@ -146,8 +146,10 @@ export function AdminUsersPage() {
               )}
               {users.map((user) => (
                 <TableRow key={user.id}>
-                  <TableCell className="font-medium">{user.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="max-w-[6rem] truncate font-medium sm:max-w-none">
+                    {user.name}
+                  </TableCell>
+                  <TableCell className="max-w-[6rem] truncate text-muted-foreground sm:max-w-none">
                     {user.email}
                   </TableCell>
                   <TableCell>
@@ -155,8 +157,10 @@ export function AdminUsersPage() {
                       <ShieldCheck className="size-4 text-primary" />
                     )}
                   </TableCell>
-                  <TableCell>{user.follower_count}</TableCell>
-                  <TableCell className="text-muted-foreground">
+                  <TableCell className="hidden sm:table-cell">
+                    {user.follower_count}
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground sm:table-cell">
                     {new Date(user.created_at).toLocaleDateString()}
                   </TableCell>
                   <TableCell>

@@ -1,4 +1,4 @@
-import { ArrowLeft, Trophy, Users } from 'lucide-react'
+import { ArrowLeft, Database, Trophy, Users } from 'lucide-react'
 import { Link, NavLink, Outlet } from 'react-router-dom'
 import {
   Sidebar,
@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 const RESOURCES = [
   { to: '/admin/users', label: 'Users', icon: Users },
   { to: '/admin/matches', label: 'Matches', icon: Trophy },
+  { to: '/admin/opensearch', label: 'OpenSearch', icon: Database },
 ]
 
 /**

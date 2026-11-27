@@ -4,7 +4,8 @@
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
 //! the `agon_worker backfill-opensearch` command. A sync failure never fails
 //! a user-facing write. The team summary and leaderboard endpoints read the
-//! match data through [`team_stats`]; the admin panel's `GET /admin/stats`,
+//! match data through [`team_stats`]; a player's own summary reads it
+//! through [`user_stats`]; the admin panel's `GET /admin/stats`,
 //! `GET /admin/users` and `GET /admin/matches` read the `users`/`matches`
 //! indices through [`client::OpenSearchClient::count`],
 //! [`users::search_users`] and [`matches::search_matches`]. All report 503
@@ -14,12 +15,12 @@
 //! Three indices (see [`schema`]):
 //!
 //! - **`matches`**: one document per match, with each side nested (team,
-//!   roster, outcome, score, conceded). Team records, form and head-to-head
-//!   come from here.
+//!   roster, outcome, score, conceded). Team records, form, head-to-head and
+//!   next-match lookups come from here.
 //! - **`match_stats`**: one flat row per player per confirmed match, carrying
 //!   everything a leaderboard filters on (team, opponent, kind, tournament,
-//!   year, sport) plus that player's counters. Leaderboards and every
-//!   per-player slice come from here.
+//!   year, sport) plus that player's counters. Leaderboards, a player's own
+//!   record/form, and every other per-player slice come from here.
 //! - **`users`**: one document per user (id, name, email, creation time,
 //!   admin flag). Backs the admin panel's "total users" count and its
 //!   `GET /admin/users` search/browse — the whole admin panel is now
@@ -31,16 +32,19 @@
 //! schema change is: bump the version, deploy, run the backfill, which fills
 //! the new index and swaps the alias.
 //!
-//! Match/leaderboard reads go through [`team_stats`]; `users` reads go
-//! through [`users`] (search/browse) and a direct `_count` (the total
-//! figure), both querying the alias.
+//! Match/leaderboard reads go through [`team_stats`]; a player's own summary
+//! through [`user_stats`]; `users` reads go through [`users`] (search/browse)
+//! and a direct `_count` (the total figure) — all querying the alias.
 
+pub mod backfill;
+pub mod backfill_workflow;
 pub mod client;
 pub mod docs;
 pub mod matches;
 pub mod schema;
 pub mod sync;
 pub mod team_stats;
+pub mod user_stats;
 pub mod users;
 
 pub use client::{BulkOp, OpenSearchClient, OpenSearchError};

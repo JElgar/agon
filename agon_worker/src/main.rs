@@ -113,8 +113,10 @@ async fn main() {
             tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
             None
         });
-    // Also handed to the repair consumer below, so it survives `with_opensearch`
-    // moving its own clone into the main consumer.
+    // Also handed to the Temporal worker (for the backfill workflow's
+    // activities) and to the repair consumer below — kept outside the `if
+    // let` so it survives `with_opensearch` moving its own clone into the
+    // main consumer.
     let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;
@@ -143,7 +145,7 @@ async fn main() {
                 repair_sqs.clone(),
                 queue_url.clone(),
             ));
-            opensearch_ready.map(|os| {
+            opensearch_ready.clone().map(|os| {
                 opensearch_repair::RepairConsumer::new(
                     repair_sqs,
                     dao.clone(),
@@ -196,7 +198,7 @@ async fn main() {
         }
     };
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, search).await {
+        if let Err(e) = temporal::worker::run(dao, search, opensearch_ready).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };

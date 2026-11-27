@@ -71,10 +71,7 @@ pub async fn run(
     let client = Client::new(connection, client_options)?;
 
     let mut worker_options = WorkerOptions::new(TASK_QUEUE)
-        .register_activities(AgonActivities {
-            dao: dao.clone(),
-            opensearch: opensearch.clone(),
-        })
+        .register_activities(AgonActivities { dao: dao.clone() })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
         .register_workflow::<MaterializeSeries>()?

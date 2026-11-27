@@ -5,16 +5,14 @@
 //! passed as structs.
 
 use agon_services_core::dao::Dao;
-use agon_services_core::opensearch::{OpenSearchClient, sync_match};
 use serde::{Deserialize, Serialize};
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
 /// Shared dependencies available to every activity. Registered once with the
-/// worker; activities read `dao` / `opensearch` off it.
+/// worker; activities read `dao` off it.
 pub struct AgonActivities {
     pub dao: Dao,
-    pub opensearch: Option<OpenSearchClient>,
 }
 
 /// One audience member: the viewer plus their capped "people you follow in
@@ -399,26 +397,6 @@ impl AgonActivities {
             .delete_feed_items(&chunk.viewer_ids, &chunk.match_id, &chunk.old_starts_at)
             .await
             .map_err(activity_err)
-    }
-
-    /// Ensure a match is present in the OpenSearch `matches` index (idempotent
-    /// upsert). Used at the end of fan-out so a newly-created match is
-    /// discoverable even before the inline indexing stream event lands. A
-    /// no-op without OpenSearch configured.
-    #[activity]
-    pub async fn index_match(
-        self: std::sync::Arc<Self>,
-        _ctx: ActivityContext,
-        match_id: String,
-    ) -> Result<(), ActivityError> {
-        let Some(os) = &self.opensearch else {
-            return Ok(());
-        };
-        let now = chrono::Utc::now().to_rfc3339();
-        sync_match(os, &self.dao, &match_id, &now, true)
-            .await
-            .map(|_| ())
-            .map_err(ActivityError::from)
     }
 
     /// Reconcile every participant's stat contribution for a match. Idempotent.

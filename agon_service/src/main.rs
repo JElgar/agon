@@ -2174,6 +2174,25 @@ enum UpdateMatchResponse {
 }
 
 #[derive(ApiResponse)]
+enum DeleteMatchResponse {
+    /// The match (and everything in its partition) is gone.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The match still has a player other than the caller — cancel it
+    /// instead, or wait for them to leave.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller is not a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum CreateMatchSeriesResponse {
     #[oai(status = 200)]
     Series(Json<CreateMatchSeriesResult>),
@@ -5687,6 +5706,50 @@ impl Api {
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
+    }
+
+    /// Permanently delete a match. Only allowed while nobody but the caller
+    /// is on the roster — a match with any other player (accepted or still
+    /// pending an invite) must be cancelled instead (`PATCH
+    /// /matches/:match_id` with `status: cancelled`), so that player isn't
+    /// silently dropped from a game they're part of. That holds whatever the
+    /// match's own lifecycle status is, so a completed/scored match stays
+    /// undeletable until every other player has left it — at which point
+    /// this opens back up.
+    #[oai(path = "/matches/:match_id", method = "delete")]
+    async fn delete_match(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<DeleteMatchResponse> {
+        info!("Deleting match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(DeleteMatchResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DeleteMatchResponse::Forbidden(PlainText(
+                "only a match admin can delete this match".into(),
+            )));
+        }
+        if agg
+            .players
+            .iter()
+            .any(|p| p.user_id.as_deref() != Some(uid.as_str()))
+        {
+            return Ok(DeleteMatchResponse::ValidationError(PlainText(
+                "a match with other players can't be deleted — cancel it instead, or wait \
+                 for them to leave"
+                    .into(),
+            )));
+        }
+
+        dao.delete_match(&match_id).await.map_err(dao_internal)?;
+        Ok(DeleteMatchResponse::Ok)
     }
 
     /// Create a recurring match series: a template plus a cadence. Writes

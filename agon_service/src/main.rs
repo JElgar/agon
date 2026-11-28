@@ -3792,9 +3792,11 @@ impl Api {
         /// every match in the app), this filters the caller's own fan-out
         /// feed page in memory post-hydration — the feed has no search index
         /// of its own, but pages are small (`FEED_MAX_PAGE_LIMIT`) so this
-        /// stays cheap. A page can come back with fewer than `limit` items
-        /// (or none) when most of it doesn't match; page again with
-        /// `next_cursor` as usual, same as the date-range filter above.
+        /// stays cheap. `get_user_feed` pulls further raw pages itself (up to
+        /// a cap) to keep a page full even when this filter — or the always-on
+        /// cancelled-match exclusion — knocks out most of a raw page, so a
+        /// short/empty page should only happen once the feed is actually
+        /// exhausted (`next_cursor` is `None`).
         Query(status): Query<Option<MatchStatus>>,
         /// Only include matches of this sport. See `status`'s doc comment.
         Query(match_type): Query<Option<MatchType>>,
@@ -3824,133 +3826,160 @@ impl Api {
         // first. The cursor is the DAO's opaque LastEvaluatedKey (400 if
         // malformed). Feed entries are thin pointers, so hydrate each referenced
         // match from DynamoDB — entries never carry stale copies.
-        let page = match dao.list_feed(&uid, cursor.as_deref(), limit).await {
-            Ok(p) => p,
-            Err(dao::DaoError::Malformed(_)) => {
-                return Ok(GetFeedResponse::ValidationError(PlainText(
-                    "Invalid cursor".to_string(),
-                )));
+        //
+        // A single raw page can filter down to far fewer than `limit` items
+        // (or zero) — a run of cancelled matches, or a `status`/`match_type`/
+        // date-range filter that most of the page doesn't match. Rather than
+        // hand the caller a near-empty page in that case, pull further raw
+        // pages and keep filtering until the page is full or the feed runs
+        // out, capped at `MAX_ROUNDS` raw fetches so this can't cascade into
+        // unbounded DynamoDB reads on one request. This can make the final
+        // page slightly larger than `limit` (we don't truncate mid-page,
+        // since `next_cursor` already points past every item we fetched —
+        // dropping any of them here would lose them for good).
+        const MAX_ROUNDS: u32 = 5;
+        let mut built: Vec<FeedMatch> = Vec::new();
+        let mut next_cursor = cursor;
+        for round in 0..MAX_ROUNDS {
+            let page = match dao.list_feed(&uid, next_cursor.as_deref(), limit).await {
+                Ok(p) => p,
+                Err(dao::DaoError::Malformed(_)) if round == 0 => {
+                    return Ok(GetFeedResponse::ValidationError(PlainText(
+                        "Invalid cursor".to_string(),
+                    )));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            };
+            next_cursor = page.next_cursor;
+
+            // (match_id, known_player_ids) for entries that pass the date filter —
+            // `known_player_ids`/`viewer_side_id` are already on the feed entry
+            // (denormalized at fan-out time), never fetched here.
+            struct EligibleEntry {
+                match_id: String,
+                known_player_ids: Vec<String>,
+                known_player_count: u32,
+                viewer_side_id: Option<String>,
+                viewer_is_going: bool,
+                viewer_invitation_pending: bool,
+                viewer_can_join_side_ids: Vec<String>,
             }
-            Err(e) => return Err(dao_internal(e)),
-        };
-
-        // (match_id, known_player_ids) for entries that pass the date filter —
-        // `known_player_ids`/`viewer_side_id` are already on the feed entry
-        // (denormalized at fan-out time), never fetched here.
-        struct EligibleEntry {
-            match_id: String,
-            known_player_ids: Vec<String>,
-            known_player_count: u32,
-            viewer_side_id: Option<String>,
-            viewer_is_going: bool,
-            viewer_invitation_pending: bool,
-            viewer_can_join_side_ids: Vec<String>,
-        }
-        let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
-        for entry in &page.items {
-            // Apply the optional date range on the entry's start time (cheap;
-            // avoids hydrating matches outside the window).
-            if !within_range(&entry.starts_at, from, to) {
-                continue;
-            }
-            // Currently every feed entry references a match.
-            if entry.ref_type != "match" {
-                continue;
-            }
-            eligible.push(EligibleEntry {
-                match_id: entry.ref_id.clone(),
-                known_player_ids: entry.known_player_ids.clone(),
-                known_player_count: entry.known_player_count,
-                viewer_side_id: entry.viewer_side_id.clone(),
-                viewer_is_going: entry.viewer_is_going,
-                viewer_invitation_pending: entry.viewer_invitation_pending,
-                viewer_can_join_side_ids: entry.viewer_can_join_side_ids.clone(),
-            });
-        }
-        let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
-
-        // Hydrate every referenced match's meta + sides (never players — the
-        // feed doesn't render the full roster, see `FeedMatch`) and this
-        // viewer's likes, in two round-trips total, run concurrently. Neither
-        // call's DB request count grows with page size.
-        let (summaries, liked) = tokio::try_join!(
-            dao.batch_get_match_summaries(&match_ids),
-            dao.batch_has_liked_matches(&match_ids, &uid),
-        )
-        .map_err(dao_internal)?;
-
-        // One more round-trip: every user this page needs to hydrate by name/
-        // avatar — the union of each entry's `known_participants` and each
-        // match's small per-side `roster_preview`s (both id-only; see
-        // `MatchSideRecord::roster_preview`'s doc comment on why a live name/
-        // avatar beats a possibly-stale cached one). `batch_get_users` chunks
-        // internally if the union happens to exceed one `BatchGetItem`, but
-        // page size is capped specifically so it normally won't need to.
-        let mut user_ids: Vec<String> = Vec::new();
-        for entry in &eligible {
-            user_ids.extend(entry.known_player_ids.iter().cloned());
-        }
-        for summary in summaries.values() {
-            for side in &summary.sides {
-                user_ids.extend(side.roster_preview.iter().filter_map(|p| p.user_id.clone()));
-            }
-        }
-        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
-
-        // Side names/logos need the same team-meta fallback `Match` gets (via
-        // `hydrate_matches`) — without it a team-linked side with no custom
-        // name would render blank. `roster_preview` already covers the
-        // players'-names case, so only team meta needs a batch fetch.
-        let team_ids: Vec<String> = summaries
-            .values()
-            .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
-            .collect();
-        let team_metas = self.batch_team_metas(dao, &team_ids).await?;
-        let tournaments =
-            tournaments_for_matches(dao, summaries.values().map(|s| &s.match_)).await?;
-
-        let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
-        for entry in &eligible {
-            if let Some(summary) = summaries.get(&entry.match_id) {
-                // A cancelled match never belongs in the feed, regardless of
-                // the `status` filter above — there's nothing to show once
-                // the match has been called off.
-                if summary.match_.status == "cancelled" {
+            let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
+            for entry in &page.items {
+                // Apply the optional date range on the entry's start time (cheap;
+                // avoids hydrating matches outside the window).
+                if !within_range(&entry.starts_at, from, to) {
                     continue;
                 }
-                if let Some(s) = &status
-                    && summary.match_.status != match_status_str(s)
-                {
+                // Currently every feed entry references a match.
+                if entry.ref_type != "match" {
                     continue;
                 }
-                if let Some(mt) = &match_type
-                    && summary.match_.match_type != match_type_tag(mt)
-                {
-                    continue;
+                eligible.push(EligibleEntry {
+                    match_id: entry.ref_id.clone(),
+                    known_player_ids: entry.known_player_ids.clone(),
+                    known_player_count: entry.known_player_count,
+                    viewer_side_id: entry.viewer_side_id.clone(),
+                    viewer_is_going: entry.viewer_is_going,
+                    viewer_invitation_pending: entry.viewer_invitation_pending,
+                    viewer_can_join_side_ids: entry.viewer_can_join_side_ids.clone(),
+                });
+            }
+
+            if !eligible.is_empty() {
+                let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
+
+                // Hydrate every referenced match's meta + sides (never players —
+                // the feed doesn't render the full roster, see `FeedMatch`) and
+                // this viewer's likes, in two round-trips total, run
+                // concurrently. Neither call's DB request count grows with page
+                // size.
+                let (summaries, liked) = tokio::try_join!(
+                    dao.batch_get_match_summaries(&match_ids),
+                    dao.batch_has_liked_matches(&match_ids, &uid),
+                )
+                .map_err(dao_internal)?;
+
+                // One more round-trip: every user this page needs to hydrate by
+                // name/avatar — the union of each entry's `known_participants`
+                // and each match's small per-side `roster_preview`s (both
+                // id-only; see `MatchSideRecord::roster_preview`'s doc comment
+                // on why a live name/avatar beats a possibly-stale cached one).
+                // `batch_get_users` chunks internally if the union happens to
+                // exceed one `BatchGetItem`, but page size is capped
+                // specifically so it normally won't need to.
+                let mut user_ids: Vec<String> = Vec::new();
+                for entry in &eligible {
+                    user_ids.extend(entry.known_player_ids.iter().cloned());
                 }
-                let i_liked = liked.contains(&entry.match_id);
-                let known_participants = entry
-                    .known_player_ids
-                    .iter()
-                    .filter_map(|uid| users.get(uid))
-                    .map(|record| user_profile_from_record(record, true))
+                for summary in summaries.values() {
+                    for side in &summary.sides {
+                        user_ids
+                            .extend(side.roster_preview.iter().filter_map(|p| p.user_id.clone()));
+                    }
+                }
+                let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+
+                // Side names/logos need the same team-meta fallback `Match` gets
+                // (via `hydrate_matches`) — without it a team-linked side with
+                // no custom name would render blank. `roster_preview` already
+                // covers the players'-names case, so only team meta needs a
+                // batch fetch.
+                let team_ids: Vec<String> = summaries
+                    .values()
+                    .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
                     .collect();
-                let mut m = feed_match_from_records(
-                    &summary.match_,
-                    &summary.sides,
-                    &users,
-                    known_participants,
-                    entry.known_player_count,
-                    entry.viewer_side_id.clone(),
-                    entry.viewer_is_going,
-                    entry.viewer_invitation_pending,
-                    entry.viewer_can_join_side_ids.clone(),
-                    i_liked,
-                    &tournaments,
-                );
-                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
-                sign_feed_match_headers(assets, &mut m);
-                built.push(m);
+                let team_metas = self.batch_team_metas(dao, &team_ids).await?;
+                let tournaments =
+                    tournaments_for_matches(dao, summaries.values().map(|s| &s.match_)).await?;
+
+                for entry in &eligible {
+                    if let Some(summary) = summaries.get(&entry.match_id) {
+                        // A cancelled match never belongs in the feed,
+                        // regardless of the `status` filter above — there's
+                        // nothing to show once the match has been called off.
+                        if summary.match_.status == "cancelled" {
+                            continue;
+                        }
+                        if let Some(s) = &status
+                            && summary.match_.status != match_status_str(s)
+                        {
+                            continue;
+                        }
+                        if let Some(mt) = &match_type
+                            && summary.match_.match_type != match_type_tag(mt)
+                        {
+                            continue;
+                        }
+                        let i_liked = liked.contains(&entry.match_id);
+                        let known_participants = entry
+                            .known_player_ids
+                            .iter()
+                            .filter_map(|uid| users.get(uid))
+                            .map(|record| user_profile_from_record(record, true))
+                            .collect();
+                        let mut m = feed_match_from_records(
+                            &summary.match_,
+                            &summary.sides,
+                            &users,
+                            known_participants,
+                            entry.known_player_count,
+                            entry.viewer_side_id.clone(),
+                            entry.viewer_is_going,
+                            entry.viewer_invitation_pending,
+                            entry.viewer_can_join_side_ids.clone(),
+                            i_liked,
+                            &tournaments,
+                        );
+                        Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
+                        sign_feed_match_headers(assets, &mut m);
+                        built.push(m);
+                    }
+                }
+            }
+
+            if built.len() >= limit as usize || next_cursor.is_none() {
+                break;
             }
         }
 
@@ -3967,10 +3996,7 @@ impl Api {
 
         let items = built.into_iter().map(FeedItem::Match).collect();
 
-        Ok(GetFeedResponse::Feed(Json(FeedPage {
-            items,
-            next_cursor: page.next_cursor,
-        })))
+        Ok(GetFeedResponse::Feed(Json(FeedPage { items, next_cursor })))
     }
 
     #[oai(path = "/matches", method = "get")]

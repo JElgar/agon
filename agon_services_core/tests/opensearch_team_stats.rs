@@ -1,6 +1,6 @@
 //! The typed team-stats reads (`opensearch::team_stats`) against a real
 //! OpenSearch: records per kind, recent results and streak, next match,
-//! and leaderboards per scope. Uses a random
+//! leaderboards per scope, filtered match lists and head-to-head. Uses a random
 //! index prefix and deletes its indices afterwards.
 //!
 //! Skipped unless `OPENSEARCH_URL` is set (`make test-opensearch-local`).
@@ -261,6 +261,32 @@ async fn team_stats_reads_against_opensearch() {
         .unwrap();
     assert_eq!(none.ext.played, 0);
     assert!(none.years.is_empty());
+
+    // Head to head: HW v Leyton is m1 (won 2-0) and m2 (drawn 1-1); the
+    // scheduled m5 doesn't count yet.
+    let h2h = ts::head_to_head(&os, "hw", "leyton", "football")
+        .await
+        .unwrap();
+    let r = &h2h.record;
+    assert_eq!((r.played, r.won, r.drawn, r.lost), (2, 1, 1, 0));
+    assert_eq!(
+        r.result
+            .football
+            .as_ref()
+            .map(|f| (f.goals_for, f.goals_against)),
+        Some((3, 1))
+    );
+    // From Leyton's side it's the mirror image.
+    let back = ts::head_to_head(&os, "leyton", "hw", "football")
+        .await
+        .unwrap();
+    let r = &back.record;
+    assert_eq!((r.played, r.won, r.drawn, r.lost), (2, 0, 1, 1));
+    // Never met.
+    let never = ts::head_to_head(&os, "leyton", "bow", "football")
+        .await
+        .unwrap();
+    assert_eq!(never.record.played, 0);
 
     for def in all_indices() {
         os.delete_index(&def.physical(&prefix)).await.unwrap();

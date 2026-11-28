@@ -220,8 +220,9 @@ pub struct TeamNextMatch {
 #[derive(Object)]
 pub struct TeamSummary {
     pub team_id: String,
-    /// The sport these records are for — the one asked for, or the team's
-    /// most-played when the request named none.
+    /// The sport these records are for — the one asked for; when the request
+    /// named none, the team's default sport (the first of `Team.sports`), or
+    /// its most-played if it has no sports set.
     pub sport: MatchType,
     /// Every sport this team has a match in, most matches first, for a sport
     /// switcher. Not affected by `sport`, and never empty when the team has
@@ -446,11 +447,13 @@ impl TeamStatsApi {
     /// `squad`. `year` limits the records to one year. `recent_results`,
     /// `streak` and `next_match` are always current.
     ///
-    /// `sport` is optional because a client has no way to know what to ask
-    /// for: nothing on `Team` says which sports it plays. Omit it and this
-    /// answers for the team's most-played sport, with every sport it plays
-    /// in `sports` — enough to render the page and its sport switcher from
-    /// one call, with no guessing and no speculative request per sport.
+    /// `sport` is optional so a client never has to guess what to ask for.
+    /// Omit it and this answers for the team's default sport — the first of
+    /// `Team.sports` — or, for a team that hasn't set any (`Team.sports` is
+    /// empty; older teams weren't backfilled), its most-played sport. Either
+    /// way every sport it has played is in `sports`, which is also what a
+    /// client should show as the team's sports while `Team.sports` is empty —
+    /// enough to render the page and its sport switcher from one call.
     #[oai(path = "/teams/:team_id/summary", method = "get")]
     async fn get_team_summary(
         &self,
@@ -458,23 +461,27 @@ impl TeamStatsApi {
         Data(stats): Data<&StatsStore>,
         AuthSchema(jwt): AuthSchema,
         Path(team_id): Path<String>,
-        /// The sport to summarise. Omit for the team's most-played.
+        /// The sport to summarise. Omit for the team's default sport (most-played
+        /// if it has none set).
         Query(sport): Query<Option<MatchType>>,
         /// Limit the records to this year. Omit for all time.
         Query(year): Query<Option<i32>>,
     ) -> Result<TeamSummaryResponse> {
         require_uid(dao, &jwt).await?;
         let os = store(stats)?;
-        if dao
-            .get_team_meta(&team_id)
-            .await
-            .map_err(dao_internal)?
-            .is_none()
-        {
+        let Some(team) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
             return Ok(TeamSummaryResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
-        }
+        };
+        // No sport asked for: the team's own default (the first of its
+        // `Team.sports`) when its managers have set one. Only a team without
+        // one falls through to its most-played below.
+        let sport = sport.or_else(|| {
+            team.sports
+                .first()
+                .map(|t| crate::mapping::match_type_from_tag(t))
+        });
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
         // `sports` is in the response either way, so the only question is

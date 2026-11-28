@@ -344,6 +344,18 @@ pub struct TeamRecord {
     /// tournament. See [`squad_team_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tournament_id: Option<String>,
+    /// The sports this team plays, as stored sport tags (the same tags as
+    /// `MatchRecord::match_type`), in the team's own order: the first is its
+    /// default sport. Set by the team's managers on create/edit. Not
+    /// backfilled, so a team made before this existed has an empty list —
+    /// which means "not set", not "plays nothing".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sports: Vec<String>,
+    /// The default for `MatchSideRecord::team_join_enabled` when a match side
+    /// is created from this team without an explicit choice: whether the
+    /// team's accepted members may join that side directly.
+    #[serde(default)]
+    pub members_join_default: bool,
 }
 
 impl TeamRecord {
@@ -1518,6 +1530,31 @@ pub struct InvitationRecord {
     /// (decline/revoke) has to go on before it's loaded the roster row.
     #[serde(default)]
     pub reserve_spot: bool,
+    /// How many times this invitation has been re-sent (`Dao::resend_team_invitation`).
+    /// Each re-send bumps `invited_at` and this counter; the worker notifies
+    /// the invitee again on that transition, with a notification id derived
+    /// from the counter (`invitation_notification_id`) so a redelivered
+    /// stream event can't notify twice.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub resend_count: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
+/// The id of the invitee's notification for send number `resend_count` of
+/// invitation `invitation_id`: the original send (0) keeps the id it has
+/// always had, `notif-invitation-<id>`; re-send `n` is
+/// `notif-invitation-<id>-r<n>`. Deterministic, so the worker's write is
+/// idempotent under redelivery, and every one of them can be found again to
+/// mark it actioned once the invitee responds.
+pub fn invitation_notification_id(invitation_id: &str, resend_count: u32) -> String {
+    if resend_count == 0 {
+        format!("notif-invitation-{invitation_id}")
+    } else {
+        format!("notif-invitation-{invitation_id}-r{resend_count}")
+    }
 }
 
 /// `JOINLINK#<linkId>` / `#META` — a shareable, many-use join link. Unlike

@@ -298,11 +298,13 @@ impl Dao {
         Ok(team.map(|team| TeamAggregate { team, members }))
     }
 
-    /// Update a team's mutable fields — `name` and/or `logo_url`.
-    /// Both optional and independent, like `Dao::update_user_profile`:
-    /// `logo_url` is a double `Option` — outer `None` leaves the logo
-    /// untouched, `Some(None)` clears it, `Some(Some(url))` sets it.
-    /// A no-op call (both `None`) skips the write entirely. `NotFound` if the
+    /// Update a team's mutable fields — `name`, `logo_url`, `sports` and/or
+    /// `members_join_default`. All optional and independent, like
+    /// `Dao::update_user_profile`: `None` leaves a field untouched.
+    /// `logo_url` is a double `Option` — `Some(None)` clears it,
+    /// `Some(Some(url))` sets it. `Some(&[])` for `sports` clears the list
+    /// (the attribute is removed, matching how an empty list is stored).
+    /// A no-op call (all `None`) skips the write entirely. `NotFound` if the
     /// team doesn't exist.
     #[tracing::instrument(skip(self))]
     pub async fn update_team(
@@ -310,6 +312,8 @@ impl Dao {
         team_id: &str,
         name: Option<&str>,
         logo_url: Option<Option<&str>>,
+        sports: Option<&[String]>,
+        members_join_default: Option<bool>,
     ) -> DaoResult<()> {
         let mut set_parts: Vec<String> = Vec::new();
         let mut remove_parts: Vec<String> = Vec::new();
@@ -320,6 +324,23 @@ impl Dao {
             set_parts.push("#name = :name".into());
             names.insert("#name".into(), "name".into());
             values.insert(":name".into(), s(name));
+        }
+        if let Some(sports) = sports {
+            names.insert("#sports".into(), "sports".into());
+            if sports.is_empty() {
+                remove_parts.push("#sports".into());
+            } else {
+                set_parts.push("#sports = :sports".into());
+                values.insert(
+                    ":sports".into(),
+                    AttributeValue::L(sports.iter().map(|t| s(t.as_str())).collect()),
+                );
+            }
+        }
+        if let Some(join) = members_join_default {
+            set_parts.push("#mjd = :mjd".into());
+            names.insert("#mjd".into(), "members_join_default".into());
+            values.insert(":mjd".into(), AttributeValue::Bool(join));
         }
         if let Some(logo) = logo_url {
             match logo {

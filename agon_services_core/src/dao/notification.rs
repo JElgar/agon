@@ -188,20 +188,35 @@ impl Dao {
     /// to `status` in place, once they've responded — so the notifications
     /// feed stops offering Confirm/Decline for it.
     ///
-    /// Addressed by the same deterministic id the worker uses when creating
-    /// it (`notif-invitation-<invitation_id>`, see
-    /// `agon_worker/src/handlers/notify.rs::notify_invitation`), so this is a
-    /// direct `UpdateItem` on a computed key — no query needed. No-ops if the
-    /// notification doesn't exist (e.g. a self-invite, which the worker never
-    /// creates one for).
+    /// Addressed by the same deterministic ids the worker uses when creating
+    /// them (`records::invitation_notification_id`, see
+    /// `agon_worker/src/handlers/notify.rs::notify_invitation`) — one per
+    /// send, the original plus each of the invitation's `resend_count`
+    /// re-sends — so this is a direct `UpdateItem` per computed key, no query
+    /// needed. Skips any that don't exist (e.g. a self-invite, which the
+    /// worker never creates one for).
     #[tracing::instrument(skip(self))]
     pub async fn mark_invitation_notification_actioned(
         &self,
         user_id: &str,
         invitation_id: &str,
+        resend_count: u32,
         status: &str,
     ) -> DaoResult<()> {
-        let notification_id = format!("notif-invitation-{invitation_id}");
+        for n in 0..=resend_count {
+            let notification_id = super::records::invitation_notification_id(invitation_id, n);
+            self.mark_one_invitation_notification_actioned(user_id, notification_id, status)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn mark_one_invitation_notification_actioned(
+        &self,
+        user_id: &str,
+        notification_id: String,
+        status: &str,
+    ) -> DaoResult<()> {
         let result = self
             .client
             .update_item()

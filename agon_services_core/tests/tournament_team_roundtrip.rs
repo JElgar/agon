@@ -51,6 +51,8 @@ async fn squad_team_is_created_once_and_stays_hidden() {
         created_at: "2026-11-16T10:00:00Z".into(),
         colour: Some("#d33".into()),
         tournament_id: Some(tournament_id.clone()),
+        sports: Vec::new(),
+        members_join_default: false,
     };
     let members = [member(&team_id, &u1), member(&team_id, &u2)];
     assert!(dao.create_tournament_team(&team, &members).await.unwrap());

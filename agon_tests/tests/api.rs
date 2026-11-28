@@ -408,6 +408,8 @@ async fn create_and_get_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -445,6 +447,8 @@ async fn team_appears_in_my_teams() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -469,6 +473,8 @@ async fn add_and_remove_team_member() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -514,6 +520,8 @@ async fn team_members_have_hydrated_names() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -565,6 +573,8 @@ async fn list_team_members_paginates() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -629,6 +639,8 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -1052,6 +1064,8 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -1532,6 +1546,8 @@ async fn follow_and_unfollow_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -2646,6 +2662,8 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -3517,6 +3535,8 @@ async fn list_matches_filters_by_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -3529,6 +3549,8 @@ async fn list_matches_filters_by_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -3541,6 +3563,8 @@ async fn list_matches_filters_by_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4047,6 +4071,8 @@ async fn team_followers_list_includes_the_follower() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4078,6 +4104,8 @@ async fn patch_team_updates_name() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4089,6 +4117,8 @@ async fn patch_team_updates_name() {
         models::UpdateTeamInput {
             name: Some("After".to_string()),
             logo_asset_id: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4120,6 +4150,8 @@ async fn team_admin_can_manage_but_member_cannot() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4156,6 +4188,8 @@ async fn team_admin_can_manage_but_member_cannot() {
     let rename_input = || models::UpdateTeamInput {
         name: Some("Hijacked".to_string()),
         logo_asset_id: None,
+        sports: None,
+        members_join_default: None,
     };
     let no_invitees = || models::AddInvitationsInput {
         reserve_spot: None,
@@ -4201,6 +4235,8 @@ async fn team_admin_can_manage_but_member_cannot() {
         models::UpdateTeamInput {
             name: Some("Renamed by admin".to_string()),
             logo_asset_id: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4272,6 +4308,8 @@ async fn team_owner_cannot_be_removed_or_have_their_role_changed() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4358,6 +4396,8 @@ async fn only_owner_can_delete_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4412,6 +4452,8 @@ async fn member_and_admin_can_leave_but_owner_must_transfer_first() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4511,6 +4553,8 @@ async fn transfer_ownership_rejects_non_owner_self_and_pending_targets() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -4604,6 +4648,8 @@ async fn leaving_a_team_youre_not_a_member_of_returns_not_found() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5377,6 +5423,8 @@ async fn create_team_with_logo() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5402,6 +5450,8 @@ async fn create_team_rejects_wrong_purpose_asset() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await;
@@ -5427,6 +5477,8 @@ async fn team_created_with_initial_invite_can_be_accepted() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5515,6 +5567,8 @@ async fn initial_invitees_land_with_the_requested_role() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec!["Guest Coach".to_string()],
             invited_role: Some(models::AssignableTeamRole::Admin),
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5555,6 +5609,8 @@ async fn invitations_endpoint_honors_requested_role() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5604,6 +5660,8 @@ async fn stranger_can_view_team_and_members_read_only() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -5639,6 +5697,8 @@ async fn deleted_teams_matches_show_deleted_team() {
             invited_user_ids: vec![],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await
@@ -8274,6 +8334,8 @@ async fn team_with_accepted_member(
             invited_user_ids: vec![member_id.to_string()],
             invited_external_names: vec![],
             invited_role: None,
+            sports: None,
+            members_join_default: None,
         },
     )
     .await

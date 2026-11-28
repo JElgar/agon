@@ -298,7 +298,7 @@ const temporalHelmValues = {
 					},
 				},
 			},
-		}
+		},
 	},
 	schema: {
 		createDatabase: {
@@ -1722,6 +1722,34 @@ new k8s.core.v1.Service("grafana-proxy", {
 
 export const grafanaUrl = `https://${grafanaDomain}`;
 
+// ── Temporal server scraping ──────────────────────────────────────────────────
+// The Temporal Helm chart already exposes each service's Prometheus metrics
+// (server.config.metrics.prometheus.listenAddress, set above) on port 9090 of
+// its own headless Service, named "metrics" (see
+// charts/temporal/templates/server-service.yaml upstream) — the chart's own
+// `server.metrics.serviceMonitor.enabled` toggle would create these, but it
+// isn't used here because that chart is provisioned before `kubePrometheusStack`
+// below (so its ServiceMonitor CRs would race the CRD on a fresh cluster); a
+// hand-written one per service, depending on both, avoids that.
+for (const service of ["frontend", "history", "matching", "worker"]) {
+	new k8s.apiextensions.CustomResource(`temporal-${service}-servicemonitor`, {
+		apiVersion: "monitoring.coreos.com/v1",
+		kind: "ServiceMonitor",
+		metadata: { name: `temporal-${service}`, namespace: "default" },
+		spec: {
+			selector: {
+				matchLabels: {
+					"app.kubernetes.io/name": "temporal",
+					"app.kubernetes.io/instance": "temporal",
+					"app.kubernetes.io/component": service,
+					"app.kubernetes.io/headless": "true",
+				},
+			},
+			endpoints: [{ port: "metrics", interval: "30s" }],
+		},
+	}, { provider: k8sProvider, dependsOn: [kubePrometheusStack, temporal] });
+}
+
 // ── Meilisearch scraping ──────────────────────────────────────────────────────
 // Meilisearch's /metrics endpoint is experimental (enabled via
 // MEILI_EXPERIMENTAL_ENABLE_METRICS on the deployment) and requires a bearer key
@@ -1848,6 +1876,70 @@ new k8s.core.v1.ConfigMap("meilisearch-dashboard", {
 		labels: { grafana_dashboard: "1" },
 	},
 	data: { "meilisearch.json": JSON.stringify(meiliDashboard) },
+}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
+
+// Temporal server: request rate/errors, service latency, task schedule-to-start
+// latency (queue backlog signal) and persistence latency. Metric names are the
+// server's own (native Prometheus exporter, not routed through Alloy), per
+// https://github.com/temporalio/temporal/blob/main/common/metrics/metric_defs.go;
+// `timerType: histogram` above means the *_latency timers export as histograms.
+const temporalDashboard = {
+	title: "Temporal",
+	uid: "temporal",
+	timezone: "browser",
+	time: { from: "now-6h", to: "now" },
+	panels: [
+		{
+			id: 1, title: "Request rate (req/s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 0, y: 0 },
+			targets: [{
+				expr: "sum by (operation) (rate(service_requests[5m]))",
+				legendFormat: "{{operation}}",
+			}],
+		},
+		{
+			id: 2, title: "Error rate (errors/s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 12, y: 0 },
+			targets: [{
+				expr: "sum by (operation) (rate(service_errors[5m]))",
+				legendFormat: "{{operation}}",
+			}],
+		},
+		{
+			id: 3, title: "Service latency p95 (s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 0, y: 8 },
+			targets: [{
+				expr: "histogram_quantile(0.95, sum by (le, operation) (rate(service_latency_bucket[5m])))",
+				legendFormat: "{{operation}}",
+			}],
+		},
+		{
+			id: 4, title: "Task schedule-to-start latency p95 (s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 12, y: 8 },
+			targets: [{
+				expr: "histogram_quantile(0.95, sum by (le, task_type) (rate(task_schedule_to_start_latency_bucket[5m])))",
+				legendFormat: "{{task_type}}",
+			}],
+		},
+		{
+			id: 5, title: "Persistence latency p95 (s)", type: "timeseries",
+			gridPos: { h: 8, w: 24, x: 0, y: 16 },
+			targets: [{
+				expr: "histogram_quantile(0.95, sum by (le, operation) (rate(persistence_latency_bucket[5m])))",
+				legendFormat: "{{operation}}",
+			}],
+		},
+	],
+	schemaVersion: 39,
+};
+
+new k8s.core.v1.ConfigMap("temporal-dashboard", {
+	metadata: {
+		name: "temporal-dashboard",
+		namespace: observabilityNamespace,
+		labels: { grafana_dashboard: "1" },
+	},
+	data: { "temporal.json": JSON.stringify(temporalDashboard) },
 }, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
 
 const serviceAppLabels = { app: "agon" };

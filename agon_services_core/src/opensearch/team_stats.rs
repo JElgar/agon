@@ -1,5 +1,6 @@
 //! Typed team-stats reads over the OpenSearch indices: a team's record per
-//! match kind, its recent results and next match, and its per-player
+//! match kind, its recent results and next match, its filtered match lists,
+//! its head-to-head record against another team, and its per-player
 //! leaderboard.
 //!
 //! Every query here is built by a pure `*_query` function and every response
@@ -100,23 +101,7 @@ pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &s
         Some(y) => json!({ "term": { "year": y } }),
         None => json!({ "match_all": {} }),
     };
-    let mut ours_aggs = serde_json::Map::new();
-    ours_aggs.insert(
-        "outcome".into(),
-        json!({ "terms": { "field": "sides.outcome", "size": 5 } }),
-    );
-    for f in SideResultRecord::fields(sport) {
-        ours_aggs.insert(
-            format!("result:{f}"),
-            json!({ "sum": { "field": format!("sides.result.{sport}.{f}") } }),
-        );
-    }
-    for f in MatchStatsRecord::fields(sport) {
-        ours_aggs.insert(
-            format!("stat:{f}"),
-            json!({ "sum": { "field": format!("sides.stats.{sport}.{f}") } }),
-        );
-    }
+    let ours_aggs = side_record_aggs(sport);
     json!({
         "size": 0,
         "track_total_hits": false,
@@ -146,6 +131,51 @@ pub fn team_records_query(team_id: &str, sport: &str, year: Option<i32>, now: &s
             }
         }
     })
+}
+
+/// The aggregations under a nested `sides` filter that read one team's
+/// record: its outcomes, plus `sport`'s own scoreline and counters summed.
+/// [`record_counts`] reads them back.
+fn side_record_aggs(sport: &str) -> serde_json::Map<String, Value> {
+    let mut aggs = serde_json::Map::new();
+    aggs.insert(
+        "outcome".into(),
+        json!({ "terms": { "field": "sides.outcome", "size": 5 } }),
+    );
+    for f in SideResultRecord::fields(sport) {
+        aggs.insert(
+            format!("result:{f}"),
+            json!({ "sum": { "field": format!("sides.result.{sport}.{f}") } }),
+        );
+    }
+    for f in MatchStatsRecord::fields(sport) {
+        aggs.insert(
+            format!("stat:{f}"),
+            json!({ "sum": { "field": format!("sides.stats.{sport}.{f}") } }),
+        );
+    }
+    aggs
+}
+
+/// Read a [`side_record_aggs`] result: one side per external match is ours,
+/// so its doc count is the matches played.
+fn record_counts(ours: &Value, sport: &str) -> RecordCounts {
+    let mut rec = RecordCounts {
+        played: count(&ours["doc_count"]),
+        result: side_result(ours, sport),
+        stats: sport_stats(ours, sport),
+        ..Default::default()
+    };
+    for o in buckets(&ours["outcome"]) {
+        let n = count(&o["doc_count"]);
+        match o["key"].as_str() {
+            Some("won") => rec.won = n,
+            Some("drawn") => rec.drawn = n,
+            Some("lost") => rec.lost = n,
+            _ => {}
+        }
+    }
+    rec
 }
 
 /// `sport`'s counters from an aggregation's `stat:<field>` sums.
@@ -182,22 +212,7 @@ pub fn parse_team_records(resp: &Value, sport: &str) -> TeamRecords {
                 };
             }
             Some(k @ ("league" | "cup" | "friendly")) => {
-                let mut rec = RecordCounts {
-                    // One side per external match is ours.
-                    played: count(&ours["doc_count"]),
-                    result: side_result(ours, sport),
-                    stats: sport_stats(ours, sport),
-                    ..Default::default()
-                };
-                for o in buckets(&ours["outcome"]) {
-                    let n = count(&o["doc_count"]);
-                    match o["key"].as_str() {
-                        Some("won") => rec.won = n,
-                        Some("drawn") => rec.drawn = n,
-                        Some("lost") => rec.lost = n,
-                        _ => {}
-                    }
-                }
+                let rec = record_counts(ours, sport);
                 out.ext.add(&rec);
                 match k {
                     "league" => out.league = rec,
@@ -483,6 +498,66 @@ pub fn streak(results: &[TeamResult]) -> Option<(String, u32)> {
         .take_while(|r| r.outcome == first.outcome)
         .count();
     Some((first.outcome.clone(), n as u32))
+}
+
+// ── Head to head ────────────────────────────────────────────────────────────
+
+/// Two teams' record against each other in one sport, from the first team's
+/// side. The meetings themselves are a `GET /matches` list
+/// (`team_id=<a>&team_id=<b>&team_match=all`), so they aren't repeated here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadToHead {
+    pub record: RecordCounts,
+}
+
+/// The `matches` query behind [`head_to_head`]: confirmed non-squad matches
+/// in `sport` with both teams on a side, aggregated over `team_id`'s side of
+/// every meeting. No hits are returned.
+pub fn head_to_head_query(team_id: &str, other_team_id: &str, sport: &str) -> Value {
+    json!({
+        "size": 0,
+        "track_total_hits": false,
+        "query": { "bool": {
+            "filter": [
+                { "term": { "team_ids": team_id } },
+                { "term": { "team_ids": other_team_id } },
+                { "term": { "sport": sport } },
+                { "term": { "confirmed": true } }
+            ],
+            "must_not": [{ "term": { "kind": "squad" } }]
+        } },
+        "aggs": { "sides": {
+            "nested": { "path": "sides" },
+            "aggs": { "ours": {
+                "filter": { "term": { "sides.team_id": team_id } },
+                "aggs": side_record_aggs(sport)
+            } }
+        } }
+    })
+}
+
+/// Read a [`head_to_head_query`] response for `team_id` in `sport`.
+pub fn parse_head_to_head(resp: &Value, sport: &str) -> HeadToHead {
+    HeadToHead {
+        record: record_counts(&resp["aggregations"]["sides"]["ours"], sport),
+    }
+}
+
+/// `team_id`'s record against `other_team_id` in `sport` (confirmed, squad
+/// games excluded).
+pub async fn head_to_head(
+    os: &OpenSearchClient,
+    team_id: &str,
+    other_team_id: &str,
+    sport: &str,
+) -> OpenSearchResult<HeadToHead> {
+    let resp = os
+        .search(
+            &MATCHES.alias(os.prefix()),
+            head_to_head_query(team_id, other_team_id, sport),
+        )
+        .await?;
+    Ok(parse_head_to_head(&resp, sport))
 }
 
 // ── Leaderboard ─────────────────────────────────────────────────────────────
@@ -911,5 +986,51 @@ mod tests {
         assert_eq!(rows[0].stats.football.as_ref().map(|f| f.goals), Some(6));
         assert_eq!(rows[1].stats.football.as_ref().map(|f| f.assists), Some(2));
         assert_eq!(rows[1].lost, 2);
+    }
+
+    #[test]
+    fn head_to_head_query_needs_both_teams_and_skips_squad_games() {
+        let q = head_to_head_query("hw", "leyton", "football");
+        let filter = q["query"]["bool"]["filter"].as_array().unwrap();
+        assert!(filter.contains(&json!({ "term": { "team_ids": "hw" } })));
+        assert!(filter.contains(&json!({ "term": { "team_ids": "leyton" } })));
+        assert!(filter.contains(&json!({ "term": { "sport": "football" } })));
+        assert!(filter.contains(&json!({ "term": { "confirmed": true } })));
+        assert_eq!(
+            q["query"]["bool"]["must_not"],
+            json!([{ "term": { "kind": "squad" } }])
+        );
+        assert_eq!(q["size"], 0);
+        let ours = &q["aggs"]["sides"]["aggs"]["ours"];
+        assert_eq!(ours["filter"], json!({ "term": { "sides.team_id": "hw" } }));
+        assert_eq!(
+            ours["aggs"]["result:goals_for"],
+            json!({ "sum": { "field": "sides.result.football.goals_for" } })
+        );
+    }
+
+    #[test]
+    fn head_to_head_reads_our_record() {
+        let resp = json!({ "aggregations": { "sides": { "doc_count": 6, "ours": ours(3, 2, 0, 1,
+            &[("goals_for", 7.0), ("goals_against", 5.0)],
+            &[("goals", 7.0), ("assists", 4.0), ("clean_sheets", 1.0)]) } } });
+        let h = parse_head_to_head(&resp, "football");
+        let r = &h.record;
+        assert_eq!((r.played, r.won, r.drawn, r.lost), (3, 2, 0, 1));
+        assert_eq!(
+            r.result.football,
+            Some(FootballSideResultRecord {
+                goals_for: 7,
+                goals_against: 5,
+            })
+        );
+
+        let empty = parse_head_to_head(&json!({}), "football");
+        // Never met: zero, but still in football's shape.
+        assert_eq!(empty.record.played, 0);
+        assert_eq!(
+            empty.record.result.football,
+            Some(FootballSideResultRecord::default())
+        );
     }
 }

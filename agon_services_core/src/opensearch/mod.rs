@@ -3,9 +3,10 @@
 //! DynamoDB stays the source of truth. OpenSearch holds documents derived from
 //! it, written by `agon_worker` off the DynamoDB stream and rebuilt in full by
 //! the `agon_worker backfill-opensearch` command. A sync failure never fails
-//! a user-facing write. The team summary and leaderboard endpoints read the
-//! match data through [`team_stats`]; a player's own summary reads it
-//! through [`user_stats`]; the admin panel's `GET /admin/stats`,
+//! a user-facing write. The team summary, leaderboard and head-to-head
+//! endpoints read the match data through [`team_stats`]; a player's own
+//! summary reads it through [`user_stats`]; the admin panel's
+//! `GET /admin/stats`,
 //! `GET /admin/users` and `GET /admin/matches` read the `users`/`matches`
 //! indices through [`client::OpenSearchClient::count`],
 //! [`users::search_users`] and [`matches::search_matches`]. OpenSearch is required: both binaries

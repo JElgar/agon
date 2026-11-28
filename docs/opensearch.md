@@ -58,28 +58,50 @@ callers never build query JSON themselves:
 
 ## How it stays in sync
 
-`agon_worker` runs `handlers/opensearch.rs` on every match `#META` write and
-every roster (`PLAYER#`) write. It rebuilds that match's documents from DynamoDB
-(`agon_services_core::opensearch::sync_match`):
-1. Index the match document and its player rows in one bulk request.
-2. Delete any of that match's player rows that no longer apply.
+The DynamoDB-stream pipeline fans every change event out into one SQS
+message per action onto the shared **`agon-actions`** queue
+(`agon_worker::action_consumer`), so a failure in any one action only
+redelivers that action's own message, never its neighbours'. OpenSearch
+syncing is one of those actions like any other: `handlers/
+opensearch.rs::target_for` is a pure (no I/O) decision — does this match
+`#META`/roster write, this user `#PROFILE` write, or this team `#META` write
+call for a sync, and for what target — and `action_consumer::ActionConsumer`'s
+`Action::OpenSearchSync` case runs `opensearch_sync::sync`
+(`agon_services_core::opensearch::sync_match`/`sync_user`/`sync_team`) for it:
+1. Index the match document and its player rows in one bulk request (or just
+   the one document, for a user or team sync).
+2. For a match: delete any of that match's player rows that no longer apply.
+   For a user or team: remove its document if the record is gone (or, for a
+   team, is a tournament squad).
 
-Likes and comments rewrite `#META` too. When the only change is to those
-counters, the handler skips the match without reading anything.
+Likes and comments rewrite a match's `#META` too. When the only change is to
+those counters, `target_for` skips it without a DynamoDB read.
 
-The same handler also runs on every user `#PROFILE` write, rebuilding that
-user's `users` document (`agon_services_core::opensearch::sync_user`) — just
-an index, no player rows or stale-row cleanup to do. A team's `#META` write
-rebuilds its `teams` document the same way (`sync_team`), removing it if the
-team is gone or is a tournament squad.
+OpenSearch syncing used to sit on its own dedicated queue with a longer
+visibility timeout, on the theory that it needed more tolerance for a blip
+than the other handlers. In practice there's no real difference: every
+action here is idempotent, async background work that nothing is waiting on
+synchronously, so a fast handler retrying after 10 minutes instead of 60
+seconds on a failure costs nothing. That split bought isolation nothing
+actually needed, so it's gone — `agon-actions` now uses one setting for
+everything:
+- Its visibility timeout (10 minutes) and redrive policy
+  (`maxReceiveCount: 3`) are the retry for every action — roughly 30 minutes
+  of tolerance for a blip (OpenSearch included) before a message moves to
+  `agon-actions-dlq`.
+- Each OpenSearch sync attempt re-syncs from DynamoDB's *current* state, so a
+  late or duplicate attempt never writes stale data.
+- Without `OPENSEARCH_URL` set (e.g. local dev without OpenSearch), syncing
+  is simply off — `Action::OpenSearchSync` messages are acked as no-ops —
+  there's no inline fallback any more.
 
-A failure is logged (`opensearch: match/user sync failed`) and **not
-retried**: an outage mustn't hold up the stream, and `GET /admin/stats` and
-the team summary/leaderboard endpoints tolerate the same brief staleness
-every other async-indexed read in this app already does. Run the backfill to
-repair. **Revisit this before the UI switches to the team-stats read
-endpoints:** a missed write would then show as a stale record until the next
-change to that match.
+Watch the `agon-actions-dlq` queue's depth (`ApproximateNumberOfMessages`) —
+an OpenSearch target landing there means OpenSearch was unreachable for
+longer than the retry window and needs a look; run the backfill
+(`--match <id>` / `--resume`) to repair it once OpenSearch is healthy again.
+There's no Grafana alert wired to that depth yet (alerting is off for this
+stack — see `agon_infra`'s `kube-prometheus-stack` config); for now, watch it
+via the AWS console or `aws sqs get-queue-attributes`.
 
 The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.

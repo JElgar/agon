@@ -89,8 +89,9 @@ the Rust side: `aws_config::load_from_env()` already honors
 
 `elasticmq` (the `elasticmq`/`elasticmq-init` services — see
 `create-queues.sh`) is the local stand-in for SQS, giving `agon_worker`
-somewhere to long-poll (`AGON_EVENTS_QUEUE_URL`/`AGON_ASSET_EVENTS_QUEUE_URL`
-— see `.env.example`'s `agon_worker` section). Streaming is enabled on the
+somewhere to long-poll (`AGON_EVENTS_QUEUE_URL`/`AGON_ASSET_EVENTS_QUEUE_URL`/
+`AGON_ACTIONS_QUEUE_URL` — see `.env.example`'s `agon_worker` section).
+Streaming is enabled on the
 table (`create-table.sh`), but by itself that only means the stream *exists*
 — something still has to read it and forward records to `elasticmq`, the way
 a real EventBridge Pipe does in production (`agon_infra/index.ts`). That's

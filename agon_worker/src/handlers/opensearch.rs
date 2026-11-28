@@ -1,146 +1,64 @@
-//! Inline handler: shadow-write match and user changes to OpenSearch.
+//! Pure decision step: does this stream event call for an OpenSearch sync,
+//! and for what target?
 //!
-//! On any write to a match's `#META` (score, sides, status, date, ...) or to its
-//! roster (`PLAYER#` items, which don't touch `#META`), rebuild that match's
-//! documents from DynamoDB with [`agon_services_core::opensearch::sync_match`].
-//! On any write to a user's `#PROFILE`, rebuild their `users` document with
-//! [`agon_services_core::opensearch::sync_user`]; likewise a team's `#META`
-//! and its `teams` document ([`agon_services_core::opensearch::sync_team`]).
+//! On any write to a match's `#META` (score, sides, status, date, ...) or to
+//! its roster (`PLAYER#` items, which don't touch `#META`), the match needs
+//! re-syncing. On any write to a user's `#PROFILE`, so does their `users`
+//! document; likewise a team's `#META` and its `teams` document. No DynamoDB
+//! or OpenSearch I/O happens here — [`target_for`] just decides, from the
+//! event's keys and images, whether a sync is warranted and what it targets.
 //!
-//! **Resilience.** A failure here is logged and swallowed rather than failing
-//! the message: an OpenSearch outage must not push stream events into the DLQ
-//! or delay the handlers that matter today. The backfill
-//! (`agon_worker backfill-opensearch`) repairs anything missed. `GET
-//! /admin/stats` and the team summary/leaderboard endpoints tolerate the
-//! same brief staleness every other async-indexed read in this app already
-//! does.
+//! The actual sync (reading current state from DynamoDB, writing to
+//! OpenSearch) happens in `opensearch_sync::sync`, called from
+//! `action_consumer::ActionConsumer`'s `Action::OpenSearchSync` case: for
+//! every event, [`target_for`] decides whether that sync is warranted and
+//! for what target. It shares the same `agon-actions` queue and retry
+//! settings as every other action — see docs/opensearch.md.
 //!
 //! **Noise filter.** Every like and comment rewrites a match's `#META` (it
 //! bumps a counter). Those changes don't affect any OpenSearch document, so a
 //! `#META` modify whose images differ only in those counters is skipped
 //! without a read.
 
-use agon_services_core::dao::Dao;
 use agon_services_core::dao::keys::{Pk, Sk};
-use agon_services_core::opensearch::{
-    OpenSearchClient, SyncOutcome, TeamSyncOutcome, UserSyncOutcome, sync_match, sync_team,
-    sync_user,
-};
 
-use crate::error::WorkerResult;
 use crate::event::{ChangeEvent, ChangeKind, Image};
+use crate::opensearch_sync::OpenSearchSyncTarget;
 
 /// `#META` attributes whose changes never affect an OpenSearch document.
 const NOISE_ATTRS: &[&str] = &["like_count", "comment_count", "live_seq", "live_tip_seq"];
 
-pub async fn handle(
-    dao: &Dao,
-    os: Option<&OpenSearchClient>,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    let Some(os) = os else {
-        return Ok(());
-    };
+/// `None` if this event needs no OpenSearch sync at all.
+pub fn target_for(ev: &ChangeEvent) -> Option<OpenSearchSyncTarget> {
     match &ev.pk {
-        Pk::Match(match_id) => handle_match(os, dao, match_id, ev, now).await,
-        Pk::User(user_id) => handle_user(os, dao, user_id, ev, now).await,
-        Pk::Team(team_id) => handle_team(os, dao, team_id, ev, now).await,
-        _ => Ok(()),
-    }
-}
-
-async fn handle_match(
-    os: &OpenSearchClient,
-    dao: &Dao,
-    match_id: &str,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    match &ev.sk {
-        Sk::Meta => {
-            if ev.kind == ChangeKind::Modify && only_noise_changed(&ev.old_image, &ev.new_image) {
-                return Ok(());
+        Pk::Match(match_id) => {
+            match &ev.sk {
+                Sk::Meta => {
+                    if ev.kind == ChangeKind::Modify
+                        && only_noise_changed(&ev.old_image, &ev.new_image)
+                    {
+                        return None;
+                    }
+                }
+                Sk::Player(_) => {}
+                _ => return None,
             }
+            Some(OpenSearchSyncTarget::Match(match_id.clone()))
         }
-        Sk::Player(_) => {}
-        _ => return Ok(()),
+        Pk::User(user_id) => {
+            if ev.sk != Sk::Profile {
+                return None;
+            }
+            Some(OpenSearchSyncTarget::User(user_id.clone()))
+        }
+        Pk::Team(team_id) => {
+            if ev.sk != Sk::Meta {
+                return None;
+            }
+            Some(OpenSearchSyncTarget::Team(team_id.clone()))
+        }
+        _ => None,
     }
-
-    match sync_match(os, dao, match_id, now, true).await {
-        Ok(SyncOutcome::Indexed { player_rows }) => {
-            tracing::debug!(match_id = %match_id, player_rows, "opensearch: match synced");
-        }
-        Ok(SyncOutcome::Removed) => {
-            tracing::debug!(match_id = %match_id, "opensearch: match removed");
-        }
-        Err(e) => {
-            tracing::warn!(
-                match_id = %match_id,
-                error = %e,
-                "opensearch: match sync failed (not retried; the backfill repairs it)"
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn handle_user(
-    os: &OpenSearchClient,
-    dao: &Dao,
-    user_id: &str,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    if ev.sk != Sk::Profile {
-        return Ok(());
-    }
-
-    match sync_user(os, dao, user_id, now, true).await {
-        Ok(UserSyncOutcome::Indexed) => {
-            tracing::debug!(user_id = %user_id, "opensearch: user synced");
-        }
-        Ok(UserSyncOutcome::Removed) => {
-            tracing::debug!(user_id = %user_id, "opensearch: user removed");
-        }
-        Err(e) => {
-            tracing::warn!(
-                user_id = %user_id,
-                error = %e,
-                "opensearch: user sync failed (not retried; the backfill repairs it)"
-            );
-        }
-    }
-    Ok(())
-}
-
-async fn handle_team(
-    os: &OpenSearchClient,
-    dao: &Dao,
-    team_id: &str,
-    ev: &ChangeEvent,
-    now: &str,
-) -> WorkerResult<()> {
-    if ev.sk != Sk::Meta {
-        return Ok(());
-    }
-
-    match sync_team(os, dao, team_id, now, true).await {
-        Ok(TeamSyncOutcome::Indexed) => {
-            tracing::debug!(team_id = %team_id, "opensearch: team synced");
-        }
-        Ok(TeamSyncOutcome::Removed) => {
-            tracing::debug!(team_id = %team_id, "opensearch: team removed");
-        }
-        Err(e) => {
-            tracing::warn!(
-                team_id = %team_id,
-                error = %e,
-                "opensearch: team sync failed (not retried; the backfill repairs it)"
-            );
-        }
-    }
-    Ok(())
 }
 
 /// True when both images exist and differ only in [`NOISE_ATTRS`].
@@ -161,9 +79,27 @@ fn only_noise_changed(old: &Option<Image>, new: &Option<Image>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::Envelope;
 
     fn image(json: serde_json::Value) -> Image {
         serde_json::from_value(json).expect("image")
+    }
+
+    fn event(
+        pk: &str,
+        sk: &str,
+        kind: ChangeKind,
+        old: Option<Image>,
+        new: Option<Image>,
+    ) -> ChangeEvent {
+        ChangeEvent::from_envelope(&Envelope {
+            event: kind,
+            pk: pk.into(),
+            sk: sk.into(),
+            old_image: old,
+            new_image: new,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -192,5 +128,72 @@ mod tests {
     fn missing_old_image_is_never_noise() {
         let new = image(serde_json::json!({ "status": { "S": "completed" } }));
         assert!(!only_noise_changed(&None, &Some(new)));
+    }
+
+    #[test]
+    fn match_meta_write_targets_the_match() {
+        let new = image(serde_json::json!({ "status": { "S": "completed" } }));
+        let ev = event("MATCH#m1", "#META", ChangeKind::Modify, None, Some(new));
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Match("m1".into()))
+        );
+    }
+
+    #[test]
+    fn match_like_only_meta_write_has_no_target() {
+        let old = image(
+            serde_json::json!({ "status": { "S": "completed" }, "like_count": { "N": "1" } }),
+        );
+        let new = image(
+            serde_json::json!({ "status": { "S": "completed" }, "like_count": { "N": "2" } }),
+        );
+        let ev = event(
+            "MATCH#m1",
+            "#META",
+            ChangeKind::Modify,
+            Some(old),
+            Some(new),
+        );
+        assert_eq!(target_for(&ev), None);
+    }
+
+    #[test]
+    fn match_player_write_targets_the_match() {
+        let ev = event("MATCH#m1", "PLAYER#u1", ChangeKind::Insert, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Match("m1".into()))
+        );
+    }
+
+    #[test]
+    fn user_profile_write_targets_the_user() {
+        let ev = event("USER#u1", "#PROFILE", ChangeKind::Modify, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::User("u1".into()))
+        );
+    }
+
+    #[test]
+    fn team_meta_write_targets_the_team() {
+        let ev = event("TEAM#t1", "#META", ChangeKind::Modify, None, None);
+        assert_eq!(
+            target_for(&ev),
+            Some(OpenSearchSyncTarget::Team("t1".into()))
+        );
+    }
+
+    #[test]
+    fn team_non_meta_write_has_no_target() {
+        let ev = event("TEAM#t1", "MEMBER#u1", ChangeKind::Insert, None, None);
+        assert_eq!(target_for(&ev), None);
+    }
+
+    #[test]
+    fn unrelated_write_has_no_target() {
+        let ev = event("INVITATION#i1", "#META", ChangeKind::Modify, None, None);
+        assert_eq!(target_for(&ev), None);
     }
 }

@@ -825,6 +825,54 @@ new aws.iam.RolePolicy("agon-pipe-policy", {
 	}),
 });
 
+// ── Fanned-out actions: one shared queue, independent of the events queue
+// ───────────────────────────────────────────────────────────────────────────
+// The main consumer no longer runs index/notify/push/stats/tournament/rating/
+// opensearch-sync inline for a stream event: it fans the same envelope out
+// into one message per action onto this queue instead (see
+// `agon_worker::action_consumer`), so a failure in one handler only
+// redelivers that handler's own message, never its neighbours'. One timeout
+// for every action, OpenSearch sync included: 3 attempts at a 10-minute
+// visibility timeout is ~30 minutes of tolerance before a message moves to
+// the DLQ for a human to look at — plenty for a blip in any of these, and
+// every handler here is async background work with nothing waiting on it
+// synchronously, so a slower retry on failure costs nothing real. (We
+// previously split OpenSearch onto its own queue for a shorter window on
+// the rest; that bought no actual benefit, so it's gone — see
+// docs/opensearch.md.) The worker is both producer and consumer.
+const actionsDlq = new aws.sqs.Queue("agon-actions-dlq", {
+	name: `agon-actions-dlq-${pulumi.getStack()}`,
+	messageRetentionSeconds: 1209600, // 14 days — max, for inspection.
+});
+
+const actionsQueue = new aws.sqs.Queue("agon-actions", {
+	name: `agon-actions-${pulumi.getStack()}`,
+	visibilityTimeoutSeconds: 600,
+	messageRetentionSeconds: 345600, // 4 days.
+	redrivePolicy: pulumi.jsonStringify({
+		deadLetterTargetArn: actionsDlq.arn,
+		maxReceiveCount: 3,
+	}),
+});
+
+new aws.iam.UserPolicy("agon-app-actions-sqs", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [{
+			Sid: "UseActionsQueue",
+			Effect: "Allow",
+			Action: [
+				"sqs:SendMessage",
+				"sqs:ReceiveMessage",
+				"sqs:DeleteMessage",
+				"sqs:GetQueueAttributes",
+			],
+			Resource: [actionsQueue.arn],
+		}],
+	}),
+});
+
 // The Pipe: stream source → SQS target, transforming each record into the
 // worker's envelope. The `event`/`pk`/`sk` values are strings (quoted); the
 // `old_image`/`new_image` values are whole DynamoDB item objects, so their
@@ -872,6 +920,7 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 		AGON_ASSETS_CDN_URL: assetsCdnUrl,
 		AGON_EVENTS_QUEUE_URL: eventsQueue.url,
 		AGON_ASSET_EVENTS_QUEUE_URL: assetEventsQueue.url,
+		AGON_ACTIONS_QUEUE_URL: actionsQueue.url,
 		// CloudFront signed-URL key pair for match-header serving. The service
 		// signs with the private half; the id names the public key CloudFront trusts.
 		AGON_CLOUDFRONT_KEY_PAIR_ID: assetPublicKey.id,

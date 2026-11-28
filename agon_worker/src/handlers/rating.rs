@@ -201,8 +201,9 @@ async fn reconcile_match_rating<S: RatingStore>(
     // What remains is corruption, such as a `winner_side_id` naming a side the
     // match doesn't have, and the engine is emphatic that it must fail loudly
     // rather than rate wrongly (silently, it would score it as a draw). An
-    // `Invariant` parks the message in the DLQ, which is why this handler runs
-    // last in `handlers::route`.
+    // `Invariant` parks this handler's own fanned-out message in the DLQ (see
+    // `action_consumer`) — its own queue message now, not one step that would
+    // hold up its neighbours in a shared one.
     let updates = rate_match(
         &rateable.participants,
         rateable.winner_side_id.as_deref(),

@@ -16,6 +16,11 @@ pub struct Config {
     /// SQS queue URL for S3 asset-upload events, long-polled by the asset consumer
     /// (`AGON_ASSET_EVENTS_QUEUE_URL`).
     pub asset_events_queue_url: String,
+    /// SQS queue URL for the fanned-out actions (`AGON_ACTIONS_QUEUE_URL`,
+    /// see `action_consumer`) — required, not optional: every stream event's
+    /// handling, OpenSearch syncing included, goes through it now, so
+    /// there's no sensible "disabled" state for it.
+    pub actions_queue_url: String,
     /// CloudFront base URL used to build the canonical serving URL stored on an
     /// asset when it uploads (`AGON_ASSETS_CDN_URL`).
     pub assets_cdn_url: String,
@@ -53,6 +58,7 @@ impl Config {
             table_name: required("AGON_TABLE_NAME")?,
             events_queue_url: required("AGON_EVENTS_QUEUE_URL")?,
             asset_events_queue_url: required("AGON_ASSET_EVENTS_QUEUE_URL")?,
+            actions_queue_url: required("AGON_ACTIONS_QUEUE_URL")?,
             assets_cdn_url: required("AGON_ASSETS_CDN_URL")?
                 .trim_end_matches('/')
                 .to_string(),

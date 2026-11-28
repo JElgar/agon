@@ -1,16 +1,23 @@
 //! agon_worker — the async processing worker.
 //!
 //! Long-polls the SQS events queue (fed by DynamoDB Streams via an EventBridge
-//! Pipe) and runs inline handlers: search indexing (Meilisearch) and
-//! notification generation. See docs/async-design.md.
+//! Pipe). The main consumer (`consumer.rs`) doesn't run any handler itself: for
+//! each event it fans out onto the shared `agon-actions` queue, one message
+//! per `action::Action` — indexing, notifications, push, stats, tournament,
+//! rating, and OpenSearch syncing. `action_consumer::ActionConsumer` is the
+//! independent poll loop that actually runs those handlers, with its own
+//! retry/DLQ, so a failure in one can never hold up or replay another. See
+//! docs/opensearch.md.
 //!
-//! The inline slice always runs. Multi-step orchestration (feed fan-out, the
-//! accept-invitation saga) lives in the `temporal` module and runs a Temporal
-//! worker alongside the consumer loop in this same binary.
+//! Multi-step orchestration (feed fan-out, the accept-invitation saga) lives
+//! in the `temporal` module and runs a Temporal worker alongside the consumer
+//! loops in this same binary.
 //!
 //! `agon_worker backfill-opensearch [...]` runs the OpenSearch backfill instead
 //! of the worker and exits (see `backfill`).
 
+mod action;
+mod action_consumer;
 mod asset_consumer;
 mod backfill;
 mod config;
@@ -18,11 +25,13 @@ mod consumer;
 mod error;
 mod event;
 mod handlers;
+mod opensearch_sync;
 mod temporal;
 
 use agon_services_core::dao::Dao;
 use aws_sdk_sqs::Client as SqsClient;
 
+use crate::action_consumer::{ActionConsumer, ActionProducer};
 use crate::config::Config;
 use crate::consumer::Consumer;
 use agon_services_core::push::PushClient;
@@ -95,37 +104,48 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
-    let mut consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
-
-    // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
-    // failure here is not fatal, since nothing reads OpenSearch yet; the worker
-    // runs without it and the backfill can catch up later.
+    // OpenSearch: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a failure here
+    // is not fatal, since nothing reads OpenSearch yet; the worker runs
+    // without it and the backfill can catch up later.
     let opensearch =
         agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
+            tracing::error!(error = %e, "invalid OpenSearch settings; syncing disabled");
             None
         });
-    // Also handed to the Temporal worker below, for the backfill workflow's
-    // activities — kept outside the `if let` so it survives `with_opensearch`
-    // moving its own clone into the consumer.
-    let mut backfill_opensearch = None;
+    // Also handed to the Temporal worker (for the backfill workflow's
+    // activities) and to the action consumer below — kept outside the `if
+    // let` so it survives the clone each of those takes its own copy from.
+    let mut opensearch_ready = None;
     if let Some(os) = opensearch {
         let mut ready = true;
         for def in agon_services_core::opensearch::all_indices() {
             if let Err(e) = os.ensure_index(&def).await {
-                tracing::error!(index = %os.write_index(&def), error = %e, "opensearch index setup failed; shadow write disabled");
+                tracing::error!(index = %os.write_index(&def), error = %e, "opensearch index setup failed; syncing disabled");
                 ready = false;
                 break;
             }
         }
         if ready {
-            tracing::info!("opensearch shadow write enabled");
-            backfill_opensearch = Some(os.clone());
-            consumer = consumer.with_opensearch(os);
+            tracing::info!("opensearch syncing enabled");
+            opensearch_ready = Some(os);
         }
     } else {
-        tracing::info!("OPENSEARCH_URL unset; opensearch shadow write disabled");
+        tracing::info!("OPENSEARCH_URL unset; opensearch syncing disabled");
     }
+
+    let config_arc = std::sync::Arc::new(config.clone());
+    let action_consumer = ActionConsumer::new(
+        sqs.clone(),
+        dao.clone(),
+        search.clone(),
+        push,
+        opensearch_ready.clone(),
+        config.actions_queue_url.clone(),
+        config_arc.clone(),
+    );
+    let actions = ActionProducer::new(sqs.clone(), config.actions_queue_url.clone());
+
+    let consumer = Consumer::new(sqs, actions, config);
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.
@@ -137,14 +157,15 @@ async fn main() {
         }
     };
 
-    // Run the SQS consumers AND the Temporal worker concurrently. The Temporal
+    // Run every consumer AND the Temporal worker concurrently. The Temporal
     // worker's futures are `!Send` (workflows run single-threaded by design,
     // using Rc/RefCell internally), so it cannot be `tokio::spawn`ed — `join!`
-    // polls all of them on this same task, which doesn't require `Send`. Both
-    // consumers observe the same shutdown signal (fanned out below).
+    // polls all of them on this same task, which doesn't require `Send`. Every
+    // consumer observes the same shutdown signal (fanned out below).
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
     let events_shutdown = subscribe_shutdown(&shutdown_tx);
     let asset_shutdown = subscribe_shutdown(&shutdown_tx);
+    let action_shutdown = subscribe_shutdown(&shutdown_tx);
     let signal_fut = async move {
         shutdown_signal().await;
         // Best-effort broadcast; receivers stop on the first (or a lagged) recv.
@@ -153,12 +174,19 @@ async fn main() {
 
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
+    let action_fut = action_consumer.run(Box::pin(action_shutdown));
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, backfill_opensearch).await {
+        if let Err(e) = temporal::worker::run(dao, opensearch_ready).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };
-    tokio::join!(signal_fut, consumer_fut, asset_fut, temporal_fut);
+    tokio::join!(
+        signal_fut,
+        consumer_fut,
+        asset_fut,
+        action_fut,
+        temporal_fut
+    );
 
     tracing::info!("worker stopped");
 }

@@ -14,5 +14,6 @@ pub mod rating;
 pub mod search;
 pub mod series;
 pub mod sports;
+pub mod standings;
 pub mod telemetry;
 pub mod tournament;

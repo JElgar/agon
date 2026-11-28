@@ -72,17 +72,15 @@ pub fn match_kind(agg: &MatchAggregate, tournament: Option<&TournamentRecord>) -
     }
 }
 
-/// The calendar year a match belongs to: its start time in the tournament's
-/// timezone when there is one, else UTC (a 00:30 kick-off on 1 January in
-/// London stays in the new year).
-pub fn match_year(starts_at: &str, timezone: Option<&str>) -> Option<i32> {
+/// The calendar year a match belongs to, in UTC — the API is timezone
+/// agnostic and always stores and judges `starts_at` in UTC, a tournament's
+/// own timezone included (that's only ever used to pick the local wall-clock
+/// time a round starts at, never to reinterpret a stored instant).
+pub fn match_year(starts_at: &str) -> Option<i32> {
     let utc: DateTime<Utc> = DateTime::parse_from_rfc3339(starts_at)
         .ok()?
         .with_timezone(&Utc);
-    match timezone.and_then(|tz| tz.parse::<chrono_tz::Tz>().ok()) {
-        Some(tz) => Some(utc.with_timezone(&tz).year()),
-        None => Some(utc.year()),
-    }
+    Some(utc.year())
 }
 
 /// One side of a match, nested in [`MatchDoc`].
@@ -244,8 +242,8 @@ impl Outcome {
 }
 
 /// Build the match document and its player rows. `tournament` is the match's
-/// tournament when it has one (for league vs cup, and the timezone the year is
-/// judged in). `now` is stamped as `indexed_at`.
+/// tournament when it has one (for league vs cup). `now` is stamped as
+/// `indexed_at`.
 pub fn build_match_docs(
     agg: &MatchAggregate,
     tournament: Option<&TournamentRecord>,
@@ -253,7 +251,7 @@ pub fn build_match_docs(
 ) -> MatchDocs {
     let m = &agg.match_;
     let kind = match_kind(agg, tournament);
-    let year = match_year(&m.starts_at, tournament.map(|t| t.timezone.as_str()));
+    let year = match_year(&m.starts_at);
     let confirmed = m.confirmed_score.as_ref();
     let winner = confirmed.and_then(|c| c.winner_side_id.clone());
 
@@ -656,14 +654,11 @@ mod tests {
     }
 
     #[test]
-    fn year_uses_the_tournament_timezone() {
-        // 23:30 UTC on 31 Dec is already 1 Jan in Auckland.
-        assert_eq!(
-            match_year("2025-12-31T23:30:00Z", Some("Pacific/Auckland")),
-            Some(2026)
-        );
-        assert_eq!(match_year("2025-12-31T23:30:00Z", None), Some(2025));
-        assert_eq!(match_year("not a date", None), None);
+    fn year_is_always_the_utc_calendar_year() {
+        // 23:30 UTC on 31 Dec is still 31 Dec in UTC, whatever a tournament's
+        // own timezone would make of it.
+        assert_eq!(match_year("2025-12-31T23:30:00Z"), Some(2025));
+        assert_eq!(match_year("not a date"), None);
     }
 
     #[test]

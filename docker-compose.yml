@@ -1,19 +1,5 @@
 services:
-  # Discovery/search endpoints. Data (DynamoDB) lives in AWS by default;
-  # only search is run locally. Master key matches .env.example.
-  meilisearch:
-    image: getmeili/meilisearch:v1.11
-    restart: always
-    environment:
-      MEILI_ENV: development
-      MEILI_MASTER_KEY: masterKeyForLocalDevOnly
-    ports:
-      - 7700:7700
-    volumes:
-      - meili_data:/meili_data
-
-  # Match + per-player stats store (shadow writes only for now; nothing reads it
-  # on a request path). Security plugin off: local only, never exposed.
+  # Search and stats store (matches, users, teams, per-player stats). Security plugin off: local only, never exposed.
   # Needs vm.max_map_count >= 262144 on the Docker host (Linux). Many distros
   # already ship higher; only raise it if `sysctl vm.max_map_count` is lower:
   #   sudo sysctl -w vm.max_map_count=262144
@@ -297,7 +283,6 @@ services:
       - ./local/dynamodb/create-bucket.sh:/create-bucket.sh:ro
 
 volumes:
-  meili_data:
   opensearch_data:
   supabase_db_data:
   temporal_db_data:

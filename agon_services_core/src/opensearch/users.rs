@@ -1,5 +1,5 @@
-//! Typed read of the `users` index for the admin panel's user search/browse
-//! (`GET /admin/users`), replacing the Meilisearch `users` index there.
+//! Typed read of the `users` index for user search (`GET /users/search`) and
+//! the admin panel's user search/browse (`GET /admin/users`).
 //!
 //! Same pure-query / pure-parse split as [`super::team_stats`]: [`search_query`]
 //! builds the request and [`parse_search`] reads the response, both unit

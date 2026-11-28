@@ -8,8 +8,6 @@ config:
   agon_infra:supabaseUrl: https://gkebmzhvdbsktamfdsil.supabase.co
   agon_infra:supabaseAnonKey: sb_publishable_snWJggcOaut2Cce4srqJ2w_CqJhHTRx
   agon_infra:supabaseJwksUrl: https://gkebmzhvdbsktamfdsil.supabase.co/auth/v1/.well-known/jwks.json
-  agon_infra:meiliMasterKey:
-    secure: AAABAIaOnx6eoR+a2gusczOlyC0juJW9QhatiGq0dlqQLtt4EfdwrThncAFJJoR5yCRSvVdqxcT0CV/RJ9H5hrHgsGE4IBQlrYKEbg==
   agon_infra:grafanaAdminPassword:
     secure: AAABALJJY3bQkdCPyFlkWE7TS+bBn76rzJYYK/aK/BrIumgsSmffPgtFhaN9pjZ0XboSMfoni2mlty2XJresjQ==
   agon_infra:agonDeviceJwtPrivateKey:

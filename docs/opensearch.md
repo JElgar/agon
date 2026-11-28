@@ -81,12 +81,10 @@ repair. **Revisit this before the UI switches to the team-stats read
 endpoints:** a missed write would then show as a stale record until the next
 change to that match.
 
-The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
-`OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and `OPENSEARCH_INDEX_PREFIX`.
-`agon_service` needs this too now (not just `agon_worker`), since `GET
-/admin/stats` reads the `users` index directly — it reports 503 while
-`OPENSEARCH_URL` is unset, same convention as the other optional integrations
-(device pairing, YouTube).
+`OPENSEARCH_URL` is required by both `agon_worker` and `agon_service`: either
+refuses to start without a valid one (the worker also exits if an index can't
+be created). Optional settings: `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD`
+and `OPENSEARCH_INDEX_PREFIX`.
 
 ## Running it
 
@@ -154,7 +152,7 @@ Other flags:
 yet, since nothing has needed to repair one user's document in isolation.
 
 It needs only `AGON_TABLE_NAME`, AWS credentials and the `OPENSEARCH_*`
-variables, not the worker's SQS, Meilisearch or Temporal settings.
+variables, not the worker's SQS or Temporal settings.
 - **In the cluster:** run it as a one-off pod from the worker image, with the
   same `aws-credentials` secret and `OPENSEARCH_URL`.
 - **Locally:** `make backfill-opensearch-local` reads DynamoDB Local. Plain
@@ -183,12 +181,12 @@ cluster in `tests/opensearch_team_stats.rs`. Callers never build query JSON.
 |---|---|---|
 | `GET /teams/{id}/summary?sport=&year=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation for the record per kind (league, cup, friendly, plus `record` = all three, and squad games), each kind's `sides.result.<sport>` scoreline summed into `result` and `sides.stats.<sport>` counters into `stats`, the years played, and external matches in the last 12 months (picks `layout`: `standard` from 3, else `squad`). Two small searches for the last 10 results (`recent_results` and streak; each result's score is read from DynamoDB in its sport's own shape, as on the feed) and the next scheduled match |
 | `GET /teams/{id}/leaderboard?sport=&scope=&tournament_id=&year=` (`agon_service/src/team_stats.rs`) | `match_stats` | A `terms` aggregation per player summing W/D/L and the sport's `stats.<sport>` counters. Names and avatars from `batch_get_users`, and `is_member` from the member list (non-members are ringers) |
-| `GET /matches?q=&participant=&team_id=&team_match=&match_type=&status=&open=&open_has_space=&kind=&tournament_id=&from=&to=&sort=&cursor=&limit=` (`agon_service/src/main.rs`) | `matches` | One filtered search (`agon_services_core::opensearch::matches::search_query`). `q` is a typo-tolerant name match: `bool_prefix` with `fuzziness: AUTO` (every word but the last is fuzzy, the last is a prefix) OR'd with a plain fuzzy `match` (a typo in a fully typed last word). `participant` is a term on `roster_ids`; `team_id` is a `terms` filter, or one `term` per team with `team_match=all` (head-to-head); `from`/`to` bound `starts_at`; newest first unless `sort=asc`, with `match_id` as the tie-break. Reads back only the ids (and, with `participant`, the outcome lists); the matches are hydrated from DynamoDB. Offset pagination. 503 without OpenSearch |
+| `GET /matches?q=&participant=&team_id=&team_match=&match_type=&status=&open=&open_has_space=&kind=&tournament_id=&from=&to=&sort=&cursor=&limit=` (`agon_service/src/main.rs`) | `matches` | One filtered search (`agon_services_core::opensearch::matches::search_query`). `q` is a typo-tolerant name match: `bool_prefix` with `fuzziness: AUTO` (every word but the last is fuzzy, the last is a prefix) OR'd with a plain fuzzy `match` (a typo in a fully typed last word). `participant` is a term on `roster_ids`; `team_id` is a `terms` filter, or one `term` per team with `team_match=all` (head-to-head); `from`/`to` bound `starts_at`; newest first unless `sort=asc`, with `match_id` as the tie-break. Reads back only the ids (and, with `participant`, the outcome lists); the matches are hydrated from DynamoDB. Offset pagination. |
 | `GET /teams/{id}/head-to-head/{other_id}?sport=` (`agon_service/src/team_stats.rs`) | `matches` | One aggregation over confirmed, non-squad matches in the sport with both teams in `team_ids`: a nested aggregation on the first team's side gives W/D/L, its `result.<sport>` scoreline and `stats.<sport>` counters (the same `TeamRecord` as the summary). The meetings themselves are `GET /matches?team_id=<a>&team_id=<b>&team_match=all` |
 | `GET /users/{id}/summary?sport=&year=` (`agon_service/src/user_stats.rs`) | `match_stats` | A player's own record per kind, summed straight off `match_stats` (one row per confirmed match for that player already) — no nested aggregation needed, unlike the team version. `matches` is used only for the next scheduled match |
-| `GET /users/search?q=` (`agon_service/src/main.rs`) | `users` | The same typo-tolerant prefix query as the match search (`opensearch::text::typo_tolerant_prefix`), over `name` only (never `email`), then profiles hydrated from DynamoDB. One page at the default limit. 503 without OpenSearch |
-| `GET /teams/search?q=&cursor=&limit=` (`agon_service/src/main.rs`) | `teams` | The same typo-tolerant prefix query over `name`, then team rows hydrated from DynamoDB. Offset cursor. 503 without OpenSearch |
-| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | The same typo-tolerant prefix query over `name`/`email`, or `match_all` for an empty `q`, sorted newest-first; offset pagination like the old Meilisearch-backed version |
+| `GET /users/search?q=` (`agon_service/src/main.rs`) | `users` | The same typo-tolerant prefix query as the match search (`opensearch::text::typo_tolerant_prefix`), over `name` only (never `email`), then profiles hydrated from DynamoDB. One page at the default limit |
+| `GET /teams/search?q=&cursor=&limit=` (`agon_service/src/main.rs`) | `teams` | The same typo-tolerant prefix query over `name`, then team rows hydrated from DynamoDB. Offset cursor |
+| `GET /admin/users?q=&cursor=&limit=` (`agon_service/src/admin/mod.rs`) | `users` | The same typo-tolerant prefix query over `name`/`email`, or `match_all` for an empty `q`, sorted newest-first |
 | `GET /admin/stats` (`agon_service/src/admin/mod.rs`) | `users` | An exact `_count` for the total-users figure |
 
 Only confirmed matches count. Squad games are left out of a team's `record`,
@@ -199,7 +197,7 @@ only ever on one of the two sides), but are still kept out of
 per-player leaderboard — a leaderboard is inherently team-scoped — and no
 personal goals-for/against or clean sheets, since those are side-level, not
 individually attributable. The API pod gets
-`OPENSEARCH_URL` like the worker; without it every one of these answers 503.
+`OPENSEARCH_URL` like the worker.
 
 ## Changing the schema
 

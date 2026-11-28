@@ -268,7 +268,7 @@ impl UserStatsApi {
         Query(year): Query<Option<i32>>,
     ) -> Result<UserSummaryResponse> {
         require_uid(dao, &jwt).await?;
-        let os = store(stats)?;
+        let os = store(stats);
         if dao
             .get_user(&user_id)
             .await

@@ -155,9 +155,7 @@ pub struct MatchDoc {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub winner_side_id: Option<String>,
     /// Whether this match has an open-join policy set at all (`Match.
-    /// open_join.is_some()`) — the same facet `GET /matches`' Meilisearch
-    /// doc carries, mirrored here for a future OpenSearch-backed version of
-    /// that discovery filter.
+    /// open_join.is_some()`), for `GET /matches`' `open` filter.
     pub open: bool,
     /// `open` and currently has room for another individual arrival — see
     /// `crate::dao::open_join::open_has_space`'s doc comment on what this
@@ -467,10 +465,9 @@ pub fn to_value<T: Serialize>(doc: &T) -> Value {
     serde_json::to_value(doc).expect("documents always serialize")
 }
 
-/// One user (index `users`). Backs the admin panel's total-users count, not
-/// a search index — `name`/`email` are carried so the document is readable
-/// on its own (e.g. in OpenSearch Dashboards), not to make this a second
-/// place that searches users.
+/// One user (index `users`). Backs user search (`name` only for
+/// `GET /users/search`; `name` and `email` for the admin panel) and the admin
+/// panel's total-users count.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UserDoc {
     pub user_id: String,

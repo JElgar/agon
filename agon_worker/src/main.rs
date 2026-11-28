@@ -1,7 +1,7 @@
 //! agon_worker — the async processing worker.
 //!
 //! Long-polls the SQS events queue (fed by DynamoDB Streams via an EventBridge
-//! Pipe) and runs inline handlers: search indexing (Meilisearch) and
+//! Pipe) and runs inline handlers: OpenSearch indexing and
 //! notification generation. See docs/async-design.md.
 //!
 //! The inline slice always runs. Multi-step orchestration (feed fan-out, the
@@ -26,7 +26,6 @@ use aws_sdk_sqs::Client as SqsClient;
 use crate::config::Config;
 use crate::consumer::Consumer;
 use agon_services_core::push::PushClient;
-use agon_services_core::search::SearchClient;
 
 #[tokio::main]
 async fn main() {
@@ -59,16 +58,6 @@ async fn main() {
     let aws_config = aws_config::load_from_env().await;
     let sqs = SqsClient::new(&aws_config);
     let dao = Dao::from_env(config.table_name.clone()).await;
-    let search = SearchClient::new(config.meili_url.clone(), config.meili_key.clone());
-
-    // Ensure the search indexes exist with the right filterable / sortable
-    // attributes before we start indexing off the stream. Idempotent, so safe on
-    // every start; fatal if it fails, since indexing would otherwise silently
-    // produce an unqueryable index.
-    if let Err(e) = search.bootstrap().await {
-        tracing::error!(error = %e, "failed to configure search indexes; exiting");
-        std::process::exit(1);
-    }
 
     // Push is opt-in: absent config means "not configured" (e.g. local dev),
     // not a failure. Present-but-invalid is a real misconfiguration, so that
@@ -95,37 +84,22 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
-    let mut consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
-
-    // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
-    // failure here is not fatal, since nothing reads OpenSearch yet; the worker
-    // runs without it and the backfill can catch up later.
+    // OpenSearch is required: the API's search endpoints read what this worker
+    // keeps in sync. Refuse to start without valid settings or if an index
+    // can't be created.
     let opensearch =
         agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
-            tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
-            None
+            tracing::error!(error = %e, "OpenSearch is required, refusing to start");
+            std::process::exit(1);
         });
-    // Also handed to the Temporal worker below, for the backfill workflow's
-    // activities — kept outside the `if let` so it survives `with_opensearch`
-    // moving its own clone into the consumer.
-    let mut backfill_opensearch = None;
-    if let Some(os) = opensearch {
-        let mut ready = true;
-        for def in agon_services_core::opensearch::all_indices() {
-            if let Err(e) = os.ensure_index(&def).await {
-                tracing::error!(index = %os.write_index(&def), error = %e, "opensearch index setup failed; shadow write disabled");
-                ready = false;
-                break;
-            }
+    for def in agon_services_core::opensearch::all_indices() {
+        if let Err(e) = opensearch.ensure_index(&def).await {
+            tracing::error!(index = %opensearch.write_index(&def), error = %e, "opensearch index setup failed; exiting");
+            std::process::exit(1);
         }
-        if ready {
-            tracing::info!("opensearch shadow write enabled");
-            backfill_opensearch = Some(os.clone());
-            consumer = consumer.with_opensearch(os);
-        }
-    } else {
-        tracing::info!("OPENSEARCH_URL unset; opensearch shadow write disabled");
     }
+
+    let consumer = Consumer::new(sqs, dao.clone(), push, opensearch.clone(), config);
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.
@@ -154,7 +128,7 @@ async fn main() {
     let consumer_fut = consumer.run(Box::pin(events_shutdown));
     let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let temporal_fut = async {
-        if let Err(e) = temporal::worker::run(dao, backfill_opensearch).await {
+        if let Err(e) = temporal::worker::run(dao, opensearch).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };

@@ -9,7 +9,6 @@
 //! it will be delegated to Temporal in a later pass (see docs/async-design.md
 //! §5). This module is the inline slice only.
 
-pub mod index;
 pub mod notify;
 pub mod opensearch;
 pub mod push;
@@ -23,7 +22,6 @@ use agon_services_core::opensearch::OpenSearchClient;
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
 use agon_services_core::push::PushClient;
-use agon_services_core::search::SearchClient;
 
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.
@@ -43,14 +41,12 @@ use agon_services_core::search::SearchClient;
 /// stops being retried.
 pub async fn route(
     dao: &Dao,
-    search: &SearchClient,
     push: Option<&PushClient>,
-    opensearch: Option<&OpenSearchClient>,
+    opensearch: &OpenSearchClient,
     ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,
 ) -> WorkerResult<()> {
-    index::handle(dao, search, ev).await?;
     notify::handle(dao, ev, now).await?;
     push::handle(dao, push, ui_base_url, ev).await?;
     stats::handle(dao, ev).await?;

@@ -24,19 +24,16 @@ use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, ChangeKind, Envelope};
 use crate::handlers;
 use agon_services_core::push::PushClient;
-use agon_services_core::search::SearchClient;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
 #[derive(Clone)]
 pub struct Consumer {
     sqs: SqsClient,
     dao: Dao,
-    search: SearchClient,
     /// `None` when push isn't configured (e.g. local dev) — handled the same
     /// way as the Temporal client's absence in tests: handlers no-op.
     push: Option<PushClient>,
-    /// `None` when `OPENSEARCH_URL` is unset: the OpenSearch shadow write is off.
-    opensearch: Option<agon_services_core::opensearch::OpenSearchClient>,
+    opensearch: agon_services_core::opensearch::OpenSearchClient,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -48,28 +45,18 @@ impl Consumer {
     pub fn new(
         sqs: SqsClient,
         dao: Dao,
-        search: SearchClient,
         push: Option<PushClient>,
+        opensearch: agon_services_core::opensearch::OpenSearchClient,
         config: Config,
     ) -> Self {
         Self {
             sqs,
             dao,
-            search,
             push,
-            opensearch: None,
+            opensearch,
             config: Arc::new(config),
             temporal: None,
         }
-    }
-
-    /// Turn on the OpenSearch shadow write.
-    pub fn with_opensearch(
-        mut self,
-        client: agon_services_core::opensearch::OpenSearchClient,
-    ) -> Self {
-        self.opensearch = Some(client);
-        self
     }
 
     /// Attach a Temporal client so multi-step events start workflows.
@@ -172,9 +159,8 @@ impl Consumer {
         let now = Utc::now().to_rfc3339();
         handlers::route(
             &self.dao,
-            &self.search,
             self.push.as_ref(),
-            self.opensearch.as_ref(),
+            &self.opensearch,
             self.config.ui_base_url.as_deref(),
             &event,
             &now,

@@ -1830,7 +1830,7 @@ struct FeedPage {
 }
 
 /// A queried `participant`'s result in a match — resolved from the search
-/// index's outcome buckets (see `agon_services_core::search::SearchClient::search_matches`),
+/// index's outcome buckets (see `agon_services_core::opensearch::matches::search_matches`),
 /// no extra lookup.
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
@@ -3756,7 +3756,7 @@ impl Api {
         // hydrate full profiles from DynamoDB (the index stores only a few
         // fields). This response is a plain list (no cursor), so we return one
         // page at the default limit. Never matches on email.
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let (ids, _total) = agon_services_core::opensearch::search_users(
             os,
             Some(&query),
@@ -4067,7 +4067,7 @@ impl Api {
             }
         };
 
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let from = from.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let to = to.map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
         let sports: Vec<&str> = match_types.iter().map(match_type_tag).collect();
@@ -8709,7 +8709,7 @@ impl Api {
             }
         };
         let limit = page_limit(limit);
-        let os = crate::team_stats::store(stats)?;
+        let os = crate::team_stats::store(stats);
         let (ids, total) =
             agon_services_core::opensearch::search_teams(os, Some(&query), offset, limit)
                 .await
@@ -13787,14 +13787,8 @@ fn search_cursor(next_offset: Option<u32>) -> Option<String> {
     next_offset.map(|o| o.to_string())
 }
 
-/// Map an `agon_services_core` search error to a 500 (an index outage is our problem, not
-/// the client's).
-fn search_internal(err: agon_services_core::error::SearchError) -> poem::Error {
-    error!("search error: {err}");
-    poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-}
-
-/// Map an OpenSearch error to a 500, same rationale as `search_internal`.
+/// Map an OpenSearch error to a 500 (an index outage is our problem, not the
+/// client's).
 fn opensearch_internal(err: agon_services_core::opensearch::OpenSearchError) -> poem::Error {
     error!("opensearch error: {err}");
     poem::Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -14070,22 +14064,15 @@ async fn main() {
                     .unwrap_or_else(|| "http://localhost:5173".to_string()),
             );
 
-            // Meilisearch client for discovery endpoints (users/teams/matches
-            // search). Indexes are kept in sync by the async worker; the API only
-            // queries them and hydrates results from DynamoDB.
-            let meili_url =
-                std::env::var("MEILI_URL").unwrap_or_else(|_| "http://localhost:7700".to_string());
-            let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
-            let search = agon_services_core::search::SearchClient::new(meili_url, meili_key);
-
-            // OpenSearch, for the team stats reads (`team_stats`) and the
-            // admin "total users" count (`admin::get_stats`, the `users`
-            // index). Optional: without OPENSEARCH_URL those endpoints
-            // answer 503 and nothing else changes.
+            // OpenSearch, for the search endpoints (matches, users, teams),
+            // the team/user stats reads and the admin panel. Indexes are kept
+            // in sync by the async worker; the API only queries them and
+            // hydrates results from DynamoDB. Required: the service refuses
+            // to start without valid OpenSearch settings.
             let stats_store = team_stats::StatsStore(
                 agon_services_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
-                    error!("invalid OpenSearch settings; team/admin stats disabled: {e}");
-                    None
+                    error!("OpenSearch is required, refusing to start: {e}");
+                    std::process::exit(1);
                 }),
             );
 
@@ -14093,8 +14080,8 @@ async fn main() {
             // and queries the `BackfillOpenSearch` workflow that
             // `agon_worker`'s Temporal worker actually runs (see
             // `admin::backfill`'s doc comment). Optional, same convention as
-            // OpenSearch/Meilisearch above: unreachable just means those two
-            // endpoints answer 503 rather than the whole service failing to
+            // OpenSearch above: unreachable just means that
+            // endpoint answers 503 rather than the whole service failing to
             // start over an admin-only feature.
             let backfill_temporal = match admin::BackfillClient::connect().await {
                 Ok(client) => Some(client),
@@ -14155,7 +14142,6 @@ async fn main() {
                 .with(cors)
                 .around(admin_auth_middleware)
                 .data(dao)
-                .data(search)
                 .data(stats_store)
                 .data(backfill_temporal)
                 .data(verifier)

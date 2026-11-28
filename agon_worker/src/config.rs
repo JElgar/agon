@@ -19,10 +19,6 @@ pub struct Config {
     /// CloudFront base URL used to build the canonical serving URL stored on an
     /// asset when it uploads (`AGON_ASSETS_CDN_URL`).
     pub assets_cdn_url: String,
-    /// Base URL of the Meilisearch instance (`MEILI_URL`).
-    pub meili_url: String,
-    /// Meilisearch API key (`MEILI_MASTER_KEY`).
-    pub meili_key: String,
     /// The FCM sender's GCP service-account key, as downloaded JSON
     /// (`AGON_FCM_SERVICE_ACCOUNT_JSON`) — verbatim, so Pulumi can hand it
     /// through with no reshaping. Optional like `OTEL_EXPORTER_OTLP_ENDPOINT`:
@@ -56,8 +52,6 @@ impl Config {
             assets_cdn_url: required("AGON_ASSETS_CDN_URL")?
                 .trim_end_matches('/')
                 .to_string(),
-            meili_url: required("MEILI_URL")?,
-            meili_key: required("MEILI_MASTER_KEY")?,
             fcm_service_account_json: env::var("AGON_FCM_SERVICE_ACCOUNT_JSON").ok(),
             ui_base_url: env::var("AGON_UI_URL")
                 .ok()

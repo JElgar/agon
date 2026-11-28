@@ -36,12 +36,8 @@ const DEFAULT_METRICS_ADDR: &str = "0.0.0.0:9090";
 
 /// Connect to Temporal (config from the standard `TEMPORAL_*` env / profile) and
 /// run the worker until the process exits. Registers every workflow, plus the
-/// shared activities struct and (when OpenSearch is configured — see
-/// `main.rs`) the OpenSearch backfill's own activities.
-pub async fn run(
-    dao: Dao,
-    opensearch: Option<OpenSearchClient>,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// shared activities struct and the OpenSearch backfill's own activities.
+pub async fn run(dao: Dao, opensearch: OpenSearchClient) -> Result<(), Box<dyn std::error::Error>> {
     let metrics_addr: SocketAddr = std::env::var(METRICS_ADDR_ENV)
         .unwrap_or_else(|_| DEFAULT_METRICS_ADDR.to_string())
         .parse()
@@ -70,23 +66,19 @@ pub async fn run(
     let connection = Connection::connect(conn_options).await?;
     let client = Client::new(connection, client_options)?;
 
-    let mut worker_options = WorkerOptions::new(TASK_QUEUE)
+    let worker_options = WorkerOptions::new(TASK_QUEUE)
         .register_activities(AgonActivities { dao: dao.clone() })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
         .register_workflow::<MaterializeSeries>()?
         .register_workflow::<MatchReminder>()?;
 
-    // The backfill workflow needs OpenSearch, which is itself optional (see
-    // `main.rs`): without it there's nowhere to backfill into, so the
-    // workflow goes unregistered and a start attempt fails at the admin API
-    // the same way `POST /admin/opensearch/backfill` already reports
-    // OpenSearch being unconfigured elsewhere.
-    if let Some(os) = opensearch {
-        worker_options = worker_options
-            .register_activities(BackfillActivities { dao, os })
-            .register_workflow::<BackfillOpenSearch>()?;
-    }
+    let worker_options = worker_options
+        .register_activities(BackfillActivities {
+            dao,
+            os: opensearch,
+        })
+        .register_workflow::<BackfillOpenSearch>()?;
 
     let worker_options = worker_options.build();
 

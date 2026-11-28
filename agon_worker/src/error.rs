@@ -11,7 +11,7 @@
 
 use agon_services_core::dao::error::DaoError;
 use agon_services_core::dao::keys::KeyError;
-use agon_services_core::error::{PushError, SearchError};
+use agon_services_core::error::PushError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -38,10 +38,6 @@ pub enum WorkerError {
     /// A DAO operation failed. Usually transient → retry (redeliver).
     #[error(transparent)]
     Dao(#[from] DaoError),
-
-    /// A Meilisearch call failed. Usually transient → retry.
-    #[error(transparent)]
-    Search(#[from] SearchError),
 
     /// An FCM call failed. Usually transient → retry.
     #[error(transparent)]

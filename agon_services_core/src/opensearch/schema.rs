@@ -170,9 +170,8 @@ fn per_sport_mapping(sports: Vec<(&'static str, &'static [&'static str])>) -> Va
 }
 
 /// One document per user. See [`crate::opensearch::docs::UserDoc`]. Backs
-/// the admin panel's "total users" count and its `GET /admin/users`
-/// search/browse (`agon_services_core::opensearch::users`) — the admin
-/// panel reads only this, not Meilisearch. `name`/`email` are analyzed text
+/// `GET /users/search`, the admin panel's "total users" count and its
+/// `GET /admin/users` search/browse (`agon_services_core::opensearch::users`). `name`/`email` are analyzed text
 /// (not just keyword) so a `multi_match` can match a search term as a
 /// prefix against either.
 pub const USERS: IndexDef = IndexDef {

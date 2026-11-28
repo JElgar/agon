@@ -34,6 +34,8 @@ pub enum OpenSearchError {
     Client(#[from] opensearch::Error),
     #[error("opensearch: invalid OPENSEARCH_URL `{url}`: {reason}")]
     Config { url: String, reason: String },
+    #[error("opensearch: OPENSEARCH_URL is not set")]
+    NotConfigured,
     #[error("opensearch returned {status}: {body}")]
     Status { status: u16, body: String },
     #[error("opensearch bulk request had {failed} failed item(s), first: {first}")]
@@ -97,20 +99,17 @@ impl OpenSearchClient {
         })
     }
 
-    /// Build from the environment. `Ok(None)` when `OPENSEARCH_URL` is unset
-    /// (OpenSearch is opt-in, like push notifications and telemetry); `Err` when
-    /// it's set but invalid.
+    /// Build from the environment. `Err` when `OPENSEARCH_URL` is unset or
+    /// invalid: OpenSearch is required by both binaries.
     ///
     /// - `OPENSEARCH_URL`: e.g. `http://opensearch:9200`
     /// - `OPENSEARCH_USERNAME` / `OPENSEARCH_PASSWORD`: optional basic auth
     /// - `OPENSEARCH_INDEX_PREFIX`: optional, prepended to every index name
-    pub fn from_env() -> OpenSearchResult<Option<Self>> {
-        let Some(url) = std::env::var("OPENSEARCH_URL")
+    pub fn from_env() -> OpenSearchResult<Self> {
+        let url = std::env::var("OPENSEARCH_URL")
             .ok()
             .filter(|u| !u.is_empty())
-        else {
-            return Ok(None);
-        };
+            .ok_or(OpenSearchError::NotConfigured)?;
         let auth = match (
             std::env::var("OPENSEARCH_USERNAME"),
             std::env::var("OPENSEARCH_PASSWORD"),
@@ -119,7 +118,7 @@ impl OpenSearchClient {
             _ => None,
         };
         let prefix = std::env::var("OPENSEARCH_INDEX_PREFIX").unwrap_or_default();
-        Self::new(&url, auth, prefix).map(Some)
+        Self::new(&url, auth, prefix)
     }
 
     pub fn prefix(&self) -> &str {

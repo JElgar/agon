@@ -3,7 +3,7 @@ name = "agon_services_core"
 version = "0.1.0"
 edition = "2024"
 
-# Shared domain crate: DynamoDB DAO + record types + Meilisearch client.
+# Shared domain crate: DynamoDB DAO + record types + OpenSearch client.
 # Depended on by both the API (agon_service) and the async worker (agon_worker).
 # Deliberately free of any web-framework (poem) dependency.
 
@@ -23,7 +23,6 @@ tokio = { version = "1", features = ["time"] }
 # Bounded-concurrency fan-out (`buffer_unordered`) in `opensearch::backfill`.
 futures = "0.3"
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
-meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
 # Direct use in `search::SearchClient::count` — see its doc comment for why
 # it bypasses the SDK's own stats call.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

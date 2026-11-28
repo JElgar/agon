@@ -81,7 +81,7 @@ pub fn init(service_name: &'static str) -> Telemetry {
     // dependency graph pulls in more than one (here: `ring`, via the Temporal
     // SDK / reqwest's `rustls-tls`, and `aws-lc-rs`, via the AWS SDK crates) —
     // without an explicit process-wide default, the *first* real TLS client
-    // construction anywhere (OTLP export, Meilisearch, FCM push, Temporal's
+    // construction anywhere (OTLP export, OpenSearch, FCM push, Temporal's
     // gRPC client, ...) panics with "no process-level CryptoProvider
     // available". `init` is the first thing both binaries' `main` calls, so
     // install it here, once, before anything else can race to construct a

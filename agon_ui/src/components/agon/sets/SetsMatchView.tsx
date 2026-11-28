@@ -85,6 +85,7 @@ export function RosterTab({
 }) {
   const following = useViewerFollowing(currentUserId)
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
+  const selfPlay = !!match.sides[0]?.team_id && match.sides[0].team_id === match.sides[1]?.team_id
   const row = (p: MatchPlayer, i: number) => (
     <PlayerRow
       key={p.member.id}
@@ -105,7 +106,13 @@ export function RosterTab({
           const res = result?.[side.id]
           return (
             <div key={side.id} className="flex flex-col gap-3.5">
-              <SideHeading side={side} index={idx} name={sideLabel(match, idx)} meta={`${res ? `${res} · ` : ''}${count(players.length)}`} />
+              <SideHeading
+                side={side}
+                index={idx}
+                name={sideLabel(match, idx)}
+                meta={`${res ? `${res} · ` : ''}${count(players.length)}`}
+                selfPlay={selfPlay}
+              />
               <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
                 {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
                 {players.map(row)}

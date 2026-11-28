@@ -15,11 +15,18 @@
 //! recent results, but they do count on the leaderboard (`all`), per the
 //! in-house rule.
 //!
+//! **Lists of teams.** [`team_overviews`] answers form and next match for a
+//! whole page of teams in one request (a `terms` bucket per team with
+//! `top_hits` inside), rather than one [`recent_results`] / [`next_match`]
+//! pair per team.
+//!
 //! **Sport-specific.** A side's scoreline (football goals for and against;
 //! cricket runs and wickets) is read from `result.<sport>` and its counters
 //! (football goals, assists, clean sheets; cricket runs, wickets, catches,
 //! ...) from `stats.<sport>`, each with that sport's own fields into its own
 //! type. A generic sport (tennis, ...) has neither, only W/D/L.
+
+use std::collections::HashMap;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -420,7 +427,12 @@ fn ours_and_theirs<'a>(
 
 /// Read a [`recent_results_query`] response, from `team_id`'s side.
 pub fn parse_recent_results(resp: &Value, team_id: &str) -> Vec<TeamResult> {
-    hits(resp)
+    results_from(&hits(resp), team_id)
+}
+
+/// `team_id`'s results in `matches` (confirmed, non-squad), in order.
+fn results_from(matches: &[MatchSource], team_id: &str) -> Vec<TeamResult> {
+    matches
         .iter()
         .filter_map(|m| {
             let (ours, opponent) = ours_and_theirs(m, team_id)?;
@@ -441,12 +453,19 @@ pub fn parse_recent_results(resp: &Value, team_id: &str) -> Vec<TeamResult> {
 
 /// Read a [`next_match_query`] response.
 pub fn parse_next_match(resp: &Value, team_id: &str) -> Option<UpcomingMatch> {
-    let m = hits(resp).into_iter().next()?;
+    hits(resp)
+        .into_iter()
+        .next()
+        .map(|m| upcoming_from(m, team_id))
+}
+
+/// `m` as `team_id`'s upcoming match.
+fn upcoming_from(m: MatchSource, team_id: &str) -> UpcomingMatch {
     // In a squad game the "opponent" is the team itself; leave it out.
     let opponent = ours_and_theirs(&m, team_id)
         .and_then(|(_, o)| o)
         .filter(|o| o.team_id.as_deref() != Some(team_id));
-    Some(UpcomingMatch {
+    UpcomingMatch {
         match_id: m.match_id,
         name: m.name,
         kind: m.kind,
@@ -454,7 +473,7 @@ pub fn parse_next_match(resp: &Value, team_id: &str) -> Option<UpcomingMatch> {
         starts_at: m.starts_at,
         tournament_id: m.tournament_id,
         opponent,
-    })
+    }
 }
 
 /// The team's last `limit` confirmed external results, newest first.
@@ -558,6 +577,116 @@ pub async fn head_to_head(
         )
         .await?;
     Ok(parse_head_to_head(&resp, sport))
+}
+
+// ── Team lists: form and next match per team ────────────────────────────────
+
+/// How many results a list's form covers.
+pub const FORM_LENGTH: u32 = 5;
+
+/// What a list of teams shows per team, read for the whole page at once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TeamOverview {
+    /// The last [`FORM_LENGTH`] confirmed results against other teams, any
+    /// sport, newest first. Empty before the first result.
+    pub form: Vec<TeamResult>,
+    /// The next scheduled match from `now`, any sport, squad games included
+    /// (the same rule as [`next_match`]).
+    pub next_match: Option<UpcomingMatch>,
+}
+
+/// The `matches` query behind [`team_overviews`]: form and next match for
+/// every team in `team_ids`, in one request.
+///
+/// The query narrows to matches involving any of the teams; two `filter`
+/// aggregations then split them into confirmed non-squad matches (form) and
+/// scheduled matches from `now` (next match). Inside each, a `terms`
+/// aggregation on `team_ids` buckets per team, with a `top_hits` for the
+/// newest [`FORM_LENGTH`] results or the soonest fixture. `team_ids` is
+/// multi-valued, so a match between two teams on the page lands in both
+/// buckets, and `include` drops the buckets of opponents not on the page.
+/// Not filtered by sport: a list row has no sport to pick.
+pub fn team_overviews_query(team_ids: &[String], now: &str) -> Value {
+    let per_team = |hits_name: &str, size: u32, order: &str| {
+        json!({
+            "terms": { "field": "team_ids", "include": team_ids, "size": team_ids.len().max(1) },
+            "aggs": { hits_name: { "top_hits": {
+                "size": size,
+                "_source": MATCH_SOURCE_FIELDS,
+                "sort": [{ "starts_at": order }, { "match_id": order }]
+            } } }
+        })
+    };
+    json!({
+        "size": 0,
+        "track_total_hits": false,
+        "query": { "bool": { "filter": [{ "terms": { "team_ids": team_ids } }] } },
+        "aggs": {
+            "form": {
+                "filter": { "bool": {
+                    "filter": [{ "term": { "confirmed": true } }],
+                    "must_not": [{ "term": { "kind": "squad" } }]
+                } },
+                "aggs": { "teams": per_team("latest", FORM_LENGTH, "desc") }
+            },
+            "next": {
+                "filter": { "bool": { "filter": [
+                    { "term": { "status": "scheduled" } },
+                    { "range": { "starts_at": { "gte": now } } }
+                ] } },
+                "aggs": { "teams": per_team("soonest", 1, "asc") }
+            }
+        }
+    })
+}
+
+/// Read a [`team_overviews_query`] response. Every id in `team_ids` gets an
+/// entry, empty when the team has no results and nothing scheduled.
+pub fn parse_team_overviews(resp: &Value, team_ids: &[String]) -> HashMap<String, TeamOverview> {
+    let mut out: HashMap<String, TeamOverview> = team_ids
+        .iter()
+        .map(|t| (t.clone(), TeamOverview::default()))
+        .collect();
+    let aggs = &resp["aggregations"];
+    for b in buckets(&aggs["form"]["teams"]) {
+        if let Some((team_id, o)) = b["key"]
+            .as_str()
+            .and_then(|t| out.get_mut(t).map(|o| (t, o)))
+        {
+            o.form = results_from(&hits(&b["latest"]), team_id);
+        }
+    }
+    for b in buckets(&aggs["next"]["teams"]) {
+        if let Some((team_id, o)) = b["key"]
+            .as_str()
+            .and_then(|t| out.get_mut(t).map(|o| (t, o)))
+        {
+            o.next_match = hits(&b["soonest"])
+                .into_iter()
+                .next()
+                .map(|m| upcoming_from(m, team_id));
+        }
+    }
+    out
+}
+
+/// Form and next match for each of `team_ids`, in one request (none when
+/// `team_ids` is empty).
+pub async fn team_overviews(
+    os: &OpenSearchClient,
+    team_ids: &[String],
+    now: &str,
+) -> OpenSearchResult<HashMap<String, TeamOverview>> {
+    if team_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let resp = os
+        .search(
+            &MATCHES.alias(os.prefix()),
+            team_overviews_query(team_ids, now),
+        )
+        .await?;
+    Ok(parse_team_overviews(&resp, team_ids))
 }
 
 // ── Leaderboard ─────────────────────────────────────────────────────────────
@@ -950,6 +1079,140 @@ mod tests {
             parse_next_match(&json!({ "hits": { "hits": [] } }), "hw"),
             None
         );
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One request for the whole page: a terms bucket per page team (and
+    /// only page teams), with the newest five confirmed non-squad results
+    /// and the soonest scheduled fixture inside.
+    #[test]
+    fn the_overviews_query_buckets_the_page_teams_in_one_request() {
+        let teams = ids(&["hw", "leyton"]);
+        let q = team_overviews_query(&teams, "2026-11-15T12:00:00Z");
+        assert_eq!(q["size"], 0);
+        assert_eq!(
+            q["query"]["bool"]["filter"],
+            json!([{ "terms": { "team_ids": ["hw", "leyton"] } }])
+        );
+        assert!(
+            !q.to_string().contains(r#""sport""#),
+            "a list row isn't per sport"
+        );
+
+        let form = &q["aggs"]["form"];
+        assert_eq!(
+            form["filter"]["bool"]["filter"],
+            json!([{ "term": { "confirmed": true } }])
+        );
+        assert_eq!(
+            form["filter"]["bool"]["must_not"],
+            json!([{ "term": { "kind": "squad" } }])
+        );
+        let terms = &form["aggs"]["teams"]["terms"];
+        assert_eq!(terms["field"], "team_ids");
+        assert_eq!(terms["include"], json!(["hw", "leyton"]));
+        assert_eq!(terms["size"], 2);
+        let latest = &form["aggs"]["teams"]["aggs"]["latest"]["top_hits"];
+        assert_eq!(latest["size"], FORM_LENGTH);
+        assert_eq!(latest["sort"][0], json!({ "starts_at": "desc" }));
+
+        let next = &q["aggs"]["next"];
+        let filters = next["filter"]["bool"]["filter"].to_string();
+        assert!(filters.contains(r#""status":"scheduled""#));
+        assert!(filters.contains(r#""gte":"2026-11-15T12:00:00Z""#));
+        let soonest = &next["aggs"]["teams"]["aggs"]["soonest"]["top_hits"];
+        assert_eq!(soonest["size"], 1);
+        assert_eq!(soonest["sort"][0], json!({ "starts_at": "asc" }));
+    }
+
+    fn top_hits(hits: Vec<Value>) -> Value {
+        json!({ "hits": { "hits": hits } })
+    }
+
+    /// A match between two page teams sits in both buckets and is read
+    /// from each one's own side; a page team with nothing still gets an
+    /// (empty) entry; a bucket for a team not on the page is ignored.
+    #[test]
+    fn overviews_read_each_bucket_from_that_teams_side() {
+        let derby = |id: &str, hw: &str, leyton: &str| {
+            match_hit(
+                id,
+                "friendly",
+                json!([
+                    { "side_id": "a", "team_id": "hw", "name": "HW", "outcome": hw },
+                    { "side_id": "b", "team_id": "leyton", "name": "Leyton", "outcome": leyton }
+                ]),
+            )
+        };
+        let resp = json!({ "aggregations": {
+            "form": { "doc_count": 3, "teams": { "buckets": [
+                { "key": "hw", "doc_count": 2, "latest": top_hits(vec![
+                    derby("m2", "won", "lost"),
+                    match_hit("m1", "league", json!([
+                        { "side_id": "x", "team_id": "bow", "outcome": "won" },
+                        { "side_id": "y", "team_id": "hw", "outcome": "lost" }
+                    ])),
+                ]) },
+                { "key": "leyton", "doc_count": 1, "latest": top_hits(vec![derby("m2", "won", "lost")]) },
+                { "key": "stranger", "doc_count": 1, "latest": top_hits(vec![]) }
+            ] } },
+            "next": { "doc_count": 1, "teams": { "buckets": [
+                { "key": "hw", "doc_count": 1, "soonest": top_hits(vec![
+                    match_hit("m9", "squad", json!([
+                        { "side_id": "l", "team_id": "hw" },
+                        { "side_id": "d", "team_id": "hw" }
+                    ]))
+                ]) },
+                { "key": "leyton", "doc_count": 1, "soonest": top_hits(vec![
+                    match_hit("m8", "friendly", json!([
+                        { "side_id": "a", "team_id": "leyton" },
+                        { "side_id": "b", "team_id": "bow", "name": "Bow" }
+                    ]))
+                ]) }
+            ] } }
+        } });
+        let page = ids(&["hw", "leyton", "quiet"]);
+        let o = parse_team_overviews(&resp, &page);
+        assert_eq!(o.len(), 3, "one entry per page team, none for strangers");
+
+        let hw = &o["hw"];
+        let form: Vec<(&str, &str)> = hw
+            .form
+            .iter()
+            .map(|r| (r.match_id.as_str(), r.outcome.as_str()))
+            .collect();
+        assert_eq!(form, vec![("m2", "won"), ("m1", "lost")]);
+        assert_eq!(hw.form[1].side_id, "y");
+        assert_eq!(
+            hw.form[0].opponent.as_ref().unwrap().team_id.as_deref(),
+            Some("leyton")
+        );
+        let next = hw.next_match.as_ref().unwrap();
+        assert_eq!(next.match_id, "m9");
+        assert_eq!(next.opponent, None, "a squad game has no opponent");
+
+        // The same derby, from Leyton's side.
+        let leyton = &o["leyton"];
+        assert_eq!(leyton.form.len(), 1);
+        assert_eq!(leyton.form[0].outcome, "lost");
+        assert_eq!(leyton.form[0].side_id, "b");
+        let next = leyton.next_match.as_ref().unwrap();
+        assert_eq!(next.match_id, "m8");
+        assert_eq!(
+            next.opponent.as_ref().unwrap().team_id.as_deref(),
+            Some("bow")
+        );
+
+        assert_eq!(o["quiet"], TeamOverview::default());
+    }
+
+    #[test]
+    fn overviews_of_an_empty_response_are_empty_per_team() {
+        let o = parse_team_overviews(&json!({}), &ids(&["hw"]));
+        assert_eq!(o["hw"], TeamOverview::default());
     }
 
     #[test]

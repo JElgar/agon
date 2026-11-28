@@ -1309,6 +1309,9 @@ pub fn team_list_item_from_record(team: &TeamRecord, is_followed_by_me: bool) ->
         }),
         follower_count: team.follower_count as u32,
         is_followed_by_me,
+        role: None,
+        form: None,
+        next_match: None,
     }
 }
 

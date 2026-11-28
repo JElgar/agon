@@ -14,7 +14,7 @@
 //! matches written since OpenSearch was deployed, so the UI shouldn't switch
 //! to them until the backfill has been done.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use agon_services_core::dao;
 use agon_services_core::opensearch::OpenSearchClient;
@@ -27,7 +27,7 @@ use poem::web::Data;
 use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::{Json, PlainText};
 use poem_openapi::{ApiResponse, Enum, Object, OpenApi};
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::mapping::{
     confirmed_score_from_record, dao_internal, match_stats_from_record, match_type_tag, parse_ts,
@@ -165,6 +165,8 @@ pub struct TeamOpponent {
     pub team_id: Option<String>,
     /// That side's display name, if it has one.
     pub name: Option<String>,
+    /// The opposing team's logo, when that side is a team that has one.
+    pub logo: Option<Photo>,
 }
 
 /// One confirmed result, from the team's side.
@@ -203,6 +205,13 @@ pub struct TeamStreak {
     pub count: u32,
 }
 
+/// One entry of a team's form: a confirmed result against another team.
+#[derive(Object, Debug, Clone, PartialEq, Eq)]
+pub struct TeamFormResult {
+    pub match_id: String,
+    pub outcome: TeamOutcome,
+}
+
 /// The team's next scheduled match.
 #[derive(Object, Debug, Clone, PartialEq)]
 pub struct TeamNextMatch {
@@ -214,6 +223,10 @@ pub struct TeamNextMatch {
     pub tournament_id: Option<String>,
     /// Absent for squad games and for open slots.
     pub opponent: Option<TeamOpponent>,
+    /// Whether the caller has a spot on this match's roster (added,
+    /// joined, or accepted an invitation) — the same answer, from the same
+    /// place, as their feed card's `FeedMatch.viewer_is_going`.
+    pub viewer_is_going: bool,
 }
 
 /// `GET /teams/{team_id}/summary`.
@@ -356,16 +369,42 @@ enum TeamLeaderboardResponse {
 
 // ── Mapping ─────────────────────────────────────────────────────────────────
 
-fn opponent(o: Option<ts::Opponent>) -> Option<TeamOpponent> {
+type TeamMetas = HashMap<String, dao::records::TeamRecord>;
+
+/// `teams` holds the opponent's meta when it was read (for the logo).
+fn opponent(o: Option<ts::Opponent>, teams: &TeamMetas) -> Option<TeamOpponent> {
     o.map(|o| TeamOpponent {
+        logo: o
+            .team_id
+            .as_ref()
+            .and_then(|t| teams.get(t))
+            .and_then(|t| t.logo_url.clone())
+            .map(|image_url| Photo {
+                image_url,
+                asset_id: None,
+            }),
         team_id: o.team_id,
         name: o.name,
     })
 }
 
+/// The opposing team ids to read metas for, for their logos.
+fn opponent_team_ids<'a>(opponents: impl Iterator<Item = Option<&'a ts::Opponent>>) -> Vec<String> {
+    opponents
+        .flatten()
+        .filter_map(|o| o.team_id.clone())
+        .collect()
+}
+
+/// The caller's feed entry key for a next match: `(match_id, starts_at)`.
+fn feed_key(m: &UpcomingMatch) -> (String, String) {
+    (m.match_id.clone(), m.starts_at.clone())
+}
+
 fn result_item(
     r: TeamResult,
-    matches: &std::collections::HashMap<String, dao::records::MatchRecord>,
+    matches: &HashMap<String, dao::records::MatchRecord>,
+    teams: &TeamMetas,
 ) -> TeamResultItem {
     let confirmed_score = matches
         .get(&r.match_id)
@@ -381,20 +420,90 @@ fn result_item(
         tournament_id: r.tournament_id,
         side_id: r.side_id,
         confirmed_score,
-        opponent: opponent(r.opponent),
+        opponent: opponent(r.opponent, teams),
     }
 }
 
-fn next_match_item(m: UpcomingMatch) -> TeamNextMatch {
+/// `feed` is the caller's feed entries by match id (see
+/// `Dao::batch_get_feed_entries_and_team_metas`), `teams` the opponent metas.
+fn next_match_item(
+    m: UpcomingMatch,
+    feed: &HashMap<String, dao::records::FeedItemRecord>,
+    teams: &TeamMetas,
+) -> TeamNextMatch {
     TeamNextMatch {
         kind: kind_from_str(&m.kind),
         starts_at: parse_ts(&m.starts_at),
+        viewer_is_going: feed.get(&m.match_id).is_some_and(|f| f.viewer_is_going),
         match_id: m.match_id,
         name: m.name,
         ranked: m.ranked,
         tournament_id: m.tournament_id,
-        opponent: opponent(m.opponent),
+        opponent: opponent(m.opponent, teams),
     }
+}
+
+/// A list row's form and next match (`TeamListItem::form` / `next_match`).
+pub(crate) struct ListOverview {
+    pub form: Vec<TeamFormResult>,
+    pub next_match: Option<TeamNextMatch>,
+}
+
+/// Form and next match for a page of teams, for a list such as
+/// `GET /users/me/teams`: one OpenSearch request for the whole page
+/// (`ts::team_overviews`), then one DynamoDB `BatchGetItem` for the
+/// caller's feed entries on the next matches (`viewer_is_going`) and the
+/// opponents' logos.
+///
+/// `None` when the stats store isn't configured or its query fails: a list
+/// of teams must keep working without OpenSearch, so the caller then just
+/// leaves these fields out. A DynamoDB failure is still an error.
+pub(crate) async fn list_overviews(
+    dao: &dao::Dao,
+    stats: &StatsStore,
+    uid: &str,
+    team_ids: &[String],
+) -> Result<Option<HashMap<String, ListOverview>>> {
+    let Some(os) = stats.0.as_ref() else {
+        return Ok(None);
+    };
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let overviews = match ts::team_overviews(os, team_ids, &now).await {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("team list form/next match unavailable: {e}");
+            return Ok(None);
+        }
+    };
+    let next: Vec<&UpcomingMatch> = overviews
+        .values()
+        .filter_map(|o| o.next_match.as_ref())
+        .collect();
+    let feed_keys: Vec<(String, String)> = next.iter().map(|m| feed_key(m)).collect();
+    let opponents = opponent_team_ids(next.iter().map(|m| m.opponent.as_ref()));
+    let (feed, teams) = dao
+        .batch_get_feed_entries_and_team_metas(uid, &feed_keys, &opponents)
+        .await
+        .map_err(dao_internal)?;
+    Ok(Some(
+        overviews
+            .into_iter()
+            .map(|(team_id, o)| {
+                let overview = ListOverview {
+                    form: o
+                        .form
+                        .into_iter()
+                        .map(|r| TeamFormResult {
+                            outcome: outcome_from_str(&r.outcome),
+                            match_id: r.match_id,
+                        })
+                        .collect(),
+                    next_match: o.next_match.map(|m| next_match_item(m, &feed, &teams)),
+                };
+                (team_id, overview)
+            })
+            .collect(),
+    ))
 }
 
 fn layout(ext_last_12_months: u64) -> TeamOverviewLayout {
@@ -467,7 +576,7 @@ impl TeamStatsApi {
         /// Limit the records to this year. Omit for all time.
         Query(year): Query<Option<i32>>,
     ) -> Result<TeamSummaryResponse> {
-        require_uid(dao, &jwt).await?;
+        let uid = require_uid(dao, &jwt).await?;
         let os = store(stats)?;
         let Some(team) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
             return Ok(TeamSummaryResponse::NotFound(PlainText(
@@ -529,14 +638,26 @@ impl TeamStatsApi {
         });
         // The stats store has which matches and their outcomes; each
         // match's own score comes from the match itself, as on the feed.
+        // Alongside it, one more batch read: the caller's feed entry for
+        // the next match (`viewer_is_going`, read where the feed reads it)
+        // and the opponents' team metas (logos, next match and results
+        // alike).
         let match_ids: Vec<String> = recent.iter().map(|r| r.match_id.clone()).collect();
-        let matches = dao
-            .batch_get_match_metas(&match_ids)
-            .await
-            .map_err(dao_internal)?;
+        let feed_keys: Vec<(String, String)> = next.iter().map(feed_key).collect();
+        let opponents = opponent_team_ids(
+            recent
+                .iter()
+                .map(|r| r.opponent.as_ref())
+                .chain(next.iter().map(|m| m.opponent.as_ref())),
+        );
+        let (matches, (feed, teams)) = tokio::try_join!(
+            dao.batch_get_match_metas(&match_ids),
+            dao.batch_get_feed_entries_and_team_metas(&uid, &feed_keys, &opponents),
+        )
+        .map_err(dao_internal)?;
         let recent_results = recent
             .into_iter()
-            .map(|r| result_item(r, &matches))
+            .map(|r| result_item(r, &matches, &teams))
             .collect();
         Ok(TeamSummaryResponse::Summary(Json(TeamSummary {
             team_id,
@@ -556,7 +677,7 @@ impl TeamStatsApi {
             },
             recent_results,
             streak,
-            next_match: next.map(next_match_item),
+            next_match: next.map(|m| next_match_item(m, &feed, &teams)),
         })))
     }
 
@@ -677,11 +798,11 @@ impl TeamStatsApi {
             dao.get_team_meta(&other_team_id),
         )
         .map_err(dao_internal)?;
-        if ours.is_none() || theirs.is_none() {
+        let (Some(_), Some(_)) = (ours, theirs) else {
             return Ok(TeamHeadToHeadResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
-        }
+        };
         let h2h = ts::head_to_head(os, &team_id, &other_team_id, match_type_tag(&sport))
             .await
             .map_err(stats_internal)?;
@@ -758,6 +879,50 @@ mod tests {
         );
         assert_eq!(cricket.stats.football, None);
         assert_eq!(cricket.stats.cricket.map(|c| c.wickets), Some(7));
+    }
+
+    /// `viewer_is_going` is read off the caller's feed entry for the match
+    /// (none = not going), and the opponent's logo off its team meta.
+    #[test]
+    fn next_match_reads_going_from_the_feed_entry_and_the_logo_from_the_team() {
+        let upcoming = |id: &str, opp: Option<&str>| UpcomingMatch {
+            match_id: id.into(),
+            name: id.into(),
+            kind: "friendly".into(),
+            ranked: false,
+            starts_at: "2026-12-01T10:00:00Z".into(),
+            tournament_id: None,
+            opponent: Some(ts::Opponent {
+                side_id: "b".into(),
+                team_id: opp.map(Into::into),
+                name: Some("Them".into()),
+            }),
+        };
+        let feed_entry: dao::records::FeedItemRecord = serde_json::from_value(serde_json::json!({
+            "viewer_id": "me", "ref_type": "match", "ref_id": "m1",
+            "starts_at": "2026-12-01T10:00:00Z", "created_at": "2026-11-01T00:00:00Z",
+            "viewer_is_going": true
+        }))
+        .unwrap();
+        let feed = HashMap::from([("m1".to_string(), feed_entry)]);
+        let leyton: dao::records::TeamRecord = serde_json::from_value(serde_json::json!({
+            "id": "leyton", "name": "Leyton", "logo_url": "https://x/l.png",
+            "follower_count": 0, "created_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let teams = HashMap::from([("leyton".to_string(), leyton)]);
+
+        let m = next_match_item(upcoming("m1", Some("leyton")), &feed, &teams);
+        assert!(m.viewer_is_going);
+        let opp = m.opponent.unwrap();
+        assert_eq!(
+            opp.logo.map(|p| p.image_url).as_deref(),
+            Some("https://x/l.png")
+        );
+
+        let m = next_match_item(upcoming("m2", None), &feed, &teams);
+        assert!(!m.viewer_is_going, "no feed entry: not going");
+        assert_eq!(m.opponent.unwrap().logo, None, "an ad-hoc side has no logo");
     }
 
     #[test]
